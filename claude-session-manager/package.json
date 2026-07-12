@@ -2,7 +2,7 @@
   "name": "claude-session-manager",
   "displayName": "Claude Session Manager",
   "description": "Works around the Claude Code extension losing session content on window restore: reattaches the most recent sessions to reopened windows, and opens any on-disk session (even hidden ones).",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "aneesh",
   "engines": {
     "vscode": "^1.80.0"
