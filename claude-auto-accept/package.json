@@ -1,0 +1,39 @@
+{
+  "name": "claude-auto-accept",
+  "displayName": "Claude Auto-Accept",
+  "description": "Auto-accept Claude Code permission prompts by forcing bypassPermissions mode, with a status-bar toggle.",
+  "version": "1.0.0",
+  "publisher": "aneesh",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeAutoAccept.toggle",
+        "title": "Claude Auto-Accept: Toggle"
+      },
+      {
+        "command": "claudeAutoAccept.enable",
+        "title": "Claude Auto-Accept: Enable (bypassPermissions)"
+      },
+      {
+        "command": "claudeAutoAccept.disable",
+        "title": "Claude Auto-Accept: Disable (default mode)"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Auto-Accept",
+      "properties": {
+        "claudeAutoAccept.enforceOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "On VSCodium startup, force permissions.defaultMode to bypassPermissions in ~/.claude/settings.json if something reset it."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "name": "loom-session-tracker",
+  "displayName": "Loom Session Tracker",
+  "description": "Keeps a live, per-project map of Loom session agents (role ↔ webviewId) fresh over CDP, so the orchestrator never has to wake a session by hand. Read-only; does not click or inject.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "loomSessionTracker", "title": "Loom Sessions", "icon": "$(broadcast)" }
+      ]
+    },
+    "views": {
+      "loomSessionTracker": [
+        { "id": "loomSessions", "name": "Session Agents" }
+      ]
+    },
+    "commands": [
+      { "command": "loomSessionTracker.refresh", "title": "Loom Sessions: Refresh Now", "icon": "$(sync)" },
+      { "command": "loomSessionTracker.status", "title": "Loom Sessions: Show Status" },
+      { "command": "loomSessionTracker.spawn", "title": "Loom Sessions: Spawn Session…", "icon": "$(add)" },
+      { "command": "loomSessionTracker.retire", "title": "Loom Sessions: Retire (Close) Session", "icon": "$(close)" },
+      { "command": "loomSessionTracker.delete", "title": "Loom Sessions: Delete Session (worktree + transcript)", "icon": "$(trash)" },
+      { "command": "loomSessionTracker.lock", "title": "Loom Sessions: Lock (protect from deletion)", "icon": "$(lock)" },
+      { "command": "loomSessionTracker.unlock", "title": "Loom Sessions: Unlock", "icon": "$(unlock)" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "loomSessionTracker.spawn", "when": "view == loomSessions", "group": "navigation@1" },
+        { "command": "loomSessionTracker.refresh", "when": "view == loomSessions", "group": "navigation@2" }
+      ],
+      "view/item/context": [
+        { "command": "loomSessionTracker.lock", "when": "view == loomSessions && viewItem == loomAgent", "group": "inline@1" },
+        { "command": "loomSessionTracker.retire", "when": "view == loomSessions && viewItem == loomAgent", "group": "inline@2" },
+        { "command": "loomSessionTracker.unlock", "when": "view == loomSessions && viewItem == loomAgentLocked", "group": "inline@1" },
+        { "command": "loomSessionTracker.lock", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
+        { "command": "loomSessionTracker.unlock", "when": "view == loomSessions && viewItem == loomAgentLocked", "group": "1_actions" },
+        { "command": "loomSessionTracker.retire", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
+        { "command": "loomSessionTracker.delete", "when": "view == loomSessions && viewItem == loomAgent", "group": "2_destructive" }
+      ]
+    },
+    "configuration": {
+      "title": "Loom Session Tracker",
+      "properties": {
+        "loomSessionTracker.intervalMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 5000,
+          "description": "How often (ms) to refresh the session-agent map. Clamped to a 5s floor."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./"
+  },
+  "dependencies": { "ws": "^8.18.0" },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.4.0"
+  }
+}

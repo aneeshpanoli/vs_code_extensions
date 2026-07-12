@@ -1,0 +1,42 @@
+{
+  "name": "claude-session-manager",
+  "displayName": "Claude Session Manager",
+  "description": "Works around the Claude Code extension losing session content on window restore: reattaches the most recent sessions to reopened windows, and opens any on-disk session (even hidden ones).",
+  "version": "1.0.0",
+  "publisher": "aneesh",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeSessions.open",
+        "title": "Claude Sessions: Open Session…"
+      },
+      {
+        "command": "claudeSessions.restoreRecent",
+        "title": "Claude Sessions: Restore Recent Sessions"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Session Manager",
+      "properties": {
+        "claudeSessions.autoReopen": {
+          "type": "boolean",
+          "default": true,
+          "description": "On window restore, replace blank restored Claude tabs with the most recent real sessions for this workspace."
+        },
+        "claudeSessions.autoReopenMax": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of sessions to reattach automatically on window restore."
+        }
+      }
+    }
+  }
+}
