@@ -9,8 +9,10 @@ import { Tracker } from "./tracker";
 import { SessionTreeProvider } from "./statusView";
 import { currentRepo, repoRoot } from "./project";
 import { Coordinator, MAX_ACTIVE_TOTAL } from "./coordinator";
-import { roleToRepo } from "./registry";
+import { roleToRepo, boardRoles } from "./registry";
 import { setLock } from "./locks";
+import { getOrchestrator, setOrchestrator } from "./orchestrator";
+import { Notifier } from "./notifier";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -38,10 +40,24 @@ export function activate(context: vscode.ExtensionContext) {
           JSON.stringify({ repo, ...obj }, null, 2));
       } catch { /* ignore */ }
     };
+    const notifier = new Notifier(repo);
+    const runNotifier = () => {
+      if (cfg().get("notifyOrchestrator", true) !== true) return;
+      for (const ev of notifier.scan()) {
+        const what = ev.status === "blocked" ? "raised a loop-back" : "finished";
+        vscode.window.showInformationMessage(`Loom: ${ev.role} ${what}${ev.task ? ` (${ev.task})` : ""} — notifying orchestrator.`);
+        notifier.notifyOrchestrator(ev, (ok, note) => {
+          if (!ok) vscode.window.showWarningMessage(
+            `Loom: could not notify the orchestrator about ${ev.role} (${note}) — read its outbox manually.`);
+        });
+      }
+    };
+
     const runTick = async () => {
       try {
         const r = await tracker.tick();
         debugLog({ ok: r.ok, error: r.error, liveRoles: r.liveRoles, agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
+        runNotifier();
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator
@@ -116,6 +132,26 @@ export function activate(context: vscode.ExtensionContext) {
           const stamp = new Date().toISOString().replace(/[:.]/g, "-");
           vscode.window.showInformationMessage(await coord.delete(role, repoRoot(), stamp)); tree.refresh();
         } catch (e: any) { vscode.window.showErrorMessage(String(e.message || e)); }
+      }),
+      // TAG ORCHESTRATOR — mark which role's session receives finish notifications
+      vscode.commands.registerCommand("loomSessionTracker.tagOrchestrator", async (node?: any) => {
+        if (!repo) { vscode.window.showWarningMessage("Loom: open a project window to tag its orchestrator."); return; }
+        const role = await roleFromArg(node, () => {
+          const roles = Array.from(new Set([...boardRoles(repo), ...tracker.view().map((a) => a.role)])).sort();
+          return vscode.window.showQuickPick(roles, { placeHolder: "Which role is the orchestrator (receives finish notifications)?" });
+        });
+        if (!role) return;
+        setOrchestrator(repo, role);
+        vscode.window.showInformationMessage(`Loom: '${role}' tagged as orchestrator — workers finishing will notify it automatically.`);
+        tree.refresh();
+      }),
+      vscode.commands.registerCommand("loomSessionTracker.untagOrchestrator", async () => {
+        if (!repo) return;
+        const cur = getOrchestrator(repo);
+        if (!cur) { vscode.window.showInformationMessage("Loom: no orchestrator tagged for this project."); return; }
+        setOrchestrator(repo, null);
+        vscode.window.showInformationMessage(`Loom: '${cur.role}' untagged — finish notifications off.`);
+        tree.refresh();
       }),
       // LOCK / UNLOCK — Photoshop-style protection from deletion
       vscode.commands.registerCommand("loomSessionTracker.lock", async (node?: any) => {

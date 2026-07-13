@@ -5,6 +5,7 @@
 import * as vscode from "vscode";
 import { Tracker, AgentView } from "./tracker";
 import { isLocked } from "./locks";
+import { getOrchestrator } from "./orchestrator";
 
 type Node = { kind: "repo"; repo: string } | { kind: "agent"; agent: AgentView };
 
@@ -28,12 +29,16 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
     }
     const a = node.agent;
     const locked = isLocked(a.repo, a.role);
+    const isOrch = getOrchestrator(a.repo)?.role === a.role;
     const it = new vscode.TreeItem(a.role, vscode.TreeItemCollapsibleState.None);
-    it.description = `${locked ? "🔒 " : ""}${a.liveness === "live" ? "● live" : "○ stale"} · ${a.webviewId.slice(0, 8)}`;
+    it.description = `${isOrch ? "★ orchestrator · " : ""}${locked ? "🔒 " : ""}` +
+      `${a.liveness === "live" ? "● live" : "○ stale"} · ${a.webviewId.slice(0, 8)}`;
     it.iconPath = new vscode.ThemeIcon(
-      locked ? "lock" : (a.liveness === "live" ? "circle-filled" : "circle-outline"),
-      new vscode.ThemeColor(locked ? "charts.yellow" : (a.liveness === "live" ? "charts.green" : "descriptionForeground")));
-    it.tooltip = `${a.role} @ ${a.repo}${locked ? "  🔒 LOCKED (protected from deletion)" : ""}\n` +
+      isOrch ? "star-full" : locked ? "lock" : (a.liveness === "live" ? "circle-filled" : "circle-outline"),
+      new vscode.ThemeColor(isOrch ? "charts.orange" : locked ? "charts.yellow" : (a.liveness === "live" ? "charts.green" : "descriptionForeground")));
+    it.tooltip = `${a.role} @ ${a.repo}` +
+      `${isOrch ? "  ★ ORCHESTRATOR (notified when workers finish)" : ""}` +
+      `${locked ? "  🔒 LOCKED (protected from deletion)" : ""}\n` +
       `webviewId: ${a.webviewId}\nlast seen: ${new Date(a.lastSeen).toLocaleTimeString()}`;
     // contextValue drives which menu items show (Lock vs Unlock, Retire)
     it.contextValue = locked ? "loomAgentLocked" : "loomAgent";

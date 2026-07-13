@@ -20,6 +20,11 @@ deploy() {
   mkdir -p "$dest"
   cp -r "$name"/. "$dest"/
   rm -rf "$dest/node_modules" 2>/dev/null || true
+  if [ "$name" = "loom-session-tracker" ]; then
+    # runtime dep: bundle ws (dereference — repo node_modules may be a symlink to the toolchain copy)
+    mkdir -p "$dest/node_modules"
+    cp -rL "$name/node_modules/ws" "$dest/node_modules/ws"
+  fi
   python3 - "$publisher.$name" "$version" "$dest" <<'EOF'
 import json, os, sys, time
 ident, version, loc = sys.argv[1], sys.argv[2], sys.argv[3]

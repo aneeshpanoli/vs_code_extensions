@@ -1,8 +1,8 @@
 {
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
-  "description": "Keeps a live, per-project map of Loom session agents (role ↔ webviewId) fresh over CDP, so the orchestrator never has to wake a session by hand. Read-only; does not click or inject.",
-  "version": "0.1.0",
+  "description": "Keeps a live, per-project map of Loom session agents (role ↔ webviewId) fresh over CDP. Tag one role as orchestrator and it is automatically notified (via loom_cdp inject) whenever a worker finishes its job.",
+  "version": "0.2.0",
   "publisher": "local",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
@@ -26,7 +26,9 @@
       { "command": "loomSessionTracker.retire", "title": "Loom Sessions: Retire (Close) Session", "icon": "$(close)" },
       { "command": "loomSessionTracker.delete", "title": "Loom Sessions: Delete Session (worktree + transcript)", "icon": "$(trash)" },
       { "command": "loomSessionTracker.lock", "title": "Loom Sessions: Lock (protect from deletion)", "icon": "$(lock)" },
-      { "command": "loomSessionTracker.unlock", "title": "Loom Sessions: Unlock", "icon": "$(unlock)" }
+      { "command": "loomSessionTracker.unlock", "title": "Loom Sessions: Unlock", "icon": "$(unlock)" },
+      { "command": "loomSessionTracker.tagOrchestrator", "title": "Loom Sessions: Tag as Orchestrator", "icon": "$(star-full)" },
+      { "command": "loomSessionTracker.untagOrchestrator", "title": "Loom Sessions: Untag Orchestrator" }
     ],
     "menus": {
       "view/title": [
@@ -40,6 +42,7 @@
         { "command": "loomSessionTracker.lock", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
         { "command": "loomSessionTracker.unlock", "when": "view == loomSessions && viewItem == loomAgentLocked", "group": "1_actions" },
         { "command": "loomSessionTracker.retire", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
+        { "command": "loomSessionTracker.tagOrchestrator", "when": "view == loomSessions && viewItem =~ /loomAgent/", "group": "1_actions" },
         { "command": "loomSessionTracker.delete", "when": "view == loomSessions && viewItem == loomAgent", "group": "2_destructive" }
       ]
     },
@@ -51,6 +54,11 @@
           "default": 15000,
           "minimum": 5000,
           "description": "How often (ms) to refresh the session-agent map. Clamped to a 5s floor."
+        },
+        "loomSessionTracker.notifyOrchestrator": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a worker's status.json goes working → idle/blocked, inject a 'check the outbox' prompt into the tagged orchestrator session."
         }
       }
     }
