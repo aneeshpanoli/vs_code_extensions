@@ -8,6 +8,11 @@ import * as path from "path";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
+// The orchestrator/PO session is NOT a worker role — it never appears in a board.json roster and the
+// tracker excludes it from tracked agents. These canonical names must therefore always be offered as
+// tag candidates independently, and loom_cdp.py's detect_role recognizes them for injection.
+export const ORCHESTRATOR_CANDIDATES = ["product-owner", "productowner"];
+
 export interface OrchestratorTag {
   role: string;
   taggedAt: string;   // ISO

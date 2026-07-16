@@ -11,7 +11,7 @@ import { currentRepo, repoRoot } from "./project";
 import { Coordinator, MAX_ACTIVE_TOTAL } from "./coordinator";
 import { roleToRepo, boardRoles } from "./registry";
 import { setLock } from "./locks";
-import { getOrchestrator, setOrchestrator } from "./orchestrator";
+import { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
 import { Notifier } from "./notifier";
 
 let timer: NodeJS.Timeout | undefined;
@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
     const tracker = new Tracker(repo);
     const coord = new Coordinator(tracker, repo);
     const rosterRoles = () => Array.from(roleToRepo().entries()).filter(([, r]) => r === repo).map(([role]) => role);
-    const tree = new SessionTreeProvider(tracker);
+    const tree = new SessionTreeProvider(tracker, repo);
 
     context.subscriptions.push(vscode.window.registerTreeDataProvider("loomSessions", tree));
 
@@ -137,7 +137,11 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.registerCommand("loomSessionTracker.tagOrchestrator", async (node?: any) => {
         if (!repo) { vscode.window.showWarningMessage("Loom: open a project window to tag its orchestrator."); return; }
         const role = await roleFromArg(node, () => {
-          const roles = Array.from(new Set([...boardRoles(repo), ...tracker.view().map((a) => a.role)])).sort();
+          // Orchestrator names FIRST (they're never in the board roster / tracked agents), then this
+          // project's worker roles and any other detected sessions — so the PO is always taggable.
+          const others = Array.from(new Set([...boardRoles(repo), ...tracker.view().map((a) => a.role)]))
+            .filter((r) => !ORCHESTRATOR_CANDIDATES.includes(r)).sort();
+          const roles = [...ORCHESTRATOR_CANDIDATES, ...others];
           return vscode.window.showQuickPick(roles, { placeHolder: "Which role is the orchestrator (receives finish notifications)?" });
         });
         if (!role) return;

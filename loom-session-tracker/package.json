@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Keeps a live, per-project map of Loom session agents (role ↔ webviewId) fresh over CDP. Tag one role as orchestrator and it is automatically notified (via loom_cdp inject) whenever a worker finishes its job.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "local",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
@@ -28,12 +28,13 @@
       { "command": "loomSessionTracker.lock", "title": "Loom Sessions: Lock (protect from deletion)", "icon": "$(lock)" },
       { "command": "loomSessionTracker.unlock", "title": "Loom Sessions: Unlock", "icon": "$(unlock)" },
       { "command": "loomSessionTracker.tagOrchestrator", "title": "Loom Sessions: Tag as Orchestrator", "icon": "$(star-full)" },
-      { "command": "loomSessionTracker.untagOrchestrator", "title": "Loom Sessions: Untag Orchestrator" }
+      { "command": "loomSessionTracker.untagOrchestrator", "title": "Loom Sessions: Untag Orchestrator", "icon": "$(star-empty)" }
     ],
     "menus": {
       "view/title": [
         { "command": "loomSessionTracker.spawn", "when": "view == loomSessions", "group": "navigation@1" },
-        { "command": "loomSessionTracker.refresh", "when": "view == loomSessions", "group": "navigation@2" }
+        { "command": "loomSessionTracker.tagOrchestrator", "when": "view == loomSessions", "group": "navigation@2" },
+        { "command": "loomSessionTracker.refresh", "when": "view == loomSessions", "group": "navigation@3" }
       ],
       "view/item/context": [
         { "command": "loomSessionTracker.lock", "when": "view == loomSessions && viewItem == loomAgent", "group": "inline@1" },
@@ -43,6 +44,8 @@
         { "command": "loomSessionTracker.unlock", "when": "view == loomSessions && viewItem == loomAgentLocked", "group": "1_actions" },
         { "command": "loomSessionTracker.retire", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
         { "command": "loomSessionTracker.tagOrchestrator", "when": "view == loomSessions && viewItem =~ /loomAgent/", "group": "1_actions" },
+        { "command": "loomSessionTracker.untagOrchestrator", "when": "view == loomSessions && viewItem == loomOrchestrator", "group": "inline@1" },
+        { "command": "loomSessionTracker.untagOrchestrator", "when": "view == loomSessions && viewItem == loomOrchestrator", "group": "1_actions" },
         { "command": "loomSessionTracker.delete", "when": "view == loomSessions && viewItem == loomAgent", "group": "2_destructive" }
       ]
     },
