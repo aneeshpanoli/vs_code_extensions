@@ -1,8 +1,8 @@
 {
   "name": "claude-chat-reader",
   "displayName": "Claude Chat Reader",
-  "description": "Speak Claude Code's latest reply aloud on demand (prose only — skips code, paths, and tool calls). Uses spd-say. Nothing is spoken automatically.",
-  "version": "1.0.0",
+  "description": "Speak Claude Code's latest reply aloud on demand (prose only — skips code, paths, and tool calls). Natural neural voice via Piper, falling back to spd-say. Nothing is spoken automatically.",
+  "version": "1.1.0",
   "publisher": "aneesh",
   "engines": {
     "vscode": "^1.80.0"
@@ -30,17 +30,33 @@
     "configuration": {
       "title": "Claude Chat Reader",
       "properties": {
+        "claudeChatReader.engine": {
+          "type": "string",
+          "enum": ["auto", "piper", "spd-say"],
+          "default": "auto",
+          "description": "Which TTS engine to use. 'auto' = Piper (natural neural voice) if its binary + model are present, else spd-say."
+        },
+        "claudeChatReader.piperPath": {
+          "type": "string",
+          "default": "~/.local/bin/piper",
+          "description": "Path to the piper executable."
+        },
+        "claudeChatReader.piperModel": {
+          "type": "string",
+          "default": "~/.local/share/piper-voices/en_US-lessac-medium.onnx",
+          "description": "Path to a Piper voice model (.onnx). Its .onnx.json sidecar must sit alongside it. Download more with: python3 -m piper.download_voices <name>."
+        },
         "claudeChatReader.rate": {
           "type": "number",
           "default": 10,
           "minimum": -100,
           "maximum": 100,
-          "description": "Speech rate passed to spd-say (-100 slowest … 100 fastest)."
+          "description": "Speech rate for the spd-say fallback (-100 slowest … 100 fastest). Does not affect Piper."
         },
         "claudeChatReader.voice": {
           "type": "string",
           "default": "",
-          "description": "spd-say voice type (e.g. male1, female1). Empty = speech-dispatcher default."
+          "description": "spd-say fallback voice type (e.g. male1, female1). Empty = speech-dispatcher default. Does not affect Piper."
         }
       }
     }

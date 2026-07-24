@@ -79,16 +79,50 @@ function toProse(md) {
   return t.trim();
 }
 
-let current = null; // the active spd-say child, if any
+let current = []; // active child processes (piper + player, or spd-say)
 
-function stopSpeaking() {
-  if (current) { try { current.kill(); } catch { /* gone */ } current = null; }
-  // also cancel anything queued in speech-dispatcher
-  try { execFile('spd-say', ['-C']); } catch { /* ignore */ }
+function expand(p) {
+  return p && p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
 }
 
-function speak(text, statusItem) {
-  stopSpeaking();
+// Resolve the Piper binary + a voice model, or null if unavailable. Reads the
+// model's sample rate from its sidecar .json (medium voices are 22050 Hz).
+function resolvePiper(cfg) {
+  const bin = expand((cfg.get('piperPath') || '~/.local/bin/piper').trim());
+  const model = expand((cfg.get('piperModel') || '~/.local/share/piper-voices/en_US-lessac-medium.onnx').trim());
+  if (!fs.existsSync(bin) || !fs.existsSync(model)) return null;
+  let rate = 22050;
+  try { rate = JSON.parse(fs.readFileSync(model + '.json', 'utf8')).audio.sample_rate || 22050; } catch { /* default */ }
+  return { bin, model, rate };
+}
+
+function stopSpeaking() {
+  for (const c of current) { try { c.kill('SIGTERM'); } catch { /* gone */ } }
+  current = [];
+  try { execFile('spd-say', ['-C']); } catch { /* ignore */ } // cancel any speech-dispatcher queue
+}
+
+// Neural path: pipe text -> piper (raw PCM stdout) -> aplay. Starts speaking as
+// synthesis streams; killing both children stops it immediately.
+function speakPiper(text, piper, statusItem) {
+  const player = spawn('aplay', ['-q', '-r', String(piper.rate), '-f', 'S16_LE', '-t', 'raw', '-c', '1', '-']);
+  const synth = spawn(piper.bin, ['-m', piper.model, '--output-raw']);
+  current = [synth, player];
+  setSpeaking(statusItem, true);
+  synth.stdout.pipe(player.stdin);
+  synth.stdin.on('error', () => {});   // player may close early on stop
+  synth.stdin.write(text);
+  synth.stdin.end();
+  const fail = (what) => (e) => {
+    vscode.window.showErrorMessage(`Claude Chat Reader: ${what} error (${e.message}).`);
+    stopSpeaking(); setSpeaking(statusItem, false);
+  };
+  synth.on('error', fail('piper'));
+  player.on('error', fail('aplay'));
+  player.on('close', () => { if (current.includes(player)) { stopSpeaking(); setSpeaking(statusItem, false); } });
+}
+
+function speakSpd(text, statusItem) {
   const cfg = vscode.workspace.getConfiguration('claudeChatReader');
   const args = ['-w', '-r', String(cfg.get('rate') ?? 10)];
   const voice = (cfg.get('voice') || '').trim();
@@ -97,13 +131,27 @@ function speak(text, statusItem) {
   let child;
   try { child = spawn('spd-say', args); }
   catch (e) { vscode.window.showErrorMessage(`Claude Chat Reader: spd-say failed to start (${e.message}).`); return; }
-  current = child;
+  current = [child];
   setSpeaking(statusItem, true);
   child.on('error', (e) => {
     vscode.window.showErrorMessage(`Claude Chat Reader: spd-say error (${e.message}). Is speech-dispatcher installed?`);
-    if (current === child) { current = null; setSpeaking(statusItem, false); }
+    stopSpeaking(); setSpeaking(statusItem, false);
   });
-  child.on('close', () => { if (current === child) { current = null; setSpeaking(statusItem, false); } });
+  child.on('close', () => { if (current.includes(child)) { current = []; setSpeaking(statusItem, false); } });
+}
+
+function speak(text, statusItem) {
+  stopSpeaking();
+  const cfg = vscode.workspace.getConfiguration('claudeChatReader');
+  const engine = cfg.get('engine') || 'auto';
+  const piper = engine === 'spd-say' ? null : resolvePiper(cfg);
+  if (piper) { speakPiper(text, piper, statusItem); return; }
+  if (engine === 'piper') {
+    vscode.window.showErrorMessage(
+      'Claude Chat Reader: Piper binary or voice model not found. Check claudeChatReader.piperPath / piperModel, or set engine to "auto".');
+    return;
+  }
+  speakSpd(text, statusItem);
 }
 
 function setSpeaking(statusItem, on) {

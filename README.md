@@ -33,8 +33,15 @@ Speaks Claude Code's latest reply aloud, ON DEMAND ONLY (never automatic). A
 status-bar speaker button (and `Claude Chat: Read Latest Reply Aloud` /
 `… Read Reply From Session…` / `… Stop Speaking` commands) reads the newest
 assistant message from the workspace's session transcript, strips code blocks,
-file paths, and tool-call noise, and pipes the prose to `spd-say`
-(speech-dispatcher). Rate/voice configurable. Plain JS, no build.
+file paths, and tool-call noise, and speaks the prose with a natural neural
+voice via **Piper** (streamed piper → aplay), falling back to `spd-say` if
+Piper isn't installed. A second click (or Stop command) cancels. Plain JS, no
+build.
+
+Piper setup (one-time): `pipx install piper-tts`, then
+`python3 -m piper.download_voices en_US-lessac-medium` into
+`~/.local/share/piper-voices/`. Other voices from the same command; point
+`claudeChatReader.piperModel` at the `.onnx`.
 
 ## loom-session-tracker
 
