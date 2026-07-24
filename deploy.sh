@@ -43,6 +43,6 @@ EOF
 }
 
 targets=("$@")
-[ ${#targets[@]} -eq 0 ] && targets=(claude-auto-accept claude-session-manager)
+[ ${#targets[@]} -eq 0 ] && targets=(claude-auto-accept claude-session-manager claude-chat-reader)
 for t in "${targets[@]}"; do deploy "$t"; done
 echo "Reload VSCodium to pick up changes."

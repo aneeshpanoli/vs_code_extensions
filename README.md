@@ -27,6 +27,15 @@ shells after startup and reattaches the most recent real sessions via
 in `~/.claude/projects/`, including sessions hidden from the built-in picker.
 Plain JS, no build.
 
+## claude-chat-reader
+
+Speaks Claude Code's latest reply aloud, ON DEMAND ONLY (never automatic). A
+status-bar speaker button (and `Claude Chat: Read Latest Reply Aloud` /
+`… Read Reply From Session…` / `… Stop Speaking` commands) reads the newest
+assistant message from the workspace's session transcript, strips code blocks,
+file paths, and tool-call noise, and pipes the prose to `spd-say`
+(speech-dispatcher). Rate/voice configurable. Plain JS, no build.
+
 ## loom-session-tracker
 
 Loom-orchestration specific: keeps a live per-project map of Loom session

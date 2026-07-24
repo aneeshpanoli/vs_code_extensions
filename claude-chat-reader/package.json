@@ -1,0 +1,48 @@
+{
+  "name": "claude-chat-reader",
+  "displayName": "Claude Chat Reader",
+  "description": "Speak Claude Code's latest reply aloud on demand (prose only — skips code, paths, and tool calls). Uses spd-say. Nothing is spoken automatically.",
+  "version": "1.0.0",
+  "publisher": "aneesh",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeChatReader.readLatest",
+        "title": "Claude Chat: Read Latest Reply Aloud",
+        "icon": "$(unmute)"
+      },
+      {
+        "command": "claudeChatReader.readFrom",
+        "title": "Claude Chat: Read Reply From Session…"
+      },
+      {
+        "command": "claudeChatReader.stop",
+        "title": "Claude Chat: Stop Speaking",
+        "icon": "$(mute)"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Chat Reader",
+      "properties": {
+        "claudeChatReader.rate": {
+          "type": "number",
+          "default": 10,
+          "minimum": -100,
+          "maximum": 100,
+          "description": "Speech rate passed to spd-say (-100 slowest … 100 fastest)."
+        },
+        "claudeChatReader.voice": {
+          "type": "string",
+          "default": "",
+          "description": "spd-say voice type (e.g. male1, female1). Empty = speech-dispatcher default."
+        }
+      }
+    }
+  }
+}
