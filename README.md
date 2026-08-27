@@ -29,14 +29,19 @@ Plain JS, no build.
 
 ## claude-chat-reader
 
-Speaks Claude Code's latest reply aloud, ON DEMAND ONLY (never automatic). A
-status-bar speaker button (and `Claude Chat: Read Latest Reply Aloud` /
-`… Read Reply From Session…` / `… Stop Speaking` commands) reads the newest
-assistant message from the workspace's session transcript, strips code blocks,
-file paths, and tool-call noise, and speaks the prose with a natural neural
-voice via **Piper** (streamed piper → aplay), falling back to `spd-say` if
-Piper isn't installed. A second click (or Stop command) cancels. Plain JS, no
-build.
+Speaks Claude Code replies aloud (never automatic — you trigger it). Two modes:
+
+- **Follow toggle** (status-bar button): once on, each *new* reply is spoken as
+  it lands — queued so they never overlap, and history is never re-read (it
+  baselines at the current end of the transcript and tails only new lines).
+  Click again to stop.
+- **One-shot**: `Claude Chat: Read Latest Reply Aloud (once)` and
+  `… Read Reply From Session…`.
+
+Prose only: code blocks, file paths, and tool-call noise are stripped. Speech
+uses a natural neural voice via **Piper** (streamed piper → aplay), falling
+back to `spd-say` if Piper isn't installed. `… Stop Speaking` clears the queue.
+Plain JS, no build.
 
 Piper setup (one-time): `pipx install piper-tts`, then
 `python3 -m piper.download_voices en_US-lessac-medium` into

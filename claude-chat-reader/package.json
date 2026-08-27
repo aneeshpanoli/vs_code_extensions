@@ -2,7 +2,7 @@
   "name": "claude-chat-reader",
   "displayName": "Claude Chat Reader",
   "description": "Speak Claude Code's latest reply aloud on demand (prose only — skips code, paths, and tool calls). Natural neural voice via Piper, falling back to spd-say. Nothing is spoken automatically.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "aneesh",
   "engines": {
     "vscode": "^1.80.0"
@@ -13,8 +13,17 @@
   "contributes": {
     "commands": [
       {
+        "command": "claudeChatReader.follow",
+        "title": "Claude Chat: Follow — Read New Replies Aloud",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "claudeChatReader.stopFollow",
+        "title": "Claude Chat: Stop Following"
+      },
+      {
         "command": "claudeChatReader.readLatest",
-        "title": "Claude Chat: Read Latest Reply Aloud",
+        "title": "Claude Chat: Read Latest Reply Aloud (once)",
         "icon": "$(unmute)"
       },
       {
