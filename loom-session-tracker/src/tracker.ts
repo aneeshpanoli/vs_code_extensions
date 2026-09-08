@@ -27,6 +27,7 @@ export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
   private owners = new Map<string, number>();  // orchestrator/PO webviewId -> lastSeen
   private lastOk = 0;
+  private lastTickOk = false;   // did the MOST RECENT tick succeed? (a failed read must not keep claiming "live")
   private lastError = "";
 
   /** repoFilter: when set, ONLY this project's agents are tracked/shown/written — never another
@@ -41,10 +42,13 @@ export class Tracker {
 
     if (frames.length === 0) {
       // FAIL-PROOF: read failed/empty -> keep the model, just age it. Never wipe, never write.
+      // The agents stay, but we can no longer vouch for them, so they render STALE.
+      this.lastTickOk = false;
       this.ageOut();
       return { ok: false, changedRepos: [], liveRoles: this.liveRoles(), error: this.lastError || "no frames" };
     }
     this.lastOk = Date.now();
+    this.lastTickOk = true;
     this.lastError = "";
 
     const r2repo = roleToRepo();
@@ -101,16 +105,21 @@ export class Tracker {
     for (const [wid, seen] of this.owners) if (seen < cutoff) this.owners.delete(wid);
   }
 
+  /** Live = confirmed by the most recent SUCCESSFUL read. After a failed read nothing is "live". */
+  private livenessOf(lastSeen: number): Liveness {
+    return this.lastTickOk && this.lastOk > 0 && lastSeen >= this.lastOk ? "live" : "stale";
+  }
+
   private liveRoles(): string[] {
     return Array.from(this.agents.values())
-      .filter((a) => a.lastSeen >= this.lastOk && this.lastOk > 0)
+      .filter((a) => this.livenessOf(a.lastSeen) === "live")
       .map((a) => a.role).sort();
   }
 
   /** Snapshot for the UI: agents grouped, each tagged live (seen in the last good tick) or stale. */
   view(): AgentView[] {
     return Array.from(this.agents.values())
-      .map((a) => ({ ...a, liveness: (a.lastSeen >= this.lastOk && this.lastOk > 0 ? "live" : "stale") as Liveness }))
+      .map((a) => ({ ...a, liveness: this.livenessOf(a.lastSeen) }))
       .sort((x, y) => (x.repo === y.repo ? x.role.localeCompare(y.role) : x.repo.localeCompare(y.repo)));
   }
 
@@ -119,7 +128,7 @@ export class Tracker {
     return Array.from(this.owners.entries())
       .map(([webviewId, lastSeen]) => ({
         webviewId, lastSeen,
-        liveness: (lastSeen >= this.lastOk && this.lastOk > 0 ? "live" : "stale") as Liveness,
+        liveness: this.livenessOf(lastSeen),
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }

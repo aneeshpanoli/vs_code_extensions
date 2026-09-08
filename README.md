@@ -53,7 +53,15 @@ Piper setup (one-time): `pipx install piper-tts`, then
 Loom-orchestration specific: keeps a live per-project map of Loom session
 agents (role ↔ webviewId) fresh over CDP, with spawn / retire / lock / delete
 commands in a dedicated activity-bar view. Read-only polling; destructive
-actions are manual-only. TypeScript — build with `npm install && npx tsc -p .`.
+actions are manual-only. Tag one role as orchestrator and it is auto-notified
+(via `loom_cdp inject`) whenever a worker finishes; that state lives on the bus,
+so it survives IDE restarts.
+
+TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
+(optionally with a name filter, e.g. `./test.sh notifier`) — 74 checks across 10
+files, zero dependencies, run under VSCodium's bundled node since this machine
+has no npm. The runner forces `HOME` to a throwaway directory, so tests can
+never touch the real `~/.claude/loom` bus.
 
 ## Installing (no marketplace)
 
