@@ -10,6 +10,9 @@ import WebSocket from "ws";
 
 export interface Frame { webviewId: string | null; url: string; text: string; }
 
+/** Timing overrides. Defaults are the production constants; tests drive the protocol fast. */
+export interface ReadOpts { settleMs?: number; hardCapMs?: number; }
+
 const HARD_CAP_MS = 20000;   // absolute wall clock for one readFrames() — it can never exceed this
 const SETTLE_MS = 1800;      // stop early after this much silence (quiet roster returns fast)
 const RECV_IDLE_MS = 1200;   // per-recv idle slice
@@ -61,8 +64,9 @@ const AUTO_ATTACH = {
  * Read every attached frame over ONE browser websocket (recursive auto-attach reaches all windows/OOPIFs).
  * NEVER throws, NEVER hangs (bounded by HARD_CAP_MS). Returns [] on any failure.
  */
-export async function readFrames(host = "127.0.0.1", port = cdpPort()): Promise<Frame[]> {
-  const deadline = Date.now() + HARD_CAP_MS;
+export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: ReadOpts = {}): Promise<Frame[]> {
+  const settleMs = opts.settleMs ?? SETTLE_MS;
+  const deadline = Date.now() + (opts.hardCapMs ?? HARD_CAP_MS);
   let ws: WebSocket | null = null;
   try {
     const ver = await httpJson(host, port, "/json/version", 3000);
@@ -111,11 +115,13 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort()): Promise<
           const sid = msg.params.sessionId; sessions.delete(sid); armed.delete(sid);
         }
       };
+      // Poll finely enough that a short settle window is still observed.
+      const tickMs = Math.max(10, Math.min(150, Math.floor(settleMs / 3)));
       const tick = setInterval(() => {
         const now = Date.now();
         if (now >= deadline) return finish();
-        if (wantId === null && now - last >= SETTLE_MS) return finish();
-      }, 150);
+        if (wantId === null && now - last >= settleMs) return finish();
+      }, tickMs);
       let done = false;
       const finish = () => {
         if (done) return; done = true;
