@@ -84,9 +84,17 @@ past `workingWarnThreshold` (default 5). The per-project cap is 3, but no single
 window can see the others, and every session draws on one usage pool.
 
 **Worktree cleanup:** `Loom Sessions: Worktree Cleanup Report` lists every
-worktree with orphaned (no role on the board) and dirty flags. Removal is a
-separate confirmed step, refuses anything dirty or still rostered, never uses
-`--force`, and retains the branch. An unverifiable worktree counts as dirty.
+worktree under `<repo>/.claude/worktrees/` with its branch, orphaned/dirty/live
+flags and unmerged-commit count. Removal deletes only the checked-out directory
+— branches and commits are kept, and each removal is logged with its exact
+restore command in `~/.claude/loom/worktree-removals.json`.
+
+Refused automatically (each one a way git could not give the work back):
+dirty; still on the board; backing a live session; **detached HEAD** (its
+commits are on no branch); **holding gitignored files git cannot restore**
+(`.env`, keys, `*.sqlite`, `*.db`, credentials — `git status --porcelain` does
+not list ignored files, so these read as "clean"); or unverifiable. Never uses
+`--force`, and report-first with a separate confirmation.
 
 **All-projects view:** `Loom Sessions: Toggle All-Projects View` (globe icon)
 switches the window between its own project and every project.
@@ -102,7 +110,7 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 188 checks across 17 files, zero dependencies, run under VSCodium's bundled node since this
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 195 checks across 17 files, zero dependencies, run under VSCodium's bundled node since this
 machine has no npm. Measured coverage (V8, `NODE_V8_COVERAGE=dir ./test.sh`):
 **89.7% of lines**, every module included. The CDP protocol is driven against a
 fake DevTools server (`test/fake-devtools.js`) — HTTP discovery plus a websocket

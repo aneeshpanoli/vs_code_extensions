@@ -242,21 +242,34 @@ export function activate(context: vscode.ExtensionContext) {
       // Worktree hygiene: report first; removal is a separate, confirmed step and never forces.
       vscode.commands.registerCommand("loomSessionTracker.worktreeReport", async () => {
         const root = repoRoot();
-        const found = scanWorktrees(repo, root);
+        const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
+        const found = scanWorktrees(repo, root, live);
         if (!found.length) { vscode.window.showInformationMessage("Loom: no worktrees found for this project."); return; }
         const orphans = found.filter((w) => w.orphaned);
-        const removable = orphans.filter((w) => !w.dirty);
+        // Offer ONLY what every safeguard clears: orphaned, clean, on a branch, no precious
+        // ignored files, and not backing a live session.
+        const removable = orphans.filter((w) => !w.dirty && w.branch && !w.risky.length && !w.live);
+        const detached = found.filter((w) => !w.branch);
+        const risky = found.filter((w) => w.risky.length);
         const lines = [
           `${found.length} worktree(s); ${orphans.length} orphaned (no role on the board); ` +
           `${removable.length} of those are clean and removable.`, "",
-          ...found.map((w) => `${w.orphaned ? "orphan " : "on-board"} ${w.dirty ? "DIRTY" : "clean"}  ${w.role}`),
+          ...(detached.length ? [`${detached.length} on a DETACHED HEAD — refused, their commits are on no branch.`] : []),
+          ...(risky.length ? [`${risky.length} hold gitignored files git cannot restore (.env/keys/db) — refused.`] : []),
+          "",
+          ...found.map((w) => `${w.orphaned ? "orphan " : "on-board"} ${w.dirty ? "DIRTY" : "clean"}` +
+            `${w.live ? " LIVE" : ""}${w.risky.length ? " RISKY" : ""}` +
+            `${w.ahead ? ` +${w.ahead}` : ""}  ${w.branch || "DETACHED"}  ${w.role}`),
         ];
         const action = removable.length ? `Remove ${removable.length} orphaned clean worktree(s)` : undefined;
         const choice = await vscode.window.showInformationMessage(lines.join("\n"), { modal: true },
           ...(action ? [action] : []));
         if (!action || choice !== action || !root) return;
         const confirm = await vscode.window.showWarningMessage(
-          `Remove ${removable.length} worktree(s)? Branches and commits are retained; dirty and on-board ones are refused.`,
+          `Remove ${removable.length} worktree(s)?\n\nOnly the checked-out directory is deleted. Every branch and ` +
+          `commit is kept, and each removal is logged with its restore command in ` +
+          `~/.claude/loom/worktree-removals.json.\n\nRefused automatically: dirty, still-rostered, live, ` +
+          `detached-HEAD, or holding gitignored files git cannot restore.`,
           { modal: true }, "Remove");
         if (confirm !== "Remove") return;
         const notes = removable.map((w) => removeWorktree(root, w).note);

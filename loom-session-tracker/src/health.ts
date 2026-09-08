@@ -126,36 +126,112 @@ export function readWorking(): WorkingCount | null {
 }
 
 // ── worktree hygiene ────────────────────────────────────────────────────────────────────────
-export interface WorktreeFinding { role: string; path: string; orphaned: boolean; dirty: boolean; }
+/** Gitignored names that are NOT rebuildable — losing them is real damage, not a rebuild. */
+export const RISKY_IGNORED = /(^|\/)\.env|\.key$|\.pem$|secrets?|\.sqlite3?$|\.db$|credentials/i;
 
-/** Every worktree under <repoRoot>/.claude/worktrees, tagged orphaned (no board role) and dirty. */
-export function scanWorktrees(repo: string | null, repoRoot: string | null): WorktreeFinding[] {
+export interface WorktreeFinding {
+  role: string; path: string; orphaned: boolean; dirty: boolean;
+  /** Gitignored-but-precious files living here. `git status --porcelain` does NOT list ignored
+   *  files, so without this a worktree holding a .env reads as perfectly clean. Measured live:
+   *  funisland/adapt-health-fixes is porcelain-clean and holds one. */
+  risky: string[];
+  /** Commits on this branch not reachable from the repo's default branch, or null if unknown. */
+  ahead: number | null;
+  /** The role still has a live session — removing the directory out from under it would break it. */
+  live: boolean;
+  /** The branch it is checked out on, or null when HEAD is DETACHED. Not always `worktree-<role>`:
+   *  measured live, funisland/act sits on `act-module`. Null is the dangerous case — removing a
+   *  detached worktree leaves its commits unreferenced (reflog only, until gc), so it is refused. */
+  branch: string | null;
+}
+
+function git(cwd: string, args: string[], timeout = 5000): string | null {
+  try {
+    return execFileSync("git", ["-C", cwd, ...args],
+      { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch { return null; }
+}
+
+/** The repo's default branch, for the ahead-count. */
+function defaultBranch(repoRoot: string): string | null {
+  const head = git(repoRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (head) return head.replace(/^origin\//, "");
+  for (const b of ["main", "master"]) if (git(repoRoot, ["rev-parse", "--verify", "--quiet", b])) return b;
+  return null;
+}
+
+/** Every worktree under <repoRoot>/.claude/worktrees, with everything needed to refuse safely. */
+export function scanWorktrees(repo: string | null, repoRoot: string | null,
+                              liveRoles: Set<string> = new Set()): WorktreeFinding[] {
   if (!repo || !repoRoot) return [];
   const dir = path.join(repoRoot, ".claude", "worktrees");
   let names: string[] = [];
   try { names = fs.readdirSync(dir).filter((n) => { try { return fs.statSync(path.join(dir, n)).isDirectory(); } catch { return false; } }); }
   catch { return []; }
   const roster = new Set(boardRoles(repo));
+  const base = defaultBranch(repoRoot);
   return names.map((role) => {
     const p = path.join(dir, role);
-    let dirty = true;                       // unreadable counts as dirty: never remove what we cannot verify
-    try {
-      dirty = execFileSync("git", ["-C", p, "status", "--porcelain"],
-        { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }).trim().length > 0;
-    } catch { /* keep dirty = true */ }
-    return { role, path: p, orphaned: !roster.has(role), dirty };
+    const porcelain = git(p, ["status", "--porcelain"]);
+    const dirty = porcelain === null ? true : porcelain.length > 0;   // unverifiable counts as dirty
+    const branch = git(p, ["symbolic-ref", "--short", "HEAD"]) || null;
+    const ignored = (git(p, ["status", "--porcelain", "--ignored"]) || "")
+      .split("\n").filter((l) => l.startsWith("!!")).map((l) => l.slice(3).trim());
+    const risky = ignored.filter((f) => RISKY_IGNORED.test(f));
+    let ahead: number | null = null;
+    if (branch && base) {
+      const n = git(repoRoot, ["rev-list", "--count", `${base}..${branch}`], 10000);
+      ahead = n === null ? null : parseInt(n, 10);
+    }
+    return { role, path: p, orphaned: !roster.has(role), dirty, risky, ahead, live: liveRoles.has(role), branch };
   }).sort((a, b) => a.role.localeCompare(b.role));
 }
 
-/** Remove one worktree. Refuses anything dirty or still on the roster; the branch is retained. */
+/**
+ * Remove one worktree. The directory goes; the BRANCH and its commits stay, so it is re-addable
+ * with `git worktree add <path> <branch>`. Refuses anything dirty, still rostered, or DETACHED —
+ * a detached worktree's commits are on no branch, so removing it would strand them.
+ */
 export function removeWorktree(repoRoot: string, f: WorktreeFinding): { ok: boolean; note: string } {
+  // Every refusal below is a way this could destroy something git cannot give back.
   if (f.dirty) return { ok: false, note: `${f.role}: uncommitted work — refused` };
   if (!f.orphaned) return { ok: false, note: `${f.role}: still on the board — refused` };
+  if (f.live) return { ok: false, note: `${f.role}: has a LIVE session — refused (it would lose its working dir)` };
+  if (!f.branch) {
+    return { ok: false, note: `${f.role}: DETACHED HEAD — its commits are on no branch; ` +
+      `removing would strand them. Give it a branch first (git -C <path> switch -c keep-${f.role}).` };
+  }
+  if (f.risky.length) {
+    return { ok: false, note: `${f.role}: holds gitignored files git cannot restore ` +
+      `(${f.risky.slice(0, 3).join(", ")}) — refused` };
+  }
+  const head = git(f.path, ["rev-parse", "HEAD"]);
+  const out = git(repoRoot, ["worktree", "remove", f.path], 15000);
+  if (out === null) return { ok: false, note: `${f.role}: git refused to remove it (locked, or in use)` };
+  logRemoval({ at: new Date().toISOString(), repoRoot, role: f.role, path: f.path,
+               branch: f.branch, head, ahead: f.ahead });
+  return { ok: true, note: `${f.role}: removed — branch ${f.branch} kept` +
+    (f.ahead ? ` (${f.ahead} commit(s) ahead)` : "") +
+    `; restore with: git -C ${repoRoot} worktree add ${f.path} ${f.branch}` };
+}
+
+/** Append-only record of what was removed, so every removal has a written way back. */
+function logRemoval(entry: any): void {
   try {
-    execFileSync("git", ["-C", repoRoot, "worktree", "remove", f.path],
-      { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "pipe"] });
-    return { ok: true, note: `${f.role}: removed (branch worktree-${f.role} retained)` };
-  } catch (e: any) { return { ok: false, note: `${f.role}: ${String(e.message || e).slice(0, 80)}` }; }
+    const f = path.join(LOOM_ROOT, "worktree-removals.json");
+    let log: any[] = [];
+    try { const j = JSON.parse(fs.readFileSync(f, "utf8")); if (Array.isArray(j)) log = j; } catch { /* new */ }
+    log.push(entry);
+    fs.mkdirSync(LOOM_ROOT, { recursive: true });
+    const tmp = f + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(log.slice(-200), null, 2));
+    fs.renameSync(tmp, f);
+  } catch { /* the removal already happened; a failed log must not throw */ }
+}
+
+export function readRemovalLog(): any[] {
+  try { const j = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, "worktree-removals.json"), "utf8"));
+        return Array.isArray(j) ? j : []; } catch { return []; }
 }
 
 // ── stall alerting (deduped on the bus, like the finish notifier) ────────────────────────────

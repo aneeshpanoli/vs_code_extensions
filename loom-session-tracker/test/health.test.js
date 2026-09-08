@@ -4,7 +4,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { checkHealth, isWorkingLike, countWorking, publishWorking, readWorking,
-        scanWorktrees, removeWorktree, HealthWatcher, KNOWN_STATUSES, DRIFT_HOURS } = load("health.js");
+        scanWorktrees, removeWorktree, readRemovalLog, HealthWatcher, KNOWN_STATUSES, DRIFT_HOURS } = load("health.js");
 
 const HOUR = 3_600_000;
 /** Write a status.json with a controlled file mtime. */
@@ -211,4 +211,109 @@ suite("watchdog: the alert reaches the orchestrator via loom_cdp", () => {
       } catch (e) { reject(e); }
     });
   });
+});
+
+// ── safeguards against mangling the git tree ────────────────────────────────
+suite("worktrees: the ACTUAL branch is reported, not an assumed worktree-<role>", () => {
+  if (!haveGit()) return;
+  const { repoRoot, git } = gitRepo();
+  const repo = makeRepo({ roles: {} });
+  const wt = path.join(repoRoot, ".claude", "worktrees", "act");
+  fs.mkdirSync(path.dirname(wt), { recursive: true });
+  git(repoRoot, "worktree", "add", "-q", "-b", "act-module", wt);   // NOT worktree-act
+  const f = scanWorktrees(repo, repoRoot)[0];
+  eq(f.branch, "act-module", "reports the real branch name");
+  const r = removeWorktree(repoRoot, f);
+  ok(r.ok, "removed");
+  match(r.note, /branch act-module kept/, "and names the real branch: " + r.note);
+  match(r.note, /worktree add/, "with the restore command");
+});
+
+suite("worktrees: a DETACHED HEAD worktree is refused — its commits are on no branch", () => {
+  if (!haveGit()) return;
+  const { repoRoot, git } = gitRepo();
+  const repo = makeRepo({ roles: {} });
+  const wt = addWorktree(git, repoRoot, "loose");
+  git(wt, "checkout", "--detach", "-q");
+  const f = scanWorktrees(repo, repoRoot)[0];
+  eq(f.branch, null, "detached -> no branch");
+  const r = removeWorktree(repoRoot, f);
+  eq(r.ok, false, "refused");
+  match(r.note, /DETACHED/, "saying why");
+  match(r.note, /switch -c/, "and how to make it safe");
+  ok(fs.existsSync(wt), "nothing removed");
+});
+
+suite("worktrees: gitignored files git cannot restore block removal", () => {
+  if (!haveGit()) return;
+  // The trap: `git status --porcelain` does NOT list ignored files, so a worktree holding a .env
+  // reads as perfectly clean. Measured live: 7 funisland worktrees hold learning.sqlite.
+  const { repoRoot, git } = gitRepo();
+  fs.writeFileSync(path.join(repoRoot, ".gitignore"), ".env\n*.sqlite\n");
+  git(repoRoot, "add", "-A"); git(repoRoot, "commit", "-qm", "ignore");
+  const repo = makeRepo({ roles: {} });
+  const wt = addWorktree(git, repoRoot, "hassecrets");
+  fs.writeFileSync(path.join(wt, ".env"), "API_KEY=hunter2");
+  const f = scanWorktrees(repo, repoRoot)[0];
+  eq(f.dirty, false, "porcelain says clean — this is exactly the trap");
+  ok(f.risky.includes(".env"), "but the precious ignored file is seen: " + JSON.stringify(f.risky));
+  const r = removeWorktree(repoRoot, f);
+  eq(r.ok, false, "refused");
+  match(r.note, /cannot restore/, "saying why: " + r.note);
+  ok(fs.existsSync(path.join(wt, ".env")), "the .env is still there");
+});
+
+suite("worktrees: rebuildable ignored files do NOT block removal", () => {
+  if (!haveGit()) return;
+  const { repoRoot, git } = gitRepo();
+  fs.writeFileSync(path.join(repoRoot, ".gitignore"), "__pycache__/\nnode_modules/\n");
+  git(repoRoot, "add", "-A"); git(repoRoot, "commit", "-qm", "ignore");
+  const repo = makeRepo({ roles: {} });
+  const wt = addWorktree(git, repoRoot, "buildjunk");
+  fs.mkdirSync(path.join(wt, "__pycache__"), { recursive: true });
+  fs.writeFileSync(path.join(wt, "__pycache__", "x.pyc"), "junk");
+  const f = scanWorktrees(repo, repoRoot)[0];
+  eq(f.risky, [], "caches are not precious");
+  ok(removeWorktree(repoRoot, f).ok, "so removal proceeds");
+});
+
+suite("worktrees: a worktree backing a LIVE session is refused", () => {
+  if (!haveGit()) return;
+  const { repoRoot, git } = gitRepo();
+  const repo = makeRepo({ roles: {} });          // off the board, so otherwise removable
+  addWorktree(git, repoRoot, "busyrole");
+  const f = scanWorktrees(repo, repoRoot, new Set(["busyrole"]))[0];
+  eq(f.live, true, "the tracker says a session is live here");
+  const r = removeWorktree(repoRoot, f);
+  eq(r.ok, false, "refused — it would pull the directory out from under a running session");
+  match(r.note, /LIVE session/, "saying why");
+});
+
+suite("worktrees: unmerged commits are counted so you see what the branch holds", () => {
+  if (!haveGit()) return;
+  const { repoRoot, git } = gitRepo();
+  const repo = makeRepo({ roles: {} });
+  const wt = addWorktree(git, repoRoot, "hascommits");
+  fs.writeFileSync(path.join(wt, "work.txt"), "banked");
+  git(wt, "add", "-A"); git(wt, "commit", "-qm", "role work");
+  const f = scanWorktrees(repo, repoRoot)[0];
+  eq(f.ahead, 1, "one commit not on the default branch");
+  match(removeWorktree(repoRoot, f).note, /1 commit\(s\) ahead/, "and the removal note says so");
+});
+
+suite("worktrees: every removal is logged with a way back", () => {
+  if (!haveGit()) return;
+  const { repoRoot, git } = gitRepo();
+  const repo = makeRepo({ roles: {} });
+  addWorktree(git, repoRoot, "logged");
+  const f = scanWorktrees(repo, repoRoot)[0];
+  const before = readRemovalLog().length;
+  ok(removeWorktree(repoRoot, f).ok, "removed");
+  const log = readRemovalLog();
+  eq(log.length, before + 1, "one entry appended");
+  const e = log[log.length - 1];
+  eq(e.role, "logged", "role recorded");
+  eq(e.branch, "worktree-logged", "branch recorded");
+  ok(e.head && e.head.length >= 7, "and the exact commit it was on: " + e.head);
+  ok(e.path && e.at, "with its path and timestamp");
 });
