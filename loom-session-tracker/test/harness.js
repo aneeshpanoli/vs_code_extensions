@@ -88,7 +88,7 @@ function suite(name, fn) { suites.push({ name, fn }); }
 const LOOM = path.join(home, ".claude", "loom");
 let seq = 0;
 /** A fresh, uniquely-named project bus. Returns its repo id. */
-function makeRepo(board, name) {
+function makeRepo(board, name) {   // name: fixed repo id when a test needs one
   const repo = name || `t${++seq}_${Date.now().toString(36)}`;
   fs.mkdirSync(path.join(LOOM, repo), { recursive: true });
   if (board) fs.writeFileSync(path.join(LOOM, repo, "board.json"), JSON.stringify(board, null, 2));

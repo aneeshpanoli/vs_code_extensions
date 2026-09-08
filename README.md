@@ -71,6 +71,16 @@ the banner *clears* — an exact signal — not on the UI's coarse ETA, and only
 after it stays clear for consecutive ticks. Pending resumes survive an IDE
 restart. Toggle with `autoResumeAfterLimit`; customise `resumeMessage`.
 
+**Startup digest** ("what needs me?"): on activation, and via the checklist
+icon / `Loom Sessions: What Needs Me?`, it summarises responses sitting
+unpicked-up (outbox newer than inbox), roles blocked on a decision, roles
+blocked by a usage limit, workers on the premium model, unbanked worktree
+changes, roles whose session isn't open, and whether an orchestrator is tagged
+at all. Offers one-click **Tag orchestrator** and **Reopen sessions** (a
+multi-select; never automatic). Also reports hygiene across every bus — long-dead
+buses and role names claimed by more than one project. Settings:
+`showStartupDigest`, `staleBusDays`, `digestUnbankedCheck`.
+
 **Model policy:** the top pricing tier ($10/$50 per MTok — Fable/Mythos) is
 reserved for the orchestrator. Each role's model is read from its composer
 footer; a worker found on a premium model is switched back with
@@ -82,7 +92,7 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 134 checks across 14
+(optionally with a name filter, e.g. `./test.sh notifier`) — 146 checks across 15
 files, zero dependencies, run under VSCodium's bundled node since this machine
 has no npm. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.

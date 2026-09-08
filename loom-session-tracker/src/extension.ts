@@ -16,6 +16,7 @@ import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
+import { buildDigest, renderDigest, Digest } from "./digest";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -151,6 +152,52 @@ export function activate(context: vscode.ExtensionContext) {
       context.subscriptions.push({ dispose: () => timer && clearInterval(timer) });
     };
 
+    // ── startup digest: what needs the user, computed once at activation and on demand ──────
+    const computeDigest = (): Digest | null => buildDigest(repo, {
+      liveRoles: new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role)),
+      limited: limitWatcher.limitedRoles(),
+      premiumPending: modelPolicy.pending(),
+      repoRoot: repoRoot(),
+      staleDays: Number(cfg().get("staleBusDays", 30)) || 30,
+      checkUnbanked: cfg().get<boolean>("digestUnbankedCheck", true),
+    });
+
+    /** Offer to reopen roles whose session evaporated. Always an explicit click — never automatic. */
+    const reopenMissing = async (d: Digest) => {
+      const picks = await vscode.window.showQuickPick(
+        d.missingSessions.map((m) => ({ label: m.role, description: m.sessionId.slice(0, 8), id: m.sessionId })),
+        { canPickMany: true, placeHolder: "Reopen which role sessions?" });
+      if (!picks || !picks.length) return;
+      for (const p of picks) {
+        try { await vscode.commands.executeCommand("claude-vscode.editor.open", p.id, undefined, undefined); }
+        catch (e: any) { vscode.window.showErrorMessage(`Loom: could not reopen ${p.label}: ${String(e.message || e)}`); }
+      }
+      vscode.window.setStatusBarMessage(`Loom: reopened ${picks.length} session(s).`, 6000);
+    };
+
+    const showDigest = async (force: boolean) => {
+      const d = computeDigest();
+      if (!d) return;
+      debugLog({ digest: renderDigest(d) });
+      if (!force && (!d.actionable || !cfg().get<boolean>("showStartupDigest", true))) return;
+      if (!d.actionable) { vscode.window.showInformationMessage("Loom: nothing needs your attention."); return; }
+      const actions = ["Details"];
+      if (!d.orchestratorTagged) actions.push("Tag orchestrator");
+      if (d.missingSessions.length) actions.push("Reopen sessions");
+      const headline =
+        [d.awaitingPickup.length && `${d.awaitingPickup.length} response(s) waiting`,
+         d.blocked.length && `${d.blocked.length} blocked on a decision`,
+         d.limited.length && `${d.limited.length} usage-limited`,
+         d.premium.length && `${d.premium.length} on the premium model`,
+         d.unbanked.length && `${d.unbanked.length} with unbanked work`,
+         d.missingSessions.length && `${d.missingSessions.length} session(s) not open`,
+         !d.orchestratorTagged && "no orchestrator tagged"].filter(Boolean).join(" · ");
+      const choice = await vscode.window.showInformationMessage(`Loom (${d.repo}): ${headline}`, ...actions);
+      if (choice === "Details") vscode.window.showInformationMessage(renderDigest(d), { modal: true });
+      else if (choice === "Tag orchestrator") await vscode.commands.executeCommand("loomSessionTracker.tagOrchestrator");
+      else if (choice === "Reopen sessions") await reopenMissing(d);
+    };
+
     // a tree node (from a context-menu command) carries {agent:{role,repo}}; fall back to a QuickPick.
     const roleFromArg = async (node: any, pick: () => Thenable<string | undefined>): Promise<string | undefined> =>
       (node && node.agent && node.agent.role) ? node.agent.role
@@ -159,6 +206,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
       vscode.commands.registerCommand("loomSessionTracker.refresh", runTick),
+      vscode.commands.registerCommand("loomSessionTracker.digest", () => showDigest(true)),
       vscode.commands.registerCommand("loomSessionTracker.status", () => {
         const v = tracker.view();
         const lines = v.map((a) => `${a.liveness === "live" ? "●" : "○"} ${a.repo}/${a.role}  ${a.webviewId.slice(0, 8)}`);
@@ -260,7 +308,8 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.workspace.onDidChangeConfiguration((e) => { if (e.affectsConfiguration("loomSessionTracker.intervalMs")) schedule(); }),
     );
 
-    runTick();     // first pass immediately
+    // First pass immediately, then the startup digest once the roster is known.
+    runTick().then(() => showDigest(false)).catch(() => { /* never break activation */ });
     schedule();    // then on interval
   } catch (e) {
     // activation must never throw
