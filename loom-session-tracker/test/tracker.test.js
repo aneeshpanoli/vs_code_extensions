@@ -132,3 +132,26 @@ suite("tracker: sessionCount is null until the first successful read", async () 
   await withFrames([], () => t.tick());
   eq(t.sessionCount(), null, "no count claimed from a failed read");
 });
+
+suite("tracker: a role blocked by a usage limit is flagged on its agent", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  const t = new Tracker(repo);
+  const blocked = "work" + marker("alpha") + "\nYou've hit your session limit · resets in 2h\nBypass permissions\n";
+  await withFrames([frame("wid-a", blocked)], async () => {
+    await t.tick();
+    const a = t.view()[0];
+    ok(a.limit && a.limit.limited, "agent carries the limit state");
+    eq(a.limit.kind, "session limit", "which limit");
+    eq(a.limit.etaText, "in 2h", "and the UI's eta");
+    ok(t.limitState().get("alpha").limited, "exposed for the resume watcher");
+  });
+});
+
+suite("tracker: an unblocked role reports no limit", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  const t = new Tracker(repo);
+  await withFrames([frame("wid-a", "work" + marker("alpha") + "\nBypass permissions\n")], async () => {
+    await t.tick();
+    eq(t.view()[0].limit, null, "no banner -> no limit");
+  });
+});

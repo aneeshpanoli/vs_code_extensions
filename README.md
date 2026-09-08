@@ -64,8 +64,15 @@ but they share one usage pool, and its own guidance suggests 3-5 in parallel.
 The count is published to `~/.claude/loom/active-sessions.json` so the Loom
 sessions and scripts can read it.
 
+**Usage-limit auto-resume:** when a role is blocked ("You've hit your session
+limit · resets in 2h") the tree shows it paused with the limit and ETA, and the
+role is remembered on the bus (`<repo>/limit-state.json`). The resume fires when
+the banner *clears* — an exact signal — not on the UI's coarse ETA, and only
+after it stays clear for consecutive ticks. Pending resumes survive an IDE
+restart. Toggle with `autoResumeAfterLimit`; customise `resumeMessage`.
+
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 86 checks across 11
+(optionally with a name filter, e.g. `./test.sh notifier`) — 103 checks across 12
 files, zero dependencies, run under VSCodium's bundled node since this machine
 has no npm. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.

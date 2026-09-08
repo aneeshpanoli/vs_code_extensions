@@ -56,12 +56,15 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
     const locked = isLocked(a.repo, a.role);
     const isOrch = getOrchestrator(a.repo)?.role === a.role;
     const it = new vscode.TreeItem(a.role, vscode.TreeItemCollapsibleState.None);
+    const lim = a.limit && a.limit.limited ? a.limit : null;
     it.description = `${isOrch ? "★ orchestrator · " : ""}${locked ? "🔒 " : ""}` +
+      (lim ? `⏸ ${lim.kind}${lim.etaText ? ` · resets ${lim.etaText}` : ""} · ` : "") +
       `${a.liveness === "live" ? "● live" : "○ stale"} · ${a.webviewId.slice(0, 8)}`;
     it.iconPath = new vscode.ThemeIcon(
-      isOrch ? "star-full" : locked ? "lock" : (a.liveness === "live" ? "circle-filled" : "circle-outline"),
-      new vscode.ThemeColor(isOrch ? "charts.orange" : locked ? "charts.yellow" : (a.liveness === "live" ? "charts.green" : "descriptionForeground")));
+      lim ? "debug-pause" : isOrch ? "star-full" : locked ? "lock" : (a.liveness === "live" ? "circle-filled" : "circle-outline"),
+      new vscode.ThemeColor(lim ? "charts.red" : isOrch ? "charts.orange" : locked ? "charts.yellow" : (a.liveness === "live" ? "charts.green" : "descriptionForeground")));
     it.tooltip = `${a.role} @ ${a.repo}` +
+      (lim ? `\n\u23f8 BLOCKED by ${lim.kind}${lim.etaText ? ` (resets ${lim.etaText})` : ""} — auto-resumes when it lifts` : "") +
       `${isOrch ? "  ★ ORCHESTRATOR (notified when workers finish)" : ""}` +
       `${locked ? "  🔒 LOCKED (protected from deletion)" : ""}\n` +
       `webviewId: ${a.webviewId}\nlast seen: ${new Date(a.lastSeen).toLocaleTimeString()}`;

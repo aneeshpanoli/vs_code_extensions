@@ -14,6 +14,7 @@ import { setLock } from "./locks";
 import { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
+import { LimitWatcher } from "./limits";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -42,6 +43,25 @@ export function activate(context: vscode.ExtensionContext) {
       } catch { /* ignore */ }
     };
     const notifier = new Notifier(repo);
+    const limitWatcher = new LimitWatcher(repo);
+    const DEFAULT_RESUME =
+      "[loom-resume] Your usage limit has reset. Pick up where you left off: re-read your inbox and " +
+      "the handoff you were on, continue the work, and keep status.json current.";
+    // Wake any role whose usage limit has lifted. Detection is the banner CLEARING (exact), not the
+    // UI's coarse "resets in 2h" estimate.
+    const runLimitWatcher = () => {
+      if (cfg().get("autoResumeAfterLimit", true) !== true) return;
+      const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
+      for (const ev of limitWatcher.scan(tracker.limitState(), live)) {
+        const msg = String(cfg().get("resumeMessage", "") || DEFAULT_RESUME);
+        vscode.window.showInformationMessage(
+          `Loom: ${ev.role}'s ${ev.kind} has reset (blocked since ${new Date(ev.blockedSince).toLocaleTimeString()}) — resuming it.`);
+        limitWatcher.resume(ev, msg, (ok, note) => {
+          if (!ok) vscode.window.showWarningMessage(
+            `Loom: could not auto-resume ${ev.role} (${note}) — nudge that session by hand.`);
+        });
+      }
+    };
     const runNotifier = () => {
       if (cfg().get("notifyOrchestrator", true) !== true) return;
       for (const ev of notifier.scan()) {
@@ -59,6 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
         const r = await tracker.tick();
         debugLog({ ok: r.ok, error: r.error, liveRoles: r.liveRoles, agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
         runNotifier();
+        runLimitWatcher();
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator
@@ -75,6 +96,14 @@ export function activate(context: vscode.ExtensionContext) {
                   `\nAnthropic caps no session count, but all sessions share ONE usage pool` +
                   ` (it suggests 3-5 in parallel).` +
                   (busy ? `\n\u26a0 above your warn threshold of ${warnAt}` : "") : "") +
+            (() => {
+              const lim = Object.entries(limitWatcher.limitedRoles());
+              return lim.length
+                ? `\n\n\u23f8 LIMITED: ` + lim.map(([role, r]) =>
+                    `${role} (${r.kind}${r.etaText ? ", resets " + r.etaText : ""})`).join(", ") +
+                  `\nthey will be resumed automatically when the limit lifts`
+                : "";
+            })() +
             (r.changedRepos.length ? `\nmap updated: ${r.changedRepos.join(", ")}` : "");
           status.backgroundColor = (total >= MAX_ACTIVE_TOTAL || busy)
             ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;

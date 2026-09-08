@@ -7,9 +7,10 @@ import { readFrames, Frame } from "./cdp";
 import { classify, detectOwner } from "./roles";
 import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings } from "./registry";
 import { countSessions, publishCount, SessionCount } from "./sessions";
+import { detectLimit, LimitInfo } from "./limits";
 
 export type Liveness = "live" | "stale";
-export interface AgentView extends Agent { liveness: Liveness; }
+export interface AgentView extends Agent { liveness: Liveness; limit?: LimitInfo | null; }
 
 /** An ORCHESTRATOR/PO frame. Never a tracked agent (classify() excludes owners so it can never be
  *  retired/deleted) — surfaced separately purely so the UI can show it and let the user tag it. */
@@ -28,6 +29,7 @@ export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
   private owners = new Map<string, number>();  // orchestrator/PO webviewId -> lastSeen
   private lastOk = 0;
+  private limits = new Map<string, LimitInfo | null>();   // role -> usage-limit banner state
   private sessions: SessionCount | null = null;   // simultaneous Claude conversations, editor-wide
   private lastTickOk = false;   // did the MOST RECENT tick succeed? (a failed read must not keep claiming "live")
   private lastError = "";
@@ -63,7 +65,7 @@ export class Tracker {
     // tracker NEVER writes, so a /loom self-binding is durable and can't be clobbered by our own detection cache.
     const authoritative = this.repoFilter ? loadBindings(this.repoFilter) : new Map<string, string>();
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
-    const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string }>();
+    const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string }>();
     const now0 = Date.now();
     for (const f of frames) {
       if (!f.webviewId) continue;
@@ -89,11 +91,15 @@ export class Tracker {
       if (!repo) continue;
       const prev = best.get(role);
       if (!prev || priority > prev.priority || (priority === prev.priority && f.text.length > prev.len))
-        best.set(role, { webviewId: f.webviewId, priority, len: f.text.length, repo });
+        best.set(role, { webviewId: f.webviewId, priority, len: f.text.length, repo, text: f.text });
     }
 
     const now = Date.now();
-    for (const [role, b] of best) this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now });
+    this.limits = new Map();
+    for (const [role, b] of best) {
+      this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now });
+      this.limits.set(role, detectLimit(b.text, now));
+    }
     this.ageOut();
 
     // Editor-wide concurrency: count every Claude conversation panel in the read, not just
@@ -130,7 +136,7 @@ export class Tracker {
   /** Snapshot for the UI: agents grouped, each tagged live (seen in the last good tick) or stale. */
   view(): AgentView[] {
     return Array.from(this.agents.values())
-      .map((a) => ({ ...a, liveness: this.livenessOf(a.lastSeen) }))
+      .map((a) => ({ ...a, liveness: this.livenessOf(a.lastSeen), limit: this.limits.get(a.role) ?? null }))
       .sort((x, y) => (x.repo === y.repo ? x.role.localeCompare(y.role) : x.repo.localeCompare(y.repo)));
   }
 
@@ -146,6 +152,9 @@ export class Tracker {
 
   /** Last measured editor-wide session concurrency (null before the first good read). */
   sessionCount(): SessionCount | null { return this.sessions; }
+
+  /** Usage-limit banner state per role, as of the last successful read. */
+  limitState(): Map<string, LimitInfo | null> { return this.limits; }
 
   status(): { lastOk: number; lastError: string } {
     return { lastOk: this.lastOk, lastError: this.lastError };
