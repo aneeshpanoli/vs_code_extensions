@@ -81,6 +81,9 @@ suite("digest: stays silent when nothing needs the user", async () => {
   const repo = makeRepo({ roles: { alpha: {} } }, "wireD");
   openProject(repo);
   setOrchestrator(repo, "product-owner");
+  // The working count is GLOBAL, and the shared test sandbox holds other suites' busy buses,
+  // so raise the threshold rather than pretend the machine is quiet.
+  vscode._config["loomSessionTracker.workingWarnThreshold"] = 999;
   const off = await activate([frame("wid-a", "work" + marker("alpha") + footer())]);
   try {
     eq(vscode._messages.info.filter((m) => /^Loom \(/.test(m)), [], "no startup nag");

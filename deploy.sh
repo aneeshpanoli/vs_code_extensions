@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy extensions from this repo into VSCodium (~/.vscode-oss/extensions).
-# Usage: ./deploy.sh [claude-auto-accept|claude-session-manager|loom-session-tracker ...]
+# Usage: ./deploy.sh [claude-auto-accept|claude-chat-reader|loom-session-tracker ...]
 # With no args, deploys the two plain-JS extensions. loom-session-tracker needs
 # a compiled out/ (npm install && npx tsc -p .) before deploying.
 set -euo pipefail
@@ -43,6 +43,6 @@ EOF
 }
 
 targets=("$@")
-[ ${#targets[@]} -eq 0 ] && targets=(claude-auto-accept claude-session-manager claude-chat-reader)
+[ ${#targets[@]} -eq 0 ] && targets=(claude-auto-accept claude-chat-reader)
 for t in "${targets[@]}"; do deploy "$t"; done
 echo "Reload VSCodium to pick up changes."

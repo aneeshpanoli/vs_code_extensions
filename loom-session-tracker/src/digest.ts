@@ -16,6 +16,7 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 import { boardRoles, busRepos } from "./registry";
 import { getOrchestrator } from "./orchestrator";
+import { checkHealth, StallFinding, ConformFinding, scanWorktrees, WorktreeFinding, readWorking } from "./health";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 const HOUR_MS = 3_600_000;
@@ -35,6 +36,15 @@ export interface Digest {
   unbanked: RoleNote[];
   /** Roles the board knows, with a session id, that have no live tab right now. */
   missingSessions: { role: string; sessionId: string }[];
+  /** Working-like but no status update for a long time — the notifier can never see these. */
+  stalled: StallFinding[];
+  /** Statuses outside the protocol, and unmaintained updated_at fields. */
+  nonConforming: ConformFinding[];
+  /** Worktrees with no role on the board (removable) — hygiene, reported not counted. */
+  orphanWorktrees: WorktreeFinding[];
+  /** Roles working simultaneously across EVERY project, and the warn threshold. */
+  workingNow: number;
+  workingWarnAt: number;
   orchestratorTagged: boolean;
   /** Hygiene, across every bus: long-dead buses and role names claimed by more than one. */
   staleBuses: { repo: string; days: number }[];
@@ -97,15 +107,26 @@ export interface DigestInput {
   now?: number;
   staleDays?: number;
   checkUnbanked?: boolean;
+  stallMinutes?: number;
+  workingWarnAt?: number;
 }
 
 export function buildDigest(repo: string | null, input: DigestInput): Digest | null {
   if (!repo) return null;
   const now = input.now ?? Date.now();
   const staleDays = input.staleDays ?? 30;
+  const health = checkHealth(repo, { now, stallMinutes: input.stallMinutes });
+  const working = readWorking();
   const d: Digest = {
     repo, awaitingPickup: [], blocked: [], limited: [], premium: [], unbanked: [],
-    missingSessions: [], orchestratorTagged: !!getOrchestrator(repo),
+    missingSessions: [],
+    stalled: health ? health.stalled : [],
+    nonConforming: health ? health.nonConforming : [],
+    orphanWorktrees: scanWorktrees(repo, input.checkUnbanked === false ? null : input.repoRoot)
+      .filter((w) => w.orphaned),
+    workingNow: working ? working.total : 0,
+    workingWarnAt: input.workingWarnAt ?? 5,
+    orchestratorTagged: !!getOrchestrator(repo),
     staleBuses: [], duplicateRoles: [], actionable: 0,
   };
 
@@ -152,7 +173,9 @@ export function buildDigest(repo: string | null, input: DigestInput): Digest | n
   for (const [role, repos] of seen) if (repos.length > 1) d.duplicateRoles.push({ role, repos: repos.sort() });
 
   d.actionable = d.awaitingPickup.length + d.blocked.length + d.limited.length +
-    d.premium.length + d.unbanked.length + d.missingSessions.length + (d.orchestratorTagged ? 0 : 1);
+    d.premium.length + d.unbanked.length + d.missingSessions.length +
+    d.stalled.length + d.nonConforming.length +
+    (d.workingNow > d.workingWarnAt ? 1 : 0) + (d.orchestratorTagged ? 0 : 1);
   return d;
 }
 
@@ -171,12 +194,28 @@ export function renderDigest(d: Digest): string {
   }
   list("Responses waiting to be picked up", d.awaitingPickup);
   list("Blocked on a decision", d.blocked);
+  if (d.stalled.length) {
+    L.push(`Stalled — working but silent (${d.stalled.length}):`);
+    for (const s of d.stalled) L.push(`   • ${s.role} — "${s.status}" for ${s.staleHours.toFixed(1)}h with no status update`);
+  }
+  if (d.nonConforming.length) {
+    L.push(`Protocol problems (${d.nonConforming.length}):`);
+    for (const c of d.nonConforming) L.push(`   • ${c.role} — ${c.issue}`);
+  }
+  if (d.workingNow > d.workingWarnAt) {
+    L.push(`⚠ ${d.workingNow} roles are working simultaneously across all projects ` +
+      `(threshold ${d.workingWarnAt}). They share ONE usage pool — this is how limits get hit.`);
+  }
   list("Blocked by a usage limit", d.limited);
   list("Workers on the orchestrator-only model", d.premium);
   list("Unbanked work in a worktree", d.unbanked);
   if (d.missingSessions.length) {
     L.push(`Roles with no live session (${d.missingSessions.length}):`);
     for (const m of d.missingSessions) L.push(`   • ${m.role} — ${m.sessionId.slice(0, 8)}`);
+  }
+  if (d.orphanWorktrees.length) {
+    L.push(`Orphaned worktrees (${d.orphanWorktrees.length}): ` +
+      d.orphanWorktrees.map((w) => w.role + (w.dirty ? " (dirty)" : "")).join(", "));
   }
   if (d.staleBuses.length) {
     L.push(`Stale buses (${d.staleBuses.length}): ` + d.staleBuses.map((s) => `${s.repo} (${s.days}d)`).join(", "));

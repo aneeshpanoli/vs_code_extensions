@@ -40,6 +40,14 @@ export class Tracker {
    *  project's info in this window. null = track all (e.g. a windowless standalone run). */
   constructor(private repoFilter: string | null = null) {}
 
+  /** Switch between this project only and every project. Clears the model so nothing leaks across. */
+  setFilter(repo: string | null): void {
+    if (repo === this.repoFilter) return;
+    this.repoFilter = repo;
+    this.agents.clear(); this.owners.clear(); this.limits.clear(); this.models.clear();
+  }
+  filter(): string | null { return this.repoFilter; }
+
   /** One refresh. Never throws. */
   async tick(): Promise<TickResult> {
     let frames: Frame[] = [];

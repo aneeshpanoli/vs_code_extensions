@@ -1,4 +1,4 @@
-const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, home } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, home } = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -157,4 +157,36 @@ suite("digest: the render lists every category it found", () => {
                         /no live session/i, /No orchestrator tagged/]) {
     match(text, expect, "render includes " + expect);
   }
+});
+
+suite("digest: stalled roles and protocol problems are actionable", () => {
+  const repo = makeRepo({ roles: { stuck: {}, odd: {} } });
+  setOrchestrator(repo, "po");
+  const old = (T0 - 5 * HOUR) / 1000;
+  writeJson(busPath(repo, "stuck", "status.json"), { status: "working", current: "H-1" });
+  fs.utimesSync(busPath(repo, "stuck", "status.json"), old, old);
+  writeJson(busPath(repo, "odd", "status.json"), { status: "active" });
+  const d = buildDigest(repo, base({ stallMinutes: 45 }));
+  eq(d.stalled.map((s) => s.role), ["stuck"], "the silent worker");
+  eq(d.nonConforming.map((c) => c.role), ["odd"], "the off-protocol status");
+  ok(d.actionable >= 2, "both count as work for the user");
+  const text = renderDigest(d);
+  match(text, /Stalled — working but silent/, "rendered");
+  match(text, /Protocol problems/, "and the conformance section");
+});
+
+suite("digest: too many roles working at once is called out", () => {
+  const repo = makeRepo({ roles: { w: {} } });
+  setOrchestrator(repo, "po");
+  const { countWorking, publishWorking } = load("health.js");
+  // make several roles working across projects, then publish the shared count
+  const other = makeRepo({ roles: { a: {}, b: {}, c: {}, d: {}, e: {}, f: {} } }, "busyBus");
+  for (const r of ["a", "b", "c", "d", "e", "f"]) writeJson(busPath(other, r, "status.json"), { status: "working" });
+  publishWorking(countWorking());
+  const d = buildDigest(repo, base({ workingWarnAt: 5 }));
+  ok(d.workingNow >= 6, "counted globally: " + d.workingNow);
+  match(renderDigest(d), /working simultaneously across all projects/, "warned");
+  match(renderDigest(d), /ONE usage pool/, "explaining why it matters");
+  const under = buildDigest(repo, base({ workingWarnAt: 99 }));
+  ok(!/working simultaneously/.test(renderDigest(under)), "silent under the threshold");
 });

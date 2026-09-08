@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -86,6 +86,16 @@
         "command": "loomSessionTracker.digest",
         "title": "Loom Sessions: What Needs Me? (startup digest)",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "loomSessionTracker.toggleAllProjects",
+        "title": "Loom Sessions: Toggle All-Projects View",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "loomSessionTracker.worktreeReport",
+        "title": "Loom Sessions: Worktree Cleanup Report",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -114,6 +124,11 @@
           "command": "loomSessionTracker.digest",
           "when": "view == loomSessions",
           "group": "navigation@5"
+        },
+        {
+          "command": "loomSessionTracker.toggleAllProjects",
+          "when": "view == loomSessions",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
@@ -247,6 +262,28 @@
           "type": "boolean",
           "default": true,
           "description": "Include a git status check of each role's worktree in the digest (runs at startup and on demand, not every tick)."
+        },
+        "loomSessionTracker.stallWatchdog": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn (and tell the orchestrator) when a role has been 'working' with no status update for stallMinutes. The finish notifier only sees working -> idle/blocked, so a stalled role is otherwise invisible."
+        },
+        "loomSessionTracker.stallMinutes": {
+          "type": "number",
+          "default": 45,
+          "minimum": 5,
+          "description": "How long a working role may go without updating status.json before it is treated as stalled."
+        },
+        "loomSessionTracker.workingWarnThreshold": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "Warn in the digest when this many roles are working simultaneously across ALL projects. They share one usage pool; Anthropic suggests 3-5 in parallel."
+        },
+        "loomSessionTracker.showAllProjects": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show every project's roles in this window instead of only this project's."
         }
       }
     }

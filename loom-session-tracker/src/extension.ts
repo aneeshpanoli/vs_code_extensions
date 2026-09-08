@@ -17,6 +17,7 @@ import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
+import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -47,6 +48,21 @@ export function activate(context: vscode.ExtensionContext) {
     const notifier = new Notifier(repo);
     const limitWatcher = new LimitWatcher(repo);
     const modelPolicy = new ModelPolicy(repo);
+    const healthWatcher = new HealthWatcher(repo);
+    // Roles that go `working` and never come back are invisible to the finish notifier, so watch
+    // for them explicitly; and publish the cross-project working count that no single window sees.
+    const runHealth = () => {
+      const working = countWorking();
+      publishWorking(working);
+      if (cfg().get<boolean>("stallWatchdog", true) !== true) return;
+      const report = checkHealth(repo, { stallMinutes: Number(cfg().get("stallMinutes", 45)) || 45 });
+      const orch = repo ? getOrchestrator(repo) : null;
+      for (const ev of healthWatcher.scan(report)) {
+        vscode.window.showWarningMessage(
+          `Loom: ${ev.role} has been "${ev.status}" for ${ev.staleHours.toFixed(1)}h with no status update — possibly stuck.`);
+        if (orch) healthWatcher.alert(ev, orch.role, () => { /* logged to stall-debug.json */ });
+      }
+    };
     // Keep the expensive tier for the orchestrator only: workers found on a premium model get
     // switched back with `/model <default>`, the same way `/loom <role>` binds a session.
     const runModelPolicy = () => {
@@ -100,11 +116,16 @@ export function activate(context: vscode.ExtensionContext) {
 
     const runTick = async () => {
       try {
+        // One project, or all of them — the window can switch without reloading.
+        const showAll = cfg().get<boolean>("showAllProjects", false) === true;
+        tracker.setFilter(showAll ? null : repo);
+        tree.setRepo(showAll ? null : repo);
         const r = await tracker.tick();
         debugLog({ ok: r.ok, error: r.error, liveRoles: r.liveRoles, agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
         runNotifier();
         runLimitWatcher();
         runModelPolicy();
+        runHealth();
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator
@@ -159,6 +180,8 @@ export function activate(context: vscode.ExtensionContext) {
       premiumPending: modelPolicy.pending(),
       repoRoot: repoRoot(),
       staleDays: Number(cfg().get("staleBusDays", 30)) || 30,
+      stallMinutes: Number(cfg().get("stallMinutes", 45)) || 45,
+      workingWarnAt: Number(cfg().get("workingWarnThreshold", 5)) || 5,
       checkUnbanked: cfg().get<boolean>("digestUnbankedCheck", true),
     });
 
@@ -207,6 +230,39 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand("loomSessionTracker.refresh", runTick),
       vscode.commands.registerCommand("loomSessionTracker.digest", () => showDigest(true)),
+      // Cross-project view: show every project's roles in this window, or just this one.
+      vscode.commands.registerCommand("loomSessionTracker.toggleAllProjects", async () => {
+        const now = cfg().get<boolean>("showAllProjects", false) === true;
+        await vscode.workspace.getConfiguration("loomSessionTracker")
+          .update("showAllProjects", !now, vscode.ConfigurationTarget.Global);
+        vscode.window.setStatusBarMessage(
+          `Loom: showing ${!now ? "ALL projects" : "only " + (repo || "this window")}.`, 5000);
+        await runTick();
+      }),
+      // Worktree hygiene: report first; removal is a separate, confirmed step and never forces.
+      vscode.commands.registerCommand("loomSessionTracker.worktreeReport", async () => {
+        const root = repoRoot();
+        const found = scanWorktrees(repo, root);
+        if (!found.length) { vscode.window.showInformationMessage("Loom: no worktrees found for this project."); return; }
+        const orphans = found.filter((w) => w.orphaned);
+        const removable = orphans.filter((w) => !w.dirty);
+        const lines = [
+          `${found.length} worktree(s); ${orphans.length} orphaned (no role on the board); ` +
+          `${removable.length} of those are clean and removable.`, "",
+          ...found.map((w) => `${w.orphaned ? "orphan " : "on-board"} ${w.dirty ? "DIRTY" : "clean"}  ${w.role}`),
+        ];
+        const action = removable.length ? `Remove ${removable.length} orphaned clean worktree(s)` : undefined;
+        const choice = await vscode.window.showInformationMessage(lines.join("\n"), { modal: true },
+          ...(action ? [action] : []));
+        if (!action || choice !== action || !root) return;
+        const confirm = await vscode.window.showWarningMessage(
+          `Remove ${removable.length} worktree(s)? Branches and commits are retained; dirty and on-board ones are refused.`,
+          { modal: true }, "Remove");
+        if (confirm !== "Remove") return;
+        const notes = removable.map((w) => removeWorktree(root, w).note);
+        vscode.window.showInformationMessage("Loom worktree cleanup:\n" + notes.join("\n"), { modal: true });
+        await runTick();
+      }),
       vscode.commands.registerCommand("loomSessionTracker.status", () => {
         const v = tracker.view();
         const lines = v.map((a) => `${a.liveness === "live" ? "●" : "○"} ${a.repo}/${a.role}  ${a.webviewId.slice(0, 8)}`);

@@ -168,3 +168,22 @@ suite("tracker: each role's model is read from its footer", async () => {
     eq(t.modelState().get("alpha").model, "Fable 5", "exposed for the policy check");
   });
 });
+
+suite("tracker: the filter can switch between one project and all of them", async () => {
+  const mine = makeRepo({ roles: { minerole: {} } });
+  const theirs = makeRepo({ roles: { theirrole: {} } });
+  const t = new Tracker(mine);
+  const frames = [frame("wid-1", "x" + marker("minerole")), frame("wid-2", "y" + marker("theirrole"))];
+  await withFrames(frames, async () => {
+    await t.tick();
+    eq(t.view().map((a) => a.role), ["minerole"], "scoped to this project");
+    t.setFilter(null);
+    eq(t.view(), [], "switching clears the model so nothing leaks across");
+    await t.tick();
+    eq(t.view().map((a) => a.role).sort(), ["minerole", "theirrole"], "now every project's roles");
+    eq(t.filter(), null, "and it reports the current filter");
+    t.setFilter(mine);
+    await t.tick();
+    eq(t.view().map((a) => a.role), ["minerole"], "and back again");
+  });
+});

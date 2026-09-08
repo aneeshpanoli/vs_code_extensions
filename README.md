@@ -16,17 +16,6 @@ permission chain on every startup:
 
 Status-bar toggle: `✓ Claude: Auto-Accept` ⇄ `🛡 Claude: Ask`. Plain JS, no build.
 
-## claude-session-manager
-
-Works around a Claude Code extension bug (verified in v2.1.204): its
-`deserializeWebviewPanel` drops the sessionId, so every Claude tab restored on
-window reopen is a blank new conversation. This extension closes those blank
-shells after startup and reattaches the most recent real sessions via
-`claude-vscode.editor.open <sessionId>`. Also provides
-`Claude Sessions: Open Session…` — a quick-pick over every on-disk transcript
-in `~/.claude/projects/`, including sessions hidden from the built-in picker.
-Plain JS, no build.
-
 ## claude-chat-reader
 
 Speaks Claude Code replies aloud (never automatic — you trigger it). Two modes:
@@ -81,6 +70,27 @@ multi-select; never automatic). Also reports hygiene across every bus — long-d
 buses and role names claimed by more than one project. Settings:
 `showStartupDigest`, `staleBusDays`, `digestUnbankedCheck`.
 
+**Status health:** the finish notifier only fires on `working -> idle/blocked`,
+so a role that goes `working` and never returns is invisible to it. A stall
+watchdog flags roles working with no `status.json` update for `stallMinutes`
+(default 45) and tells the orchestrator once per stall. It also flags statuses
+outside the protocol (`idle|working|blocked`) — a role sitting in e.g. `active`
+can never trigger a finish notification — and `updated_at` fields that have
+stopped being maintained.
+
+**Global concurrency:** roles working simultaneously across *all* projects are
+counted and published to `~/.claude/loom/working-sessions.json`; the digest warns
+past `workingWarnThreshold` (default 5). The per-project cap is 3, but no single
+window can see the others, and every session draws on one usage pool.
+
+**Worktree cleanup:** `Loom Sessions: Worktree Cleanup Report` lists every
+worktree with orphaned (no role on the board) and dirty flags. Removal is a
+separate confirmed step, refuses anything dirty or still rostered, never uses
+`--force`, and retains the branch. An unverifiable worktree counts as dirty.
+
+**All-projects view:** `Loom Sessions: Toggle All-Projects View` (globe icon)
+switches the window between its own project and every project.
+
 **Model policy:** the top pricing tier ($10/$50 per MTok — Fable/Mythos) is
 reserved for the orchestrator. Each role's model is read from its composer
 footer; a worker found on a premium model is switched back with
@@ -92,8 +102,7 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 169 checks
-across 16 files, zero dependencies, run under VSCodium's bundled node since this
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 188 checks across 17 files, zero dependencies, run under VSCodium's bundled node since this
 machine has no npm. Measured coverage (V8, `NODE_V8_COVERAGE=dir ./test.sh`):
 **89.7% of lines**, every module included. The CDP protocol is driven against a
 fake DevTools server (`test/fake-devtools.js`) — HTTP discovery plus a websocket

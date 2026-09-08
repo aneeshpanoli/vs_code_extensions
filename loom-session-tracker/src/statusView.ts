@@ -21,6 +21,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
 
   constructor(private tracker: Tracker, private repo: string | null = null) {}
 
+  /** Follow the tracker when the window toggles between one project and all of them. */
+  setRepo(repo: string | null): void { this.repo = repo; }
+
   refresh(): void { this._onDidChange.fire(); }
 
   getTreeItem(node: Node): vscode.TreeItem {
