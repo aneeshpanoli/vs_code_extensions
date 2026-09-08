@@ -15,6 +15,7 @@ import { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } from "./orc
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
+import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -44,6 +45,24 @@ export function activate(context: vscode.ExtensionContext) {
     };
     const notifier = new Notifier(repo);
     const limitWatcher = new LimitWatcher(repo);
+    const modelPolicy = new ModelPolicy(repo);
+    // Keep the expensive tier for the orchestrator only: workers found on a premium model get
+    // switched back with `/model <default>`, the same way `/loom <role>` binds a session.
+    const runModelPolicy = () => {
+      if (cfg().get("enforceWorkerModel", true) !== true) return;
+      const premium = (cfg().get("premiumModels", DEFAULT_PREMIUM) as string[]) || DEFAULT_PREMIUM;
+      const target = String(cfg().get("workerModel", "claude-opus-5") || "claude-opus-5");
+      const orch = repo ? getOrchestrator(repo) : null;
+      const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
+      for (const v of modelPolicy.check(tracker.modelState(), orch ? orch.role : null, live, premium)) {
+        vscode.window.showInformationMessage(
+          `Loom: ${v.role} is on ${v.model} (orchestrator-only tier) — switching it to ${target}.`);
+        modelPolicy.enforce(v, target, (ok, note) => {
+          if (!ok) vscode.window.showWarningMessage(
+            `Loom: could not switch ${v.role} off ${v.model} (${note}) — run /model ${target} in that session.`);
+        });
+      }
+    };
     const DEFAULT_RESUME =
       "[loom-resume] Your usage limit has reset. Pick up where you left off: re-read your inbox and " +
       "the handoff you were on, continue the work, and keep status.json current.";
@@ -80,6 +99,7 @@ export function activate(context: vscode.ExtensionContext) {
         debugLog({ ok: r.ok, error: r.error, liveRoles: r.liveRoles, agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
         runNotifier();
         runLimitWatcher();
+        runModelPolicy();
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator

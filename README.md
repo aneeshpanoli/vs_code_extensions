@@ -71,8 +71,16 @@ the banner *clears* — an exact signal — not on the UI's coarse ETA, and only
 after it stays clear for consecutive ticks. Pending resumes survive an IDE
 restart. Toggle with `autoResumeAfterLimit`; customise `resumeMessage`.
 
+**Model policy:** the top pricing tier ($10/$50 per MTok — Fable/Mythos) is
+reserved for the orchestrator. Each role's model is read from its composer
+footer; a worker found on a premium model is switched back with
+`/model <workerModel>` (default `claude-opus-5`), once per drift. The
+orchestrator is exempt twice over: explicitly, and structurally — it is never a
+tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
+`workerModel`, `premiumModels`.
+
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 103 checks across 12
+(optionally with a name filter, e.g. `./test.sh notifier`) — 120 checks across 13
 files, zero dependencies, run under VSCodium's bundled node since this machine
 has no npm. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.

@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -198,6 +198,29 @@
           "type": "string",
           "default": "",
           "description": "Prompt injected to resume a session after its usage limit resets. Empty = the built-in loom-resume message."
+        },
+        "loomSessionTracker.enforceWorkerModel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the most expensive model for the orchestrator only. A worker found on a premium model is switched back with /model <workerModel>."
+        },
+        "loomSessionTracker.workerModel": {
+          "type": "string",
+          "default": "claude-opus-5",
+          "description": "Model id workers are switched to (passed to /model). The orchestrator is exempt."
+        },
+        "loomSessionTracker.premiumModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Fable 5.1",
+            "Fable 5",
+            "Mythos 5.1",
+            "Mythos 5"
+          ],
+          "description": "Display names of the top pricing tier ($10/$50 per MTok) reserved for the orchestrator."
         }
       }
     }

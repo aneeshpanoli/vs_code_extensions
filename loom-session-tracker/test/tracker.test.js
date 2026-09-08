@@ -155,3 +155,16 @@ suite("tracker: an unblocked role reports no limit", async () => {
     eq(t.view()[0].limit, null, "no banner -> no limit");
   });
 });
+
+suite("tracker: each role's model is read from its footer", async () => {
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } });
+  const t = new Tracker(repo);
+  const withFooter = (m, role) => "work" + marker(role) + `\nRemote Control\n${m}\nMedium\nBypass permissions\n`;
+  await withFrames([frame("wid-a", withFooter("Fable 5", "alpha")),
+                    frame("wid-b", withFooter("Opus 5", "beta"))], async () => {
+    await t.tick();
+    const byRole = Object.fromEntries(t.view().map((a) => [a.role, a.model && a.model.model]));
+    eq(byRole, { alpha: "Fable 5", beta: "Opus 5" }, "model reported per role");
+    eq(t.modelState().get("alpha").model, "Fable 5", "exposed for the policy check");
+  });
+});

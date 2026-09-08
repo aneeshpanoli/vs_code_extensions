@@ -59,6 +59,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
     const lim = a.limit && a.limit.limited ? a.limit : null;
     it.description = `${isOrch ? "★ orchestrator · " : ""}${locked ? "🔒 " : ""}` +
       (lim ? `⏸ ${lim.kind}${lim.etaText ? ` · resets ${lim.etaText}` : ""} · ` : "") +
+      (a.model ? `${a.model.model} · ` : "") +
       `${a.liveness === "live" ? "● live" : "○ stale"} · ${a.webviewId.slice(0, 8)}`;
     it.iconPath = new vscode.ThemeIcon(
       lim ? "debug-pause" : isOrch ? "star-full" : locked ? "lock" : (a.liveness === "live" ? "circle-filled" : "circle-outline"),
