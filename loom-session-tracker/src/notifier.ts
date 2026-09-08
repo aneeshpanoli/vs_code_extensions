@@ -19,6 +19,47 @@ const INJECT_TIMEOUT_MS = 60_000;
 
 interface RoleStatus { status: string; current?: string; last_line?: string; updated_at?: string; }
 
+/** What the notifier remembers between ticks — persisted on the bus so it survives an IDE restart
+ *  (a worker that finished while the IDE was closed still gets announced) and so two windows
+ *  watching the same repo can't both announce the same finish. */
+interface NotifyState {
+  prev: Record<string, { status: string; current: string }>;
+  announced: string[];
+  updatedAt?: string;
+}
+
+const ANNOUNCED_CAP = 500;
+
+function stateFile(repo: string): string { return path.join(LOOM_ROOT, repo, "notify-state.json"); }
+
+function loadState(repo: string): NotifyState | null {
+  try {
+    const st = JSON.parse(fs.readFileSync(stateFile(repo), "utf8"));
+    if (st && typeof st === "object" && st.prev && typeof st.prev === "object") {
+      return { prev: st.prev, announced: Array.isArray(st.announced) ? st.announced : [] };
+    }
+  } catch { /* none yet */ }
+  return null;
+}
+
+/** Atomic, change-only, never throws. */
+function saveState(repo: string, st: NotifyState): void {
+  try {
+    const next = JSON.stringify({ ...st, updatedAt: new Date().toISOString() }, null, 2);
+    const f = stateFile(repo);
+    try {
+      const cur = JSON.parse(fs.readFileSync(f, "utf8"));
+      // ignore updatedAt when deciding whether anything actually changed (no churn every tick)
+      if (JSON.stringify({ prev: cur.prev, announced: cur.announced }) ===
+          JSON.stringify({ prev: st.prev, announced: st.announced })) return;
+    } catch { /* missing -> write */ }
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = f + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, next);
+    fs.renameSync(tmp, f);
+  } catch { /* never throw from a tick */ }
+}
+
 export interface FinishEvent {
   repo: string;
   role: string;
@@ -36,41 +77,51 @@ function readStatus(repo: string, role: string): RoleStatus | null {
 }
 
 export class Notifier {
-  // role -> last seen {status,current}; null until the first baseline pass
-  private prev: Map<string, { status: string; current: string }> | null = null;
-  // dedupe: "role|task|status" keys already announced
-  private announced = new Set<string>();
-
   constructor(private repo: string | null) {}
 
-  /** One pass. Returns the finish events detected (already deduped). Never throws. */
+  /**
+   * One pass. Returns the finish events detected (already deduped). Never throws.
+   * State lives on the bus, so the comparison baseline survives an IDE restart: work that
+   * completed while the editor was closed is announced on the first tick after it comes back.
+   * Only a bus that has never been scanned baselines silently.
+   */
   scan(): FinishEvent[] {
     if (!this.repo) return [];
     const orch = getOrchestrator(this.repo);
+    const persisted = loadState(this.repo);
+    const prev = persisted ? new Map(Object.entries(persisted.prev)) : null;
+    const announced = new Set<string>(persisted?.announced ?? []);
+
     const events: FinishEvent[] = [];
-    const cur = new Map<string, { status: string; current: string }>();
+    const cur: Record<string, { status: string; current: string }> = {};
     for (const role of boardRoles(this.repo)) {
       if (orch && role === orch.role) continue;    // never watch the orchestrator itself
       const s = readStatus(this.repo, role);
       if (!s) continue;
-      cur.set(role, { status: s.status, current: String(s.current || "") });
-      const before = this.prev?.get(role);
-      const finished = before && before.status === "working" && s.status !== "working";
-      if (!finished) continue;
-      const task = String(s.current || before!.current || "");
+      cur[role] = { status: s.status, current: String(s.current || "") };
+      // A role back at work clears its old announcements, so its NEXT finish is announced
+      // even if it repeats the same handoff id.
+      if (s.status === "working") {
+        for (const k of Array.from(announced)) if (k.startsWith(role + "|")) announced.delete(k);
+        continue;
+      }
+      const before = prev?.get(role);
+      if (!before || before.status !== "working") continue;   // only working -> done counts
+      const task = String(s.current || before.current || "");
       const key = `${role}|${task}|${s.status}`;
-      if (this.announced.has(key)) continue;
-      this.announced.add(key);
+      if (announced.has(key)) continue;
+      announced.add(key);
       events.push({
         repo: this.repo, role, status: s.status, task,
         lastLine: String(s.last_line || "").slice(0, 160),
       });
     }
-    // Baseline on the very first pass: record states, announce nothing (don't fire for
-    // work that finished before this window existed).
-    const first = this.prev === null;
-    this.prev = cur;
-    return first ? [] : events;
+
+    // Never-scanned bus: record the baseline, announce nothing.
+    const firstEver = prev === null;
+    const trimmed = Array.from(announced).slice(-ANNOUNCED_CAP);
+    saveState(this.repo, { prev: cur, announced: firstEver ? [] : trimmed });
+    return firstEver ? [] : events;
   }
 
   /** Inject a "check the outbox" prompt into the orchestrator's composer. Fire-and-forget. */
