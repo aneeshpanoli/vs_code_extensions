@@ -49,3 +49,23 @@ export function classify(text: string, validRoles: Set<string>): Classification 
   if (purity >= PURITY_MIN || score.size === 1) return { role: dom, purity };
   return { role: null, purity };                          // ambiguous on BOTH signals -> orchestrator/viewer
 }
+
+/**
+ * Is this frame the ORCHESTRATOR/PO session? classify() deliberately returns null for it (so it can
+ * never be a retire/delete target), which also made it invisible in the sidebar — and therefore
+ * impossible to tag. This detector exists ONLY to surface it as a tag candidate. Mirrors
+ * loom_cdp.py's detect_role self-guard: a session that signs itself product-owner, or that quotes
+ * three or more DISTINCT roles' sign-offs (a real worker only ever signs its own).
+ */
+export function detectOwner(text: string): boolean {
+  text = text || "";
+  const marks: string[] = [];
+  LOOMROLE_LINE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = LOOMROLE_LINE_RE.exec(text)) !== null) marks.push(m[1].toLowerCase());
+  if (marks.some((r) => OWNER_ROLES.has(r))) return true;
+  return new Set(marks.filter((r) => !OWNER_ROLES.has(r))).size >= 3;
+}
+
+/** The canonical orchestrator role name to tag when a candidate frame is picked. */
+export const OWNER_ROLE_NAME = "product-owner";

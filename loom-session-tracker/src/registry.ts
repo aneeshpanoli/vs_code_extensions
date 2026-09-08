@@ -104,3 +104,13 @@ export function writeTargetmaps(agents: Agent[]): string[] {
   }
   return changed;
 }
+
+/** Every project bus that has a board.json (used when a window has no folder open, so the user can
+ *  still choose which project they're tagging an orchestrator for). */
+export function busRepos(): string[] {
+  try {
+    return fs.readdirSync(LOOM_ROOT)
+      .filter((r) => { try { return fs.statSync(path.join(LOOM_ROOT, r, "board.json")).isFile(); } catch { return false; } })
+      .sort();
+  } catch { return []; }
+}

@@ -4,11 +4,15 @@
 // targetmaps degrade gracefully instead of going blank on a transient CDP hiccup.
 
 import { readFrames, Frame } from "./cdp";
-import { classify } from "./roles";
+import { classify, detectOwner } from "./roles";
 import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings } from "./registry";
 
 export type Liveness = "live" | "stale";
 export interface AgentView extends Agent { liveness: Liveness; }
+
+/** An ORCHESTRATOR/PO frame. Never a tracked agent (classify() excludes owners so it can never be
+ *  retired/deleted) — surfaced separately purely so the UI can show it and let the user tag it. */
+export interface OwnerView { webviewId: string; lastSeen: number; liveness: Liveness; }
 
 export interface TickResult {
   ok: boolean;                 // did the CDP read succeed (≥1 frame)?
@@ -21,6 +25,7 @@ const STALE_AFTER_MS = 90_000;   // an agent unseen this long is dropped from th
 
 export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
+  private owners = new Map<string, number>();  // orchestrator/PO webviewId -> lastSeen
   private lastOk = 0;
   private lastError = "";
 
@@ -53,6 +58,7 @@ export class Tracker {
     const authoritative = this.repoFilter ? loadBindings(this.repoFilter) : new Map<string, string>();
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
     const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string }>();
+    const now0 = Date.now();
     for (const f of frames) {
       if (!f.webviewId) continue;
       // 1) CONTENT-DETECT first (reverse-engineering) — the live, current-reality signal.
@@ -66,7 +72,11 @@ export class Tracker {
         const authRole = authoritative.get(f.webviewId);
         if (authRole) { role = authRole; priority = 1.5; }
       }
-      if (!role) continue;
+      if (!role) {
+        // Not a worker frame. If it looks like the orchestrator/PO, remember it as a tag candidate.
+        if (detectOwner(f.text)) this.owners.set(f.webviewId, now0);
+        continue;
+      }
       // In a filtered window, `role` is already guaranteed to be in repoFilter's roster (validRoles came
       // from its board), so attribute it to repoFilter directly. Unfiltered: use the global map.
       const repo = this.repoFilter ? this.repoFilter : r2repo.get(role);
@@ -88,6 +98,7 @@ export class Tracker {
   private ageOut() {
     const cutoff = Date.now() - STALE_AFTER_MS;
     for (const [role, a] of this.agents) if (a.lastSeen < cutoff) this.agents.delete(role);
+    for (const [wid, seen] of this.owners) if (seen < cutoff) this.owners.delete(wid);
   }
 
   private liveRoles(): string[] {
@@ -101,6 +112,16 @@ export class Tracker {
     return Array.from(this.agents.values())
       .map((a) => ({ ...a, liveness: (a.lastSeen >= this.lastOk && this.lastOk > 0 ? "live" : "stale") as Liveness }))
       .sort((x, y) => (x.repo === y.repo ? x.role.localeCompare(y.role) : x.repo.localeCompare(y.repo)));
+  }
+
+  /** Detected orchestrator/PO frames, for the UI's "tag me" affordance. */
+  ownerView(): OwnerView[] {
+    return Array.from(this.owners.entries())
+      .map(([webviewId, lastSeen]) => ({
+        webviewId, lastSeen,
+        liveness: (lastSeen >= this.lastOk && this.lastOk > 0 ? "live" : "stale") as Liveness,
+      }))
+      .sort((a, b) => b.lastSeen - a.lastSeen);
   }
 
   status(): { lastOk: number; lastError: string } {

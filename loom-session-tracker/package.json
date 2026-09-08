@@ -1,52 +1,162 @@
 {
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
-  "description": "Keeps a live, per-project map of Loom session agents (role ↔ webviewId) fresh over CDP. Tag one role as orchestrator and it is automatically notified (via loom_cdp inject) whenever a worker finishes its job.",
-  "version": "0.2.1",
+  "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
+  "version": "0.3.0",
   "publisher": "local",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./out/extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
-        { "id": "loomSessionTracker", "title": "Loom Sessions", "icon": "$(broadcast)" }
+        {
+          "id": "loomSessionTracker",
+          "title": "Loom Sessions",
+          "icon": "$(broadcast)"
+        }
       ]
     },
     "views": {
       "loomSessionTracker": [
-        { "id": "loomSessions", "name": "Session Agents" }
+        {
+          "id": "loomSessions",
+          "name": "Session Agents"
+        }
       ]
     },
     "commands": [
-      { "command": "loomSessionTracker.refresh", "title": "Loom Sessions: Refresh Now", "icon": "$(sync)" },
-      { "command": "loomSessionTracker.status", "title": "Loom Sessions: Show Status" },
-      { "command": "loomSessionTracker.spawn", "title": "Loom Sessions: Spawn Session…", "icon": "$(add)" },
-      { "command": "loomSessionTracker.retire", "title": "Loom Sessions: Retire (Close) Session", "icon": "$(close)" },
-      { "command": "loomSessionTracker.delete", "title": "Loom Sessions: Delete Session (worktree + transcript)", "icon": "$(trash)" },
-      { "command": "loomSessionTracker.lock", "title": "Loom Sessions: Lock (protect from deletion)", "icon": "$(lock)" },
-      { "command": "loomSessionTracker.unlock", "title": "Loom Sessions: Unlock", "icon": "$(unlock)" },
-      { "command": "loomSessionTracker.tagOrchestrator", "title": "Loom Sessions: Tag as Orchestrator", "icon": "$(star-full)" },
-      { "command": "loomSessionTracker.untagOrchestrator", "title": "Loom Sessions: Untag Orchestrator", "icon": "$(star-empty)" }
+      {
+        "command": "loomSessionTracker.refresh",
+        "title": "Loom Sessions: Refresh Now",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "loomSessionTracker.status",
+        "title": "Loom Sessions: Show Status"
+      },
+      {
+        "command": "loomSessionTracker.spawn",
+        "title": "Loom Sessions: Spawn Session\u2026",
+        "icon": "$(add)"
+      },
+      {
+        "command": "loomSessionTracker.retire",
+        "title": "Loom Sessions: Retire (Close) Session",
+        "icon": "$(close)"
+      },
+      {
+        "command": "loomSessionTracker.delete",
+        "title": "Loom Sessions: Delete Session (worktree + transcript)",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "loomSessionTracker.lock",
+        "title": "Loom Sessions: Lock (protect from deletion)",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "loomSessionTracker.unlock",
+        "title": "Loom Sessions: Unlock",
+        "icon": "$(unlock)"
+      },
+      {
+        "command": "loomSessionTracker.tagOrchestrator",
+        "title": "Loom Sessions: Tag as Orchestrator",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "loomSessionTracker.untagOrchestrator",
+        "title": "Loom Sessions: Untag Orchestrator",
+        "icon": "$(star-empty)"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "loomSessionTracker.spawn", "when": "view == loomSessions", "group": "navigation@1" },
-        { "command": "loomSessionTracker.tagOrchestrator", "when": "view == loomSessions", "group": "navigation@2" },
-        { "command": "loomSessionTracker.refresh", "when": "view == loomSessions", "group": "navigation@3" }
+        {
+          "command": "loomSessionTracker.spawn",
+          "when": "view == loomSessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "loomSessionTracker.tagOrchestrator",
+          "when": "view == loomSessions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "loomSessionTracker.refresh",
+          "when": "view == loomSessions",
+          "group": "navigation@3"
+        }
       ],
       "view/item/context": [
-        { "command": "loomSessionTracker.lock", "when": "view == loomSessions && viewItem == loomAgent", "group": "inline@1" },
-        { "command": "loomSessionTracker.retire", "when": "view == loomSessions && viewItem == loomAgent", "group": "inline@2" },
-        { "command": "loomSessionTracker.unlock", "when": "view == loomSessions && viewItem == loomAgentLocked", "group": "inline@1" },
-        { "command": "loomSessionTracker.lock", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
-        { "command": "loomSessionTracker.unlock", "when": "view == loomSessions && viewItem == loomAgentLocked", "group": "1_actions" },
-        { "command": "loomSessionTracker.retire", "when": "view == loomSessions && viewItem == loomAgent", "group": "1_actions" },
-        { "command": "loomSessionTracker.tagOrchestrator", "when": "view == loomSessions && viewItem =~ /loomAgent/", "group": "1_actions" },
-        { "command": "loomSessionTracker.untagOrchestrator", "when": "view == loomSessions && viewItem == loomOrchestrator", "group": "inline@1" },
-        { "command": "loomSessionTracker.untagOrchestrator", "when": "view == loomSessions && viewItem == loomOrchestrator", "group": "1_actions" },
-        { "command": "loomSessionTracker.delete", "when": "view == loomSessions && viewItem == loomAgent", "group": "2_destructive" }
+        {
+          "command": "loomSessionTracker.lock",
+          "when": "view == loomSessions && viewItem == loomAgent",
+          "group": "inline@1"
+        },
+        {
+          "command": "loomSessionTracker.retire",
+          "when": "view == loomSessions && viewItem == loomAgent",
+          "group": "inline@2"
+        },
+        {
+          "command": "loomSessionTracker.unlock",
+          "when": "view == loomSessions && viewItem == loomAgentLocked",
+          "group": "inline@1"
+        },
+        {
+          "command": "loomSessionTracker.lock",
+          "when": "view == loomSessions && viewItem == loomAgent",
+          "group": "1_actions"
+        },
+        {
+          "command": "loomSessionTracker.unlock",
+          "when": "view == loomSessions && viewItem == loomAgentLocked",
+          "group": "1_actions"
+        },
+        {
+          "command": "loomSessionTracker.retire",
+          "when": "view == loomSessions && viewItem == loomAgent",
+          "group": "1_actions"
+        },
+        {
+          "command": "loomSessionTracker.tagOrchestrator",
+          "when": "view == loomSessions && viewItem =~ /loomAgent/",
+          "group": "1_actions"
+        },
+        {
+          "command": "loomSessionTracker.untagOrchestrator",
+          "when": "view == loomSessions && viewItem == loomOrchestrator",
+          "group": "inline@1"
+        },
+        {
+          "command": "loomSessionTracker.untagOrchestrator",
+          "when": "view == loomSessions && viewItem == loomOrchestrator",
+          "group": "1_actions"
+        },
+        {
+          "command": "loomSessionTracker.delete",
+          "when": "view == loomSessions && viewItem == loomAgent",
+          "group": "2_destructive"
+        },
+        {
+          "command": "loomSessionTracker.tagOrchestrator",
+          "when": "view == loomSessions && viewItem == loomOwnerCandidate",
+          "group": "inline@1"
+        },
+        {
+          "command": "loomSessionTracker.tagOrchestrator",
+          "when": "view == loomSessions && viewItem == loomOwnerCandidate",
+          "group": "1_actions"
+        }
       ]
     },
     "configuration": {
@@ -61,7 +171,7 @@
         "loomSessionTracker.notifyOrchestrator": {
           "type": "boolean",
           "default": true,
-          "description": "When a worker's status.json goes working → idle/blocked, inject a 'check the outbox' prompt into the tagged orchestrator session."
+          "description": "When a worker's status.json goes working \u2192 idle/blocked, inject a 'check the outbox' prompt into the tagged orchestrator session."
         }
       }
     }
@@ -69,7 +179,9 @@
   "scripts": {
     "compile": "tsc -p ./"
   },
-  "dependencies": { "ws": "^8.18.0" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
   "devDependencies": {
     "@types/node": "^18.19.0",
     "@types/vscode": "^1.85.0",

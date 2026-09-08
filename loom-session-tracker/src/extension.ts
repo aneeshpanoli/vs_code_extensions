@@ -9,7 +9,7 @@ import { Tracker } from "./tracker";
 import { SessionTreeProvider } from "./statusView";
 import { currentRepo, repoRoot } from "./project";
 import { Coordinator, MAX_ACTIVE_TOTAL } from "./coordinator";
-import { roleToRepo, boardRoles } from "./registry";
+import { roleToRepo, boardRoles, busRepos } from "./registry";
 import { setLock } from "./locks";
 import { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
 import { Notifier } from "./notifier";
@@ -89,7 +89,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     // a tree node (from a context-menu command) carries {agent:{role,repo}}; fall back to a QuickPick.
     const roleFromArg = async (node: any, pick: () => Thenable<string | undefined>): Promise<string | undefined> =>
-      (node && node.agent && node.agent.role) ? node.agent.role : await pick();
+      (node && node.agent && node.agent.role) ? node.agent.role
+      : (node && typeof node.role === "string" && node.role) ? node.role
+      : await pick();
 
     context.subscriptions.push(
       vscode.commands.registerCommand("loomSessionTracker.refresh", runTick),
@@ -135,26 +137,34 @@ export function activate(context: vscode.ExtensionContext) {
       }),
       // TAG ORCHESTRATOR — mark which role's session receives finish notifications
       vscode.commands.registerCommand("loomSessionTracker.tagOrchestrator", async (node?: any) => {
-        if (!repo) { vscode.window.showWarningMessage("Loom: open a project window to tag its orchestrator."); return; }
+        // A window with no folder open has no repo — ask which bus instead of dead-ending.
+        const target = repo || await vscode.window.showQuickPick(busRepos(), { placeHolder: "Tag the orchestrator for which project?" });
+        if (!target) {
+          if (!repo) vscode.window.showWarningMessage("Loom: no project bus chosen — nothing tagged.");
+          return;
+        }
         const role = await roleFromArg(node, () => {
           // Orchestrator names FIRST (they're never in the board roster / tracked agents), then this
           // project's worker roles and any other detected sessions — so the PO is always taggable.
-          const others = Array.from(new Set([...boardRoles(repo), ...tracker.view().map((a) => a.role)]))
+          const others = Array.from(new Set([...boardRoles(target), ...tracker.view().map((a) => a.role)]))
             .filter((r) => !ORCHESTRATOR_CANDIDATES.includes(r)).sort();
           const roles = [...ORCHESTRATOR_CANDIDATES, ...others];
           return vscode.window.showQuickPick(roles, { placeHolder: "Which role is the orchestrator (receives finish notifications)?" });
         });
         if (!role) return;
-        setOrchestrator(repo, role);
-        vscode.window.showInformationMessage(`Loom: '${role}' tagged as orchestrator — workers finishing will notify it automatically.`);
+        setOrchestrator(target, role);
+        vscode.window.showInformationMessage(`Loom: '${role}' tagged as orchestrator of ${target} — workers finishing will notify it automatically.`);
         tree.refresh();
       }),
       vscode.commands.registerCommand("loomSessionTracker.untagOrchestrator", async () => {
-        if (!repo) return;
-        const cur = getOrchestrator(repo);
+        const tagged = busRepos().filter((r) => getOrchestrator(r));
+        const target = repo || (tagged.length === 1 ? tagged[0]
+          : await vscode.window.showQuickPick(tagged, { placeHolder: "Untag the orchestrator of which project?" }));
+        if (!target) return;
+        const cur = getOrchestrator(target);
         if (!cur) { vscode.window.showInformationMessage("Loom: no orchestrator tagged for this project."); return; }
-        setOrchestrator(repo, null);
-        vscode.window.showInformationMessage(`Loom: '${cur.role}' untagged — finish notifications off.`);
+        setOrchestrator(target, null);
+        vscode.window.showInformationMessage(`Loom: '${cur.role}' untagged from ${target} — finish notifications off.`);
         tree.refresh();
       }),
       // LOCK / UNLOCK — Photoshop-style protection from deletion
