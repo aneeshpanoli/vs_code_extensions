@@ -6,6 +6,7 @@
 import { readFrames, Frame } from "./cdp";
 import { classify, detectOwner } from "./roles";
 import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings } from "./registry";
+import { countSessions, publishCount, SessionCount } from "./sessions";
 
 export type Liveness = "live" | "stale";
 export interface AgentView extends Agent { liveness: Liveness; }
@@ -27,6 +28,7 @@ export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
   private owners = new Map<string, number>();  // orchestrator/PO webviewId -> lastSeen
   private lastOk = 0;
+  private sessions: SessionCount | null = null;   // simultaneous Claude conversations, editor-wide
   private lastTickOk = false;   // did the MOST RECENT tick succeed? (a failed read must not keep claiming "live")
   private lastError = "";
 
@@ -94,6 +96,15 @@ export class Tracker {
     for (const [role, b] of best) this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now });
     this.ageOut();
 
+    // Editor-wide concurrency: count every Claude conversation panel in the read, not just
+    // this project's agents, and publish it for the sessions/scripts to read.
+    const boundIds = new Set<string>([
+      ...Array.from(this.agents.values()).map((a) => a.webviewId),
+      ...Array.from(this.owners.keys()),
+    ]);
+    this.sessions = countSessions(frames, boundIds, this.liveRoles(), this.repoFilter);
+    publishCount(this.sessions);
+
     const changedRepos = writeTargetmaps(Array.from(this.agents.values()));
     return { ok: true, changedRepos, liveRoles: this.liveRoles() };
   }
@@ -132,6 +143,9 @@ export class Tracker {
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }
+
+  /** Last measured editor-wide session concurrency (null before the first good read). */
+  sessionCount(): SessionCount | null { return this.sessions; }
 
   status(): { lastOk: number; lastError: string } {
     return { lastOk: this.lastOk, lastError: this.lastError };

@@ -13,6 +13,7 @@ import { roleToRepo, boardRoles, busRepos } from "./registry";
 import { setLock } from "./locks";
 import { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
 import { Notifier } from "./notifier";
+import { readCount } from "./sessions";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -61,11 +62,21 @@ export function activate(context: vscode.ExtensionContext) {
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator
-          status.text = `$(broadcast) Loom: ${total}/${MAX_ACTIVE_TOTAL} active`;
-          status.tooltip = `Active: ${total}/${MAX_ACTIVE_TOTAL} (orchestrator + ${r.liveRoles.length} agent(s))\n` +
+          const sc = tracker.sessionCount();
+          const warnAt = Math.max(1, Number(cfg().get("sessionWarnThreshold", 5)) || 5);
+          const busy = !!sc && sc.sessions > warnAt;
+          status.text = `$(broadcast) Loom: ${total}/${MAX_ACTIVE_TOTAL}` +
+            (sc ? ` \u00b7 ${sc.sessions} open` : "");
+          status.tooltip = `Active in ${repo || "this window"}: ${total}/${MAX_ACTIVE_TOTAL} ` +
+            `(orchestrator + ${r.liveRoles.length} agent(s))\n` +
             `Agents: ${r.liveRoles.join(", ") || "none"}` +
+            (sc ? `\n\nEDITOR-WIDE: ${sc.sessions} Claude conversation(s) open across ${sc.windows} window(s)` +
+                  `\n${sc.boundHere} bound to a Loom role here` +
+                  `\nAnthropic caps no session count, but all sessions share ONE usage pool` +
+                  ` (it suggests 3-5 in parallel).` +
+                  (busy ? `\n\u26a0 above your warn threshold of ${warnAt}` : "") : "") +
             (r.changedRepos.length ? `\nmap updated: ${r.changedRepos.join(", ")}` : "");
-          status.backgroundColor = total >= MAX_ACTIVE_TOTAL
+          status.backgroundColor = (total >= MAX_ACTIVE_TOTAL || busy)
             ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
         } else {
           status.text = `$(warning) Loom: CDP?`;
@@ -99,6 +110,23 @@ export function activate(context: vscode.ExtensionContext) {
         const v = tracker.view();
         const lines = v.map((a) => `${a.liveness === "live" ? "●" : "○"} ${a.repo}/${a.role}  ${a.webviewId.slice(0, 8)}`);
         vscode.window.showInformationMessage("Loom agents:\n" + (lines.join("\n") || "none yet"), { modal: true });
+      }),
+      // SESSION COUNT — editor-wide simultaneous Claude conversations
+      vscode.commands.registerCommand("loomSessionTracker.sessionCount", () => {
+        const sc = tracker.sessionCount() || readCount();
+        if (!sc) { vscode.window.showInformationMessage("Loom: no session count yet (waiting for the first CDP read)."); return; }
+        const warnAt = Math.max(1, Number(cfg().get("sessionWarnThreshold", 5)) || 5);
+        vscode.window.showInformationMessage(
+          `Simultaneous Claude sessions: ${sc.sessions}\n` +
+          `Editor windows: ${sc.windows}\n` +
+          `Bound to a Loom role in ${sc.updatedBy}: ${sc.boundHere}` +
+          (sc.rolesHere.length ? ` (${sc.rolesHere.join(", ")})` : "") + `\n` +
+          `Unbound elsewhere: ${sc.sessions - sc.boundHere}\n\n` +
+          (sc.sessions > warnAt
+            ? `Above your threshold of ${warnAt}. Anthropic sets no cap on concurrent sessions, but they all draw on ONE usage pool.`
+            : `Within your threshold of ${warnAt}.`) + `\n` +
+          `Published for scripts at ~/.claude/loom/active-sessions.json`,
+          { modal: true });
       }),
       // SPAWN — open a new session to bind as a role
       vscode.commands.registerCommand("loomSessionTracker.spawn", async () => {

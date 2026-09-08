@@ -57,8 +57,15 @@ actions are manual-only. Tag one role as orchestrator and it is auto-notified
 (via `loom_cdp inject`) whenever a worker finishes; that state lives on the bus,
 so it survives IDE restarts.
 
+It also monitors **simultaneous** Claude sessions editor-wide (all windows, not
+just this project): the status bar shows `Loom: n/3 · N open`, highlighting past
+`sessionWarnThreshold` (default 5). Anthropic sets no cap on concurrent sessions
+but they share one usage pool, and its own guidance suggests 3-5 in parallel.
+The count is published to `~/.claude/loom/active-sessions.json` so the Loom
+sessions and scripts can read it.
+
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 74 checks across 10
+(optionally with a name filter, e.g. `./test.sh notifier`) — 86 checks across 11
 files, zero dependencies, run under VSCodium's bundled node since this machine
 has no npm. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.

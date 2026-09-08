@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -76,6 +76,11 @@
         "command": "loomSessionTracker.untagOrchestrator",
         "title": "Loom Sessions: Untag Orchestrator",
         "icon": "$(star-empty)"
+      },
+      {
+        "command": "loomSessionTracker.sessionCount",
+        "title": "Loom Sessions: Show Simultaneous Session Count",
+        "icon": "$(pulse)"
       }
     ],
     "menus": {
@@ -94,6 +99,11 @@
           "command": "loomSessionTracker.refresh",
           "when": "view == loomSessions",
           "group": "navigation@3"
+        },
+        {
+          "command": "loomSessionTracker.sessionCount",
+          "when": "view == loomSessions",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -172,6 +182,12 @@
           "type": "boolean",
           "default": true,
           "description": "When a worker's status.json goes working \u2192 idle/blocked, inject a 'check the outbox' prompt into the tagged orchestrator session."
+        },
+        "loomSessionTracker.sessionWarnThreshold": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "Warn (status-bar highlight) when this many Claude conversations are open simultaneously across all windows. Anthropic sets no hard cap, but all sessions share one usage pool; its own guidance suggests 3-5 in parallel."
         }
       }
     }

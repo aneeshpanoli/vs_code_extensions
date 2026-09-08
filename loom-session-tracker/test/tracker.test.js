@@ -104,3 +104,31 @@ suite("tracker: frames without a webviewId are skipped", async () => {
     eq(t.view(), [], "nothing tracked from a page frame");
   });
 });
+
+suite("tracker: a tick measures editor-wide session concurrency", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  const t = new Tracker(repo);
+  // One bound role, one unbound conversation in another window, plus two window shells.
+  const chat = (id, body) => ({ webviewId: id, text: body + "\nBypass permissions\n" });
+  await withFrames([
+    { webviewId: null, text: "window shell" },
+    { webviewId: null, text: "another window shell" },
+    chat("wid-a", "work" + marker("alpha")),
+    chat("wid-other", "somebody else's conversation"),
+  ], async () => {
+    await t.tick();
+    const sc = t.sessionCount();
+    ok(sc, "a count was produced");
+    eq(sc.sessions, 2, "both conversations counted, not just this project's agent");
+    eq(sc.windows, 2, "window shells counted separately");
+    eq(sc.boundHere, 1, "one bound to a role here");
+    eq(sc.rolesHere, ["alpha"], "names the bound role");
+  });
+});
+
+suite("tracker: sessionCount is null until the first successful read", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  const t = new Tracker(repo);
+  await withFrames([], () => t.tick());
+  eq(t.sessionCount(), null, "no count claimed from a failed read");
+});
