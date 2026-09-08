@@ -1,7 +1,7 @@
-const { suite, ok, eq, match, load, makeRepo, busPath, readJson, LOOM } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, LOOM } = require("./harness");
 const fs = require("fs");
 const path = require("path");
-const { detectModel, isPremium, ModelPolicy, DEFAULT_PREMIUM, FOOTER_CHARS } = load("models.js");
+const { detectModel, isPremium, ModelPolicy, DEFAULT_PREMIUM, FOOTER_CHARS, BACKOFF_MS, backoffFor } = load("models.js");
 const { setOrchestrator } = load("orchestrator.js");
 
 // Footer text exactly as the live panels render it (measured 2026-09-08).
@@ -82,13 +82,71 @@ suite("policy: workers on cheaper models are left alone", () => {
     "policy only forbids the premium tier, it does not force one model");
 });
 
-suite("policy: a worker is nudged once per drift, not every tick", () => {
+suite("policy: a worker is nudged once, then held off — not every tick", () => {
   const repo = makeRepo({ w1: {} });
   const p = new ModelPolicy(repo);
   const models = new Map([["w1", info("Fable 5")]]);
-  eq(p.check(models, "po", new Set(["w1"])).length, 1, "flagged the first time");
-  eq(p.check(models, "po", new Set(["w1"])).length, 0, "not flagged again while unchanged");
-  ok(readJson(busPath(repo, "model-policy.json")).corrected.w1, "remembered on the bus");
+  const t0 = 1_000_000_000_000;
+  eq(p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0).length, 1, "flagged the first time");
+  eq(p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0 + 1000).length, 0, "held off on the next tick");
+  const rec = readJson(busPath(repo, "model-policy.json")).pending.w1;
+  ok(rec, "remembered on the bus");
+  eq(rec.attempts, 1, "one attempt so far");
+});
+
+suite("policy: a switch that did NOT take effect is retried after the backoff", () => {
+  // The bug this replaced: the role was marked corrected before the injection reported back, so a
+  // failed switch was never retried — across restarts too — and the worker silently stayed premium.
+  const repo = makeRepo({ w1: {} });
+  const p = new ModelPolicy(repo);
+  const models = new Map([["w1", info("Fable 5")]]);
+  const t0 = 1_000_000_000_000;
+  const first = p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0);
+  eq(first[0].attempt, 1, "attempt 1");
+  p.recordResult(first[0], false, "inject failed");             // the switch did not work
+  eq(p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0 + BACKOFF_MS[0] - 1).length, 0, "still backing off");
+  const second = p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0 + BACKOFF_MS[0] + 1);
+  eq(second.length, 1, "retried once the backoff elapsed");
+  eq(second[0].attempt, 2, "and counts as attempt 2");
+});
+
+suite("policy: a reported SUCCESS still does not clear the role — only seeing it compliant does", () => {
+  const repo = makeRepo({ w1: {} });
+  const p = new ModelPolicy(repo);
+  const t0 = 1_000_000_000_000;
+  const v = p.check(new Map([["w1", info("Fable 5")]]), "po", new Set(["w1"]), DEFAULT_PREMIUM, t0)[0];
+  p.recordResult(v, true, "switched");
+  ok(p.pending().w1, "still tracked: the footer has not changed yet");
+  // now it is actually seen on a cheaper model
+  p.check(new Map([["w1", info("Opus 5")]]), "po", new Set(["w1"]), DEFAULT_PREMIUM, t0 + 1);
+  eq(p.pending().w1, undefined, "cleared only once verified");
+});
+
+suite("policy: the retry backoff grows with each attempt", () => {
+  eq(BACKOFF_MS.length > 1, true, "there is a schedule");
+  eq(backoffFor(1), BACKOFF_MS[0], "first retry is the shortest");
+  eq(backoffFor(2), BACKOFF_MS[1], "then longer");
+  eq(backoffFor(99), BACKOFF_MS[BACKOFF_MS.length - 1], "capped, so it never stops retrying nor spams");
+  ok(backoffFor(2) > backoffFor(1), "strictly growing");
+});
+
+suite("policy: the failure reason is recorded, and cleared on success", () => {
+  const repo = makeRepo({ w1: {} });
+  const p = new ModelPolicy(repo);
+  const v = p.check(new Map([["w1", info("Fable 5")]]), "po", new Set(["w1"]))[0];
+  p.recordResult(v, false, "no live target for role");
+  match(p.pending().w1.lastError, /no live target/, "reason kept for diagnosis");
+  p.recordResult(v, true, "switched");
+  eq(p.pending().w1.lastError, undefined, "cleared once it works");
+});
+
+suite("policy: a pre-0.7.2 state file does not suppress the check", () => {
+  // Old files recorded {corrected}; honouring that shape would re-introduce the never-retry bug.
+  const repo = makeRepo({ w1: {} });
+  writeJson(busPath(repo, "model-policy.json"), { corrected: { w1: { model: "Fable 5", at: "old" } } });
+  const p = new ModelPolicy(repo);
+  eq(p.check(new Map([["w1", info("Fable 5")]]), "po", new Set(["w1"])).length, 1,
+    "the role is re-checked rather than assumed handled");
 });
 
 suite("policy: a worker that drifts back to premium is flagged again", () => {

@@ -11,7 +11,8 @@
 // name cannot be mistaken for the footer.
 //
 // HOW IT IS CORRECTED: inject `/model <id>` into the offending session, the same way `/loom <role>`
-// binds one. Corrections are deduped on the bus so a session is nudged once per drift, not every tick.
+// binds one. A role stays pending until it is SEEN on a cheaper model; attempts repeat on a growing
+// backoff, so a switch that fails or silently does not take effect is retried rather than forgotten.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -53,17 +54,30 @@ export function isPremium(model: string | null | undefined, premium: string[] = 
   return premium.some((p) => p.toLowerCase() === model.toLowerCase());
 }
 
-// ── dedupe: which roles we have already corrected, so we nudge once per drift ───────────────
-interface PolicyState { corrected: Record<string, { model: string; at: string }>; updatedAt?: string; }
+// ── retry bookkeeping ───────────────────────────────────────────────────────────────────────
+// An earlier version marked a role "corrected" the moment a violation was raised — before the
+// /model injection had even reported back. A failed switch (session closed, CDP hiccup) was then
+// never retried, across restarts too, leaving the worker on the expensive tier in silence.
+// Now a role is only forgotten when it is ACTUALLY seen on a non-premium model; until then the
+// attempt is retried on a growing backoff. That also covers a switch that reports success but does
+// not take effect.
+export const BACKOFF_MS = [60_000, 120_000, 300_000, 900_000];
+export function backoffFor(attempts: number): number {
+  return BACKOFF_MS[Math.min(Math.max(attempts, 1), BACKOFF_MS.length) - 1];
+}
+
+interface PolicyRecord { model: string; attempts: number; nextAttempt: number; lastError?: string; lastAttemptAt?: string; }
+interface PolicyState { pending: Record<string, PolicyRecord>; updatedAt?: string; }
 
 function stateFile(repo: string): string { return path.join(LOOM_ROOT, repo, "model-policy.json"); }
 
 function loadState(repo: string): PolicyState {
   try {
     const st = JSON.parse(fs.readFileSync(stateFile(repo), "utf8"));
-    if (st && st.corrected && typeof st.corrected === "object") return { corrected: st.corrected };
+    // A pre-0.7.2 file carries {corrected}; ignore it so those roles are re-checked (the fix).
+    if (st && st.pending && typeof st.pending === "object") return { pending: st.pending };
   } catch { /* none yet */ }
-  return { corrected: {} };
+  return { pending: {} };
 }
 
 function saveState(repo: string, st: PolicyState): void {
@@ -71,7 +85,7 @@ function saveState(repo: string, st: PolicyState): void {
     const f = stateFile(repo);
     try {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
-      if (JSON.stringify(cur.corrected) === JSON.stringify(st.corrected)) return;   // change-only
+      if (JSON.stringify(cur.pending) === JSON.stringify(st.pending)) return;   // change-only
     } catch { /* missing -> write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -80,32 +94,50 @@ function saveState(repo: string, st: PolicyState): void {
   } catch { /* never throw from a tick */ }
 }
 
-export interface ModelViolation { repo: string; role: string; model: string; }
+export interface ModelViolation { repo: string; role: string; model: string; attempt: number; }
 
 export class ModelPolicy {
   constructor(private repo: string | null) {}
 
   /**
    * Workers found on a premium model. The orchestrator is exempt by design — it is the one session
-   * allowed the expensive tier. A role already corrected for the same model is not re-reported
-   * until it goes back to a compliant model (so we nudge once per drift, not every tick).
+   * allowed the expensive tier. Between attempts a role is held off by `backoffFor(attempts)`, so a
+   * stuck session is retried periodically instead of every tick — and never silently abandoned.
    */
   check(models: Map<string, ModelInfo | null>, orchestratorRole: string | null,
-        liveRoles: Set<string>, premium: string[] = DEFAULT_PREMIUM): ModelViolation[] {
+        liveRoles: Set<string>, premium: string[] = DEFAULT_PREMIUM, now = Date.now()): ModelViolation[] {
     if (!this.repo) return [];
     const st = loadState(this.repo);
     const out: ModelViolation[] = [];
     for (const [role, info] of models) {
       if (!info || !liveRoles.has(role)) continue;
       if (orchestratorRole && role === orchestratorRole) continue;      // the exempt session
-      if (!isPremium(info.model, premium)) { delete st.corrected[role]; continue; }
-      const already = st.corrected[role];
-      if (already && already.model.toLowerCase() === info.model.toLowerCase()) continue;
-      st.corrected[role] = { model: info.model, at: new Date().toISOString() };
-      out.push({ repo: this.repo, role, model: info.model });
+      if (!isPremium(info.model, premium)) { delete st.pending[role]; continue; }   // actually compliant now
+      const rec = st.pending[role];
+      const sameModel = !!rec && rec.model.toLowerCase() === info.model.toLowerCase();
+      if (sameModel && now < rec.nextAttempt) continue;                 // backing off between retries
+      const attempts = (sameModel ? rec.attempts : 0) + 1;
+      st.pending[role] = { model: info.model, attempts, nextAttempt: now + backoffFor(attempts),
+                           lastAttemptAt: new Date(now).toISOString() };
+      out.push({ repo: this.repo, role, model: info.model, attempt: attempts });
     }
     saveState(this.repo, st);
     return out;
+  }
+
+  /** Record what the injection reported. A role is only cleared once it is SEEN on a cheaper model. */
+  recordResult(v: ModelViolation, ok: boolean, note: string): void {
+    if (!this.repo) return;
+    const st = loadState(this.repo);
+    const rec = st.pending[v.role];
+    if (!rec) return;
+    if (ok) delete rec.lastError; else rec.lastError = String(note).slice(0, 120);
+    saveState(this.repo, st);
+  }
+
+  /** Roles still believed to be on a premium model, with their retry state (for the UI). */
+  pending(): Record<string, PolicyRecord> {
+    return this.repo ? loadState(this.repo).pending : {};
   }
 
   /** Switch a worker back to the default model by injecting `/model <id>` into its composer. */

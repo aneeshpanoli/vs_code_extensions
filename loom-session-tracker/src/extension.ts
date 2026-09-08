@@ -55,11 +55,15 @@ export function activate(context: vscode.ExtensionContext) {
       const orch = repo ? getOrchestrator(repo) : null;
       const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
       for (const v of modelPolicy.check(tracker.modelState(), orch ? orch.role : null, live, premium)) {
-        vscode.window.showInformationMessage(
-          `Loom: ${v.role} is on ${v.model} (orchestrator-only tier) — switching it to ${target}.`);
+        // Toast the first attempt; retries stay quiet in the status bar so a stuck session
+        // cannot spam notifications every backoff window.
+        const what = `${v.role} is on ${v.model} (orchestrator-only tier) — switching to ${target}`;
+        if (v.attempt === 1) vscode.window.showInformationMessage(`Loom: ${what}.`);
+        else vscode.window.setStatusBarMessage(`Loom: ${what} (retry ${v.attempt}).`, 8000);
         modelPolicy.enforce(v, target, (ok, note) => {
-          if (!ok) vscode.window.showWarningMessage(
-            `Loom: could not switch ${v.role} off ${v.model} (${note}) — run /model ${target} in that session.`);
+          modelPolicy.recordResult(v, ok, note);
+          if (!ok && v.attempt === 1) vscode.window.showWarningMessage(
+            `Loom: could not switch ${v.role} off ${v.model} (${note}) — retrying, or run /model ${target} there.`);
         });
       }
     };

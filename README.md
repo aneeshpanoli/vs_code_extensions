@@ -74,13 +74,15 @@ restart. Toggle with `autoResumeAfterLimit`; customise `resumeMessage`.
 **Model policy:** the top pricing tier ($10/$50 per MTok — Fable/Mythos) is
 reserved for the orchestrator. Each role's model is read from its composer
 footer; a worker found on a premium model is switched back with
-`/model <workerModel>` (default `claude-opus-5`), once per drift. The
+`/model <workerModel>` (default `claude-opus-5`). A role stays pending until it
+is actually *seen* on a cheaper model — a switch that fails or silently doesn't
+take effect is retried on a growing backoff (1m/2m/5m/15m), never forgotten. The
 orchestrator is exempt twice over: explicitly, and structurally — it is never a
 tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 129 checks across 14
+(optionally with a name filter, e.g. `./test.sh notifier`) — 134 checks across 14
 files, zero dependencies, run under VSCodium's bundled node since this machine
 has no npm. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.
