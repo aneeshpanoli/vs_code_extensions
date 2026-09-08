@@ -80,7 +80,7 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 120 checks across 13
+(optionally with a name filter, e.g. `./test.sh notifier`) — 129 checks across 14
 files, zero dependencies, run under VSCodium's bundled node since this machine
 has no npm. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.

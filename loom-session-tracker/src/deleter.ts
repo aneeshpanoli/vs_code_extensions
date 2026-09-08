@@ -49,11 +49,11 @@ export function deleteSession(repo: string, role: string, repoRoot: string | nul
       const wt = path.join(repoRoot, ".claude", "worktrees", role);
       if (fs.existsSync(wt)) {
         let dirty = "";
-        try { dirty = execFileSync("git", ["-C", wt, "status", "--porcelain"], { encoding: "utf8", timeout: 5000 }).trim(); }
+        try { dirty = execFileSync("git", ["-C", wt, "status", "--porcelain"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }).trim(); }
         catch { /* if we can't check, treat as unknown -> refuse below */ dirty = "UNKNOWN"; }
         if (dirty) return { ok: false, steps, error: `REFUSED: worktree '${role}' has uncommitted work (${dirty === "UNKNOWN" ? "status unreadable" : "bank it first"}). Nothing deleted.` };
         try {
-          execFileSync("git", ["-C", repoRoot, "worktree", "remove", wt], { encoding: "utf8", timeout: 10000 });
+          execFileSync("git", ["-C", repoRoot, "worktree", "remove", wt], { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] });
           steps.push(`worktree removed (branch worktree-${role} + commits retained — re-add to recover)`);
         } catch (e: any) { return { ok: false, steps, error: `git worktree remove failed: ${String(e.message || e).slice(0, 90)}` }; }
       }
