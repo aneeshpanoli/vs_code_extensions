@@ -92,9 +92,10 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name filter, e.g. `./test.sh notifier`) — 146 checks across 15
-files, zero dependencies, run under VSCodium's bundled node since this machine
-has no npm. The runner forces `HOME` to a throwaway directory, so tests can
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 160 checks
+across 16 files, zero dependencies, run under VSCodium's bundled node since this
+machine has no npm. Measured coverage (V8, `NODE_V8_COVERAGE=dir ./test.sh`):
+**82.6% of lines**, every module included. The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.
 
 ## Installing (no marketplace)

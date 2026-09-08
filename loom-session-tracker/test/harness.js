@@ -21,10 +21,22 @@ const vscode = {
   _messages: { info: [], warn: [], error: [] },
   _executed: [],
   _quickPick: undefined,            // set to a value (or fn) to answer showQuickPick
+  _answer: undefined,               // set to a value (or fn) to answer showInformationMessage actions
+  _commands: {},                    // id -> handler, so a test can invoke what activate() registered
+  _statusItems: [],
+  _statusMessages: [],
+  _trees: {},
+  _config: {},                      // "section.key" -> value, overriding the caller's default
   _reset() {
     this._messages = { info: [], warn: [], error: [] };
     this._executed = [];
     this._quickPick = undefined;
+    this._answer = undefined;
+    this._commands = {};
+    this._statusItems = [];
+    this._statusMessages = [];
+    this._trees = {};
+    this._config = {};
     this.workspace.workspaceFolders = undefined;
   },
   EventEmitter: class { constructor() { this.event = () => ({ dispose() {} }); } fire() {} },
@@ -35,7 +47,13 @@ const vscode = {
   StatusBarAlignment: { Left: 1, Right: 2 },
   ConfigurationTarget: { Global: 1 },
   window: {
-    showInformationMessage(m) { vscode._messages.info.push(String(m)); return Promise.resolve(undefined); },
+    showInformationMessage(m, ...rest) {
+      vscode._messages.info.push(String(m));
+      // Modal options come through as an object; actions are trailing strings.
+      const actions = rest.filter((r) => typeof r === "string");
+      const a = vscode._answer;
+      return Promise.resolve(typeof a === "function" ? a(String(m), actions) : a);
+    },
     showWarningMessage(m) { vscode._messages.warn.push(String(m)); return Promise.resolve(undefined); },
     showErrorMessage(m) { vscode._messages.error.push(String(m)); return Promise.resolve(undefined); },
     showQuickPick(items) {
@@ -43,20 +61,38 @@ const vscode = {
       return Promise.resolve(typeof a === "function" ? a(items) : a);
     },
     showInputBox() { return Promise.resolve(undefined); },
-    createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {} }),
+    createStatusBarItem() {
+      const item = { text: "", tooltip: "", command: undefined, backgroundColor: undefined,
+                     shown: false, show() { this.shown = true; }, hide() { this.shown = false; }, dispose() {} };
+      vscode._statusItems.push(item);
+      return item;
+    },
     createOutputChannel: () => ({ appendLine() {}, dispose() {} }),
-    registerTreeDataProvider: () => ({ dispose() {} }),
-    setStatusBarMessage() {},
+    registerTreeDataProvider(id, provider) { vscode._trees[id] = provider; return { dispose() {} }; },
+    setStatusBarMessage(m) { vscode._statusMessages.push(String(m)); },
     tabGroups: { all: [], close: () => Promise.resolve(true) },
   },
   workspace: {
     workspaceFolders: undefined,
-    getConfiguration: () => ({ get: (_k, d) => d, update: () => Promise.resolve() }),
+    getConfiguration(section) {
+      return {
+        get(k, d) {
+          const key = section ? section + "." + k : k;
+          return Object.prototype.hasOwnProperty.call(vscode._config, key) ? vscode._config[key] : d;
+        },
+        update: () => Promise.resolve(),
+      };
+    },
     onDidChangeConfiguration: () => ({ dispose() {} }),
   },
   commands: {
-    registerCommand: () => ({ dispose() {} }),
-    executeCommand(id, ...args) { vscode._executed.push({ id, args }); return Promise.resolve(); },
+    registerCommand(id, fn) { vscode._commands[id] = fn; return { dispose() {} }; },
+    executeCommand(id, ...args) {
+      vscode._executed.push({ id, args });
+      // let a test drive the extension's own commands through executeCommand too
+      const own = vscode._commands[id];
+      return Promise.resolve(own ? own(...args) : undefined);
+    },
   },
 };
 const origLoad = Module._load;
@@ -106,7 +142,10 @@ function setStatus(repo, role, status) { writeJson(busPath(repo, role, "status.j
 /** Require a compiled module from out/. */
 function load(name) { return require(path.join(__dirname, "..", "out", name)); }
 
+/** Let queued promises and immediates settle (activation kicks off an async first tick). */
+const settle = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+
 module.exports = {
   vscode, suite, suites, ok, eq, match, rejects, AssertionError,
-  LOOM, makeRepo, busPath, writeJson, readJson, setStatus, load, home,
+  LOOM, makeRepo, busPath, writeJson, readJson, setStatus, load, home, settle,
 };
