@@ -43,16 +43,70 @@ const NON_ROLE_KEYS = new Set([
   "playtests", "milestones", "bugs", "process_fixes", "qa_log",
 ]);
 
-/** The role names registered in ONE project's board.json (its authoritative roster). */
+// A DENYLIST of metadata key names is not enough, and the cost of it being wrong is not cosmetic.
+// Measured across every live board 2026-09-08: funisland's flat board carries `_comment`, `updated`,
+// `standing_order`, `priority_rule`, `lanes`, `standing_laws_for_every_item` and `free_now` — none of
+// them on the denylist — so its roster came out as 7 phantom roles plus 3 real ones, and DROPPED the 8
+// real roles that own a mailbox on the bus (art, character, metagame, playtest, scriptwriter,
+// simulation, testgamification, content). Everything keyed off the roster was wrong for them:
+//   * the classifier's validRoles excluded them, so those sessions could not be detected at all;
+//   * checkHealth() never looked at them — funisland/simulation had been "working" with no status
+//     update since 2026-08-21 (18 days) and no watchdog could ever have seen it;
+//   * scanWorktrees() marks `orphaned = !roster.has(role)`, so 7 of their worktrees read as orphaned,
+//     and 6 of those passed EVERY safeguard in removeWorktree (clean, on a branch, nothing risky) —
+//     the cleanup report was offering to remove the working directories of live roles.
+// So roles are now derived STRUCTURALLY, from two independent sources, and unioned:
+//   A) the board — every key of a nested `roles` wrapper, or, on a flat board, every object-valued key
+//      that is shaped like a role entry (measured: session_id/branch/status/bound_at/worktree/... ) or
+//      is a bare `{}` stub. funisland's `lanes` is an object too, but its keys are lane names, not role
+//      fields, so it is excluded on shape rather than by name.
+//   B) the bus — any subdirectory holding a mailbox (status.json / inbox.md / outbox.md). A role with a
+//      mailbox EXISTS whether or not the board remembered to list it; measured, this is what recovers
+//      funisland's 8, gaming/gameplay and livegita/developer.
+// The two failure directions are not symmetric: a phantom role costs nothing (its status/mailbox reads
+// simply fail and it is skipped), while a dropped role makes a real session invisible and its worktree
+// look like garbage. The union errs in the harmless direction on purpose.
+
+/** Fields a role entry carries on a flat board, measured across every live board 2026-09-08. */
+const ROLE_FIELDS = new Set([
+  "session_id", "sessionId", "session", "branch", "status", "bound_at", "boundAt",
+  "worktree", "webviewId", "role", "current", "last_handled", "updated_at", "model",
+]);
+
+/** Files that mean "this directory is a role's mailbox on the bus". */
+const MAILBOX_FILES = ["status.json", "inbox.md", "outbox.md"];
+
+function isRoleEntry(v: any): boolean {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const keys = Object.keys(v);
+  if (keys.length === 0) return true;                       // a bare `{}` stub is a declared role
+  return keys.some((k) => ROLE_FIELDS.has(k));
+}
+
+/** Roles that own a mailbox directory on this bus, whatever the board says about them. */
+function mailboxRoles(repo: string): string[] {
+  const dir = path.join(LOOM_ROOT, repo);
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  return names.filter((n) => !n.startsWith(".") &&
+    MAILBOX_FILES.some((f) => { try { return fs.statSync(path.join(dir, n, f)).isFile(); } catch { return false; } }));
+}
+
+/** The role names of ONE project: its board roster UNION the roles that own a mailbox on its bus. */
 export function boardRoles(repo: string): string[] {
+  const out = new Set<string>(mailboxRoles(repo));
   let data: any;
   try { data = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8")); }
-  catch { return []; }
-  const roles = (data && data.roles) || data;   // nested {roles:{...}} or a flat {role:{...}} board
-  if (!roles || typeof roles !== "object") return [];
-  // Only apply the metadata filter to a FLAT board; a nested `roles` dict is all-roles by construction.
-  const flat = !(data && data.roles);
-  return Object.keys(roles).filter((k) => k && (!flat || !NON_ROLE_KEYS.has(k)));
+  catch { return Array.from(out).sort(); }
+  const nested = data && data.roles && typeof data.roles === "object" && !Array.isArray(data.roles)
+    ? data.roles : null;
+  if (nested) {
+    // Inside a `roles` wrapper every key is a role by construction — no shape test, no filtering.
+    for (const k of Object.keys(nested)) if (k) out.add(k);
+  } else if (data && typeof data === "object" && !Array.isArray(data)) {
+    for (const [k, v] of Object.entries(data)) if (k && !NON_ROLE_KEYS.has(k) && isRoleEntry(v)) out.add(k);
+  }
+  return Array.from(out).sort();
 }
 
 /** {role: repo} from every repo bus's board.json — the authoritative per-project roster. */

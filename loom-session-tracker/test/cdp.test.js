@@ -140,3 +140,46 @@ suite("cdp: closeWebview finds the target by webviewId and closes it", async () 
     eq(fake.closed, ["T-2"], "and nothing further was closed");
   });
 });
+
+// ── the context-usage percentage ────────────────────────────────────────────
+const { parseRead } = load("cdp.js");
+
+suite("cdp: the compact button's percentage comes back with the frame", async () => {
+  // The number lives in a title attribute ("73% context used — click to compact"), never in
+  // innerText, so the reader asks for it explicitly and carries it beside the text.
+  await withFake({ targets: [{ sessionId: "s1", url: wv("cccccccc-3333"), text: "hello", contextPct: 73 }] },
+    async (fake) => {
+      const frames = await readFrames("127.0.0.1", fake.port, FAST);
+      const f = frames.find((x) => x.webviewId === "cccccccc-3333");
+      eq(f.text, "hello", "text still read");
+      eq(f.contextPct, 73, "and the percentage with it");
+    });
+});
+
+suite("cdp: no compact button means no percentage, not a zero", async () => {
+  // Below ~50% used the button is not rendered at all; that must read as "unknown", since 0 would
+  // be a claim the panel never made.
+  await withFake({ targets: [{ sessionId: "s1", url: wv("cccccccc-3333"), text: "hello", contextPct: null }] },
+    async (fake) => {
+      const frames = await readFrames("127.0.0.1", fake.port, FAST);
+      eq(frames.find((x) => x.webviewId === "cccccccc-3333").contextPct, null, "unknown, not 0");
+    });
+});
+
+suite("cdp: a percentage seen on either pass is kept", async () => {
+  // Two evaluate passes run per read; the button can be missing from one of them.
+  await withFake({ targets: [{ sessionId: "s1", url: wv("cccccccc-3333"),
+                               texts: ["short", "much longer text"], contextPcts: [61, null] }] },
+    async (fake) => {
+      const frames = await readFrames("127.0.0.1", fake.port, FAST);
+      const f = frames.find((x) => x.webviewId === "cccccccc-3333");
+      eq(f.text, "much longer text", "longest text still wins");
+      eq(f.contextPct, 61, "and the percentage from the other pass is not lost");
+    });
+});
+
+suite("cdp: a plain-string answer is still valid (no envelope)", () => {
+  eq(parseRead("just text"), { text: "just text", contextPct: null }, "bare string");
+  eq(parseRead('{"t":"hi","c":42}'), { text: "hi", contextPct: 42 }, "envelope");
+  eq(parseRead('{"broken'), { text: '{"broken', contextPct: null }, "unparseable -> treated as text");
+});

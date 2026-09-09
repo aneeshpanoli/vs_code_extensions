@@ -10,7 +10,10 @@ const WebSocket = require("ws");
 
 /**
  * @param {object} o
- *  targets:      [{ sessionId, url, type, text | texts[] }]  attached at the root
+ *  targets:      [{ sessionId, url, type, text | texts[], contextPct }]  attached at the root
+ *                contextPct makes the target answer with the real envelope {t,c} that the reader
+ *                sends (innerText + the compact button's "% context used"); without it the target
+ *                answers a bare string, which the reader must still accept.
  *  grandchildren:{ [parentSessionId]: [{ sessionId, url, type, text }] } revealed once the parent is armed
  *  dropEvaluate: never answer Runtime.evaluate
  *  detachAfterAttach: [sessionId] emit Target.detachedFromTarget right after attaching
@@ -81,7 +84,11 @@ async function startFakeDevTools(o = {}) {
         const n = evalCounts.get(sid) || 0;
         evalCounts.set(sid, n + 1);
         // `texts` lets a target answer differently on the first and second pass
-        const value = Array.isArray(t.texts) ? (t.texts[Math.min(n, t.texts.length - 1)] || "") : (t.text || "");
+        const text = Array.isArray(t.texts) ? (t.texts[Math.min(n, t.texts.length - 1)] || "") : (t.text || "");
+        const pcts = Array.isArray(t.contextPcts) ? t.contextPcts[Math.min(n, t.contextPcts.length - 1)] : t.contextPct;
+        const value = (t.contextPct !== undefined || t.contextPcts !== undefined)
+          ? JSON.stringify({ t: text, c: pcts === undefined ? null : pcts })
+          : text;
         return reply({ result: { type: "string", value } });
       }
       reply();

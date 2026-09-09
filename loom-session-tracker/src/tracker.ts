@@ -6,7 +6,7 @@
 import { readFrames, Frame } from "./cdp";
 import { classify, detectOwner } from "./roles";
 import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings } from "./registry";
-import { countSessions, publishCount, SessionCount } from "./sessions";
+import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
 import { detectLimit, LimitInfo } from "./limits";
 import { detectModel, ModelInfo } from "./models";
 
@@ -15,7 +15,13 @@ export interface AgentView extends Agent { liveness: Liveness; limit?: LimitInfo
 
 /** An ORCHESTRATOR/PO frame. Never a tracked agent (classify() excludes owners so it can never be
  *  retired/deleted) — surfaced separately purely so the UI can show it and let the user tag it. */
-export interface OwnerView { webviewId: string; lastSeen: number; liveness: Liveness; }
+export interface OwnerView {
+  webviewId: string; lastSeen: number; liveness: Liveness;
+  /** Mid-turn right now. The context-memory cycle must never type into a working composer. */
+  busy: boolean;
+  /** The panel's own "% context used" (its compact button). null below ~50%, where it isn't rendered. */
+  contextPct: number | null;
+}
 
 export interface TickResult {
   ok: boolean;                 // did the CDP read succeed (≥1 frame)?
@@ -28,7 +34,7 @@ const STALE_AFTER_MS = 90_000;   // an agent unseen this long is dropped from th
 
 export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
-  private owners = new Map<string, number>();  // orchestrator/PO webviewId -> lastSeen
+  private owners = new Map<string, { lastSeen: number; busy: boolean; contextPct: number | null }>();
   private lastOk = 0;
   private models = new Map<string, ModelInfo | null>();   // role -> model shown in its footer
   private limits = new Map<string, LimitInfo | null>();   // role -> usage-limit banner state
@@ -92,7 +98,8 @@ export class Tracker {
       }
       if (!role) {
         // Not a worker frame. If it looks like the orchestrator/PO, remember it as a tag candidate.
-        if (detectOwner(f.text)) this.owners.set(f.webviewId, now0);
+        if (detectOwner(f.text)) this.owners.set(f.webviewId,
+          { lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null });
         continue;
       }
       // In a filtered window, `role` is already guaranteed to be in repoFilter's roster (validRoles came
@@ -131,7 +138,7 @@ export class Tracker {
   private ageOut() {
     const cutoff = Date.now() - STALE_AFTER_MS;
     for (const [role, a] of this.agents) if (a.lastSeen < cutoff) this.agents.delete(role);
-    for (const [wid, seen] of this.owners) if (seen < cutoff) this.owners.delete(wid);
+    for (const [wid, o] of this.owners) if (o.lastSeen < cutoff) this.owners.delete(wid);
   }
 
   /** Live = confirmed by the most recent SUCCESSFUL read. After a failed read nothing is "live". */
@@ -155,9 +162,9 @@ export class Tracker {
   /** Detected orchestrator/PO frames, for the UI's "tag me" affordance. */
   ownerView(): OwnerView[] {
     return Array.from(this.owners.entries())
-      .map(([webviewId, lastSeen]) => ({
-        webviewId, lastSeen,
-        liveness: this.livenessOf(lastSeen),
+      .map(([webviewId, o]) => ({
+        webviewId, lastSeen: o.lastSeen, busy: o.busy, contextPct: o.contextPct,
+        liveness: this.livenessOf(o.lastSeen),
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }

@@ -22,6 +22,7 @@ const vscode = {
   _executed: [],
   _quickPick: undefined,            // set to a value (or fn) to answer showQuickPick
   _answer: undefined,               // set to a value (or fn) to answer showInformationMessage actions
+  _warnAnswer: undefined,           // same, for showWarningMessage (destructive confirmations)
   _commands: {},                    // id -> handler, so a test can invoke what activate() registered
   _statusItems: [],
   _statusMessages: [],
@@ -32,6 +33,7 @@ const vscode = {
     this._executed = [];
     this._quickPick = undefined;
     this._answer = undefined;
+    this._warnAnswer = undefined;
     this._commands = {};
     this._statusItems = [];
     this._statusMessages = [];
@@ -54,7 +56,12 @@ const vscode = {
       const a = vscode._answer;
       return Promise.resolve(typeof a === "function" ? a(String(m), actions) : a);
     },
-    showWarningMessage(m) { vscode._messages.warn.push(String(m)); return Promise.resolve(undefined); },
+    showWarningMessage(m, ...rest) {
+      vscode._messages.warn.push(String(m));
+      const actions = rest.filter((r) => typeof r === "string");
+      const a = vscode._warnAnswer;
+      return Promise.resolve(typeof a === "function" ? a(String(m), actions) : a);
+    },
     showErrorMessage(m) { vscode._messages.error.push(String(m)); return Promise.resolve(undefined); },
     showQuickPick(items) {
       const a = vscode._quickPick;

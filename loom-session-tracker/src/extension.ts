@@ -11,13 +11,17 @@ import { currentRepo, repoRoot } from "./project";
 import { Coordinator, MAX_ACTIVE_TOTAL } from "./coordinator";
 import { roleToRepo, boardRoles, busRepos } from "./registry";
 import { setLock } from "./locks";
-import { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
+import { getOrchestrator, setOrchestrator, setOrchestratorFrame, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
+import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
+         MemoryConfig, Step } from "./memory";
+import { injectTo } from "./inject";
+import { DEFAULT_WINDOW_TOKENS, pct } from "./context";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -27,7 +31,10 @@ export function activate(context: vscode.ExtensionContext) {
     const repo = currentRepo();     // THIS window's project — the tracker shows/writes only this repo
     const tracker = new Tracker(repo);
     const coord = new Coordinator(tracker, repo);
-    const rosterRoles = () => Array.from(roleToRepo().entries()).filter(([, r]) => r === repo).map(([role]) => role);
+    // THIS project's roster, read from ITS board — not from the global {role: repo} map, which is
+    // last-writer-wins across buses. Measured: `alpha`/`prototyping`/`art`/`developer` are each
+    // claimed by two projects, so a shared role name silently emptied this window's spawn list.
+    const rosterRoles = () => (repo ? boardRoles(repo) : []);
     const tree = new SessionTreeProvider(tracker, repo);
 
     context.subscriptions.push(vscode.window.registerTreeDataProvider("loomSessions", tree));
@@ -102,6 +109,71 @@ export function activate(context: vscode.ExtensionContext) {
         });
       }
     };
+    // ── orchestrator context memory ────────────────────────────────────────────────────────
+    // The orchestrator is the session that actually fills up (measured: shwab_docker's had
+    // auto-compacted four times). Past the threshold it is asked to write its working memory to a
+    // file, and ONLY once that file is verifiably on disk is /clear sent, followed by a prompt that
+    // reads the memory back and reconciles it with the docs. Every rule lives in memory.decide();
+    // this function is the I/O around it.
+    let contextNote = "";
+    const contextConfig = (): MemoryConfig => ({
+      enabled: cfg().get<boolean>("contextMemory", true) === true,
+      thresholdPct: Math.min(95, Math.max(10, Number(cfg().get("contextThresholdPct", 50)) || 50)),
+      saveTimeoutMinutes: Math.max(1, Number(cfg().get("contextSaveTimeoutMinutes", 10)) || 10),
+      clearTimeoutMinutes: Math.max(1, Number(cfg().get("contextClearTimeoutMinutes", 5)) || 5),
+      cooldownMinutes: Math.max(0, Number(cfg().get("contextCooldownMinutes", 15)) ?? 15),
+    });
+    const runContextMemory = (force = false): Step | null => {
+      if (!repo) return null;
+      const orch = getOrchestrator(repo);
+      if (!orch) { contextNote = ""; return null; }
+      // Keep the tag's frame id current: prefer the detected frame it already names, else adopt the
+      // ONLY detected orchestrator frame. Two candidates and no match = ambiguous, so nothing is
+      // adopted and the cycle simply reports that it cannot inject safely.
+      const owners = tracker.ownerView();
+      const known = owners.find((o) => o.webviewId === orch.webviewId) ||
+                    (owners.length === 1 ? owners[0] : undefined);
+      if (known && known.webviewId !== orch.webviewId) setOrchestratorFrame(repo, known.webviewId);
+      const state = loadState(repo);
+      const windowTokens = Math.max(1000, Number(cfg().get("contextWindowTokens", DEFAULT_WINDOW_TOKENS)) || DEFAULT_WINDOW_TOKENS);
+      const reading = readOrchestratorContext(repo, orch.role, state, windowTokens);
+      const memoryFile = String(cfg().get("contextMemoryFile", "") || "") || defaultMemoryFile(repo, orch.role);
+      const mem = statMemory(memoryFile);
+      const base = contextConfig();
+      const step = decide({
+        repo, role: orch.role,
+        webviewId: known ? known.webviewId : (orch.webviewId ?? null),
+        reading, busy: known ? known.busy : false, frameSeen: !!known,
+        panelPct: known ? known.contextPct : null,
+        memoryFile, memoryMtime: mem.mtime, memorySize: mem.size, now: Date.now(),
+        // A manual run skips the threshold and the cooldown — and NOTHING else. Every safety rule
+        // (verified save, not mid-turn, timeouts) still applies.
+        cfg: force ? { ...base, enabled: true, thresholdPct: 0, cooldownMinutes: 0 } : base,
+        state,
+      });
+      // The panel's own number when the compact button is up, the transcript estimate otherwise.
+      const panelPct = known ? known.contextPct : null;
+      contextNote = panelPct !== null
+        ? `${Math.round(panelPct)}% context used (its own figure)`
+        : reading ? `~${pct(reading.fraction)}% context (${reading.tokens.toLocaleString()} tok, estimated)` : "";
+      // Persist BEFORE injecting: if the injection fails, the phase still advances and the cycle
+      // times out with a warning — a clear can never be sent twice.
+      saveState(repo, step.next);
+      debugLog({ contextMemory: { step: step.kind, note: step.note, phase: step.next.phase, reading } });
+      if (step.kind === "none") return step;
+      if (step.kind === "abort") { vscode.window.showWarningMessage(`Loom: ${step.note}`); return step; }
+      const target = { role: orch.role, webviewId: known ? known.webviewId : (orch.webviewId ?? null) };
+      const label = step.kind === "save" ? `Loom: ${step.note}`
+        : step.kind === "clear" ? `Loom: ${orch.role} — ${step.note} (its context is being reset)`
+        : `Loom: ${step.note}`;
+      vscode.window.showInformationMessage(label);
+      injectTo(target, step.message || "", "context-debug.json", (ok, note) => {
+        if (!ok) vscode.window.showWarningMessage(
+          `Loom: could not deliver the context-memory ${step.kind} to ${orch.role} (${note}).`);
+      });
+      return step;
+    };
+
     const runNotifier = () => {
       if (cfg().get("notifyOrchestrator", true) !== true) return;
       for (const ev of notifier.scan()) {
@@ -126,6 +198,7 @@ export function activate(context: vscode.ExtensionContext) {
         runLimitWatcher();
         runModelPolicy();
         runHealth();
+        runContextMemory();
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator
@@ -150,6 +223,7 @@ export function activate(context: vscode.ExtensionContext) {
                   `\nthey will be resumed automatically when the limit lifts`
                 : "";
             })() +
+            (contextNote ? `\n\nOrchestrator: ${contextNote}` : "") +
             (r.changedRepos.length ? `\nmap updated: ${r.changedRepos.join(", ")}` : "");
           status.backgroundColor = (total >= MAX_ACTIVE_TOTAL || busy)
             ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
@@ -276,6 +350,21 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage("Loom worktree cleanup:\n" + notes.join("\n"), { modal: true });
         await runTick();
       }),
+      // Bank the orchestrator's memory now, whatever its context is. The clear still only happens
+      // after the memory doc is verified on disk, on a later tick.
+      vscode.commands.registerCommand("loomSessionTracker.bankContext", async () => {
+        if (!repo) { vscode.window.showWarningMessage("Loom: no project in this window."); return; }
+        const orch = getOrchestrator(repo);
+        if (!orch) { vscode.window.showWarningMessage("Loom: no orchestrator tagged — nothing to bank."); return; }
+        const ok = await vscode.window.showWarningMessage(
+          `Ask '${orch.role}' to write its working memory, then CLEAR its context?\n\n` +
+          `The clear is only sent once the memory file exists and was written after this request. ` +
+          `If it is not written, nothing is cleared.`,
+          { modal: true }, "Bank & clear");
+        if (ok !== "Bank & clear") return;
+        const step = runContextMemory(true);
+        if (step && step.kind === "none") vscode.window.showInformationMessage(`Loom: ${step.note}`);
+      }),
       vscode.commands.registerCommand("loomSessionTracker.status", () => {
         const v = tracker.view();
         const lines = v.map((a) => `${a.liveness === "live" ? "●" : "○"} ${a.repo}/${a.role}  ${a.webviewId.slice(0, 8)}`);
@@ -350,7 +439,11 @@ export function activate(context: vscode.ExtensionContext) {
           return vscode.window.showQuickPick(roles, { placeHolder: "Which role is the orchestrator (receives finish notifications)?" });
         });
         if (!role) return;
-        setOrchestrator(target, role);
+        // A candidate node knows the exact frame; recording it is what makes the orchestrator
+        // injectable at all (see inject.ts).
+        const wid = (node && typeof node.webviewId === "string") ? node.webviewId
+          : (tracker.ownerView().length === 1 ? tracker.ownerView()[0].webviewId : null);
+        setOrchestrator(target, role, wid);
         vscode.window.showInformationMessage(`Loom: '${role}' tagged as orchestrator of ${target} — workers finishing will notify it automatically.`);
         tree.refresh();
       }),

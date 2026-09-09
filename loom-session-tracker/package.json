@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.9.1",
+  "version": "0.11.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -96,6 +96,11 @@
         "command": "loomSessionTracker.worktreeReport",
         "title": "Loom Sessions: Worktree Cleanup Report",
         "icon": "$(trash)"
+      },
+      {
+        "command": "loomSessionTracker.bankContext",
+        "title": "Loom Sessions: Bank Orchestrator Memory & Clear Context",
+        "icon": "$(save)"
       }
     ],
     "menus": {
@@ -129,6 +134,11 @@
           "command": "loomSessionTracker.toggleAllProjects",
           "when": "view == loomSessions",
           "group": "navigation@6"
+        },
+        {
+          "command": "loomSessionTracker.bankContext",
+          "when": "view == loomSessions",
+          "group": "navigation@7"
         }
       ],
       "view/item/context": [
@@ -284,6 +294,47 @@
           "type": "boolean",
           "default": false,
           "description": "Show every project's roles in this window instead of only this project's."
+        },
+        "loomSessionTracker.contextMemory": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the tagged orchestrator's context passes the threshold, have it write its working memory to a file, then clear its context and reload from that file. The clear is only sent after the file is verified on disk."
+        },
+        "loomSessionTracker.contextThresholdPct": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 95,
+          "description": "Percent of the context window at which the orchestrator is asked to bank its memory."
+        },
+        "loomSessionTracker.contextWindowTokens": {
+          "type": "number",
+          "default": 1000000,
+          "minimum": 1000,
+          "description": "Size of a session's context window, in tokens. Measured on this machine: auto-compaction fires at ~999,700 tokens, i.e. a 1M window \u2014 the model id alone does not tell you (sessions reporting 'claude-opus-5' reached 910k)."
+        },
+        "loomSessionTracker.contextMemoryFile": {
+          "type": "string",
+          "default": "",
+          "description": "Where the orchestrator writes its working memory. Empty = ~/.claude/loom/<repo>/<role>/memory.md."
+        },
+        "loomSessionTracker.contextSaveTimeoutMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "How long to wait for the memory file after asking for it. If it does not appear the cycle aborts and NOTHING is cleared."
+        },
+        "loomSessionTracker.contextClearTimeoutMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "How long to wait for a fresh session to appear after /clear before giving up on the cycle (the memory file is already safe)."
+        },
+        "loomSessionTracker.contextCooldownMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "description": "Minimum time between context-memory cycles for one orchestrator."
         }
       }
     }

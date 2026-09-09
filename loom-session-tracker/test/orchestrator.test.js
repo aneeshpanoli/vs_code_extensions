@@ -1,6 +1,7 @@
 const { suite, ok, eq, load, makeRepo, busPath, readJson } = require("./harness");
 const fs = require("fs");
-const { getOrchestrator, setOrchestrator, ORCHESTRATOR_CANDIDATES } = load("orchestrator.js");
+const { getOrchestrator, setOrchestrator, setOrchestratorFrame, ORCHESTRATOR_CANDIDATES } =
+  load("orchestrator.js");
 
 suite("orchestrator: candidates always include the PO names", () => {
   // These must be offered independently of any board roster — that was the bug that
@@ -41,4 +42,36 @@ suite("orchestrator: bad input never throws", () => {
   const repo = makeRepo({ roles: {} });
   fs.writeFileSync(busPath(repo, "orchestrator.json"), "{{{ not json");
   eq(getOrchestrator(repo), null, "corrupt file treated as untagged");
+});
+
+suite("orchestrator: the tag carries the FRAME, which is the only way to inject into it", () => {
+  // loom_cdp.py's find_role drops owner-detected frames, so a role name cannot reach the
+  // orchestrator; the webviewId recorded here is what every injection to it addresses.
+  const repo = makeRepo({ roles: { w: {} } });
+  setOrchestrator(repo, "product-owner", "wid-abc");
+  eq(getOrchestrator(repo).webviewId, "wid-abc", "frame recorded at tag time");
+  setOrchestrator(repo, "product-owner");
+  eq(getOrchestrator(repo).webviewId, null, "tagging without one records null, not undefined");
+});
+
+suite("orchestrator: the frame is refreshed when it moves, and the tag is otherwise untouched", () => {
+  // Frame ids change when a window reloads; the tag must follow without being re-made.
+  const repo = makeRepo({ roles: { w: {} } });
+  setOrchestrator(repo, "product-owner", "wid-old");
+  const taggedAt = getOrchestrator(repo).taggedAt;
+  setOrchestratorFrame(repo, "wid-new");
+  eq(getOrchestrator(repo).webviewId, "wid-new", "followed the frame");
+  eq(getOrchestrator(repo).role, "product-owner", "role unchanged");
+  eq(getOrchestrator(repo).taggedAt, taggedAt, "and the tag time is not rewritten");
+});
+
+suite("orchestrator: a frame refresh with nothing to say writes nothing", () => {
+  const repo = makeRepo({ roles: { w: {} } });
+  setOrchestratorFrame(repo, "wid-x");                       // untagged: no file to create
+  eq(getOrchestrator(repo), null, "still untagged");
+  setOrchestrator(repo, "product-owner", "wid-same");
+  const before = fs.statSync(busPath(repo, "orchestrator.json")).mtimeMs;
+  setOrchestratorFrame(repo, "wid-same");                    // identical: no churn
+  setOrchestratorFrame(repo, null);                          // nothing to record
+  eq(fs.statSync(busPath(repo, "orchestrator.json")).mtimeMs, before, "file untouched");
 });

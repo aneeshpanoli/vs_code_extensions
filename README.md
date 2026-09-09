@@ -70,13 +70,66 @@ multi-select; never automatic). Also reports hygiene across every bus — long-d
 buses and role names claimed by more than one project. Settings:
 `showStartupDigest`, `staleBusDays`, `digestUnbankedCheck`.
 
-**Status health:** the finish notifier only fires on `working -> idle/blocked`,
-so a role that goes `working` and never returns is invisible to it. A stall
-watchdog flags roles working with no `status.json` update for `stallMinutes`
-(default 45) and tells the orchestrator once per stall. It also flags statuses
-outside the protocol (`idle|working|blocked`) — a role sitting in e.g. `active`
-can never trigger a finish notification — and `updated_at` fields that have
-stopped being maintained.
+**Status health:** the finish notifier only fires on a working -> idle/blocked
+transition, so a role that goes `working` and never returns is invisible to it. A
+stall watchdog flags roles working with no `status.json` update for
+`stallMinutes` (default 45) and tells the orchestrator once per stall. It also
+flags statuses outside the protocol (`idle|working|blocked`) and `updated_at`
+fields that have stopped being maintained. The notifier itself baselines on any
+*working-like* status (`working|active|running|busy`), so a role writing e.g.
+`active` still announces its finishes — but the non-conforming status is still
+reported, because nothing else in the system recognises it.
+
+**Roster derivation:** a project's roles are its board entries *union* every bus
+directory holding a mailbox (`status.json` / `inbox.md` / `outbox.md`). A flat
+`board.json` mixes roles with metadata, and a name denylist could not tell them
+apart — funisland's board carries `standing_order`, `lanes`, `free_now` and so
+on, and listed only 3 of its 11 roles. Board entries are now recognised by
+*shape* (a role entry carries `session_id`/`branch`/`status`/`bound_at`), and a
+role with a mailbox counts whether or not the board remembers it. A dropped role
+was never harmless: it was undetectable in the sidebar, invisible to the stall
+watchdog, and its worktree read as orphaned and removable.
+
+**Orchestrator context memory:** the orchestrator is the session that actually
+fills up — it runs for days across every role, and one live bus showed four
+auto-compactions at ~999k tokens. Past `contextThresholdPct` (default 50% of
+`contextWindowTokens`, default 1,000,000 — the measured auto-compaction ceiling
+on this machine) it is asked to write its working memory to a file (default
+`~/.claude/loom/<repo>/<role>/memory.md`), then `/clear`, then a restore prompt
+that reads that file, the board, and the project docs — reconciling the memory
+against them so it stays true.
+
+Context is read from **two** sources. The panel's own compact button carries it
+in a title attribute — `73% context used — click to compact` — and the shipped
+webview renders that button only once usage passes ~50% (`100 - used >= 50`
+returns nothing), dividing by the app's own `contextWindow - maxOutputTokens -
+13000`. That is the best number available, so it wins when it is there; the CDP
+read pulls it alongside the panel text, since `innerText` cannot see an
+attribute. Below the button's threshold, and for the token count and the session
+identity, the session's own transcript is used
+(`~/.claude/projects/<slug>/<sessionId>.jsonl`: `input + cache_read +
+cache_creation` of the last main-thread turn; subagent turns skipped, tail-only
+— one live transcript is 63 MB). The percentages in Claude's sessions sidebar
+are usage-limit percentages, unrelated to context.
+
+`/clear` is irreversible from inside the session, so it is sent only when the
+memory file exists, is newer than the moment it was asked for, and is more than a
+stub — and never while the session is mid-turn. If the file never appears the
+cycle aborts and clears **nothing**. State lives on the bus
+(`<repo>/context-state.json`), so an IDE restart resumes mid-cycle rather than
+re-clearing. `Loom Sessions: Bank Orchestrator Memory & Clear Context` runs a
+cycle on demand (skipping only the threshold and cooldown). Settings:
+`contextMemory`, `contextThresholdPct`, `contextWindowTokens`,
+`contextMemoryFile`, `contextSaveTimeoutMinutes`, `contextClearTimeoutMinutes`,
+`contextCooldownMinutes`.
+
+**Reaching the orchestrator:** injections aimed at the orchestrator address its
+**webviewId**, recorded on the tag, not its role. `loom_cdp.py`'s `find_role()`
+drops any frame that content-detects as product-owner (the self-woke guard), so
+`inject --role product-owner` could never land — the finish notifier and stall
+alert had a delivery path that would always have failed. `loom_cdp.py` now takes
+`--webview-id` to address one named frame exactly: content detection is not
+consulted, so there is nothing left to misidentify.
 
 **Global concurrency:** roles working simultaneously across *all* projects are
 counted and published to `~/.claude/loom/working-sessions.json`; the digest warns
@@ -110,9 +163,12 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 195 checks across 17 files, zero dependencies, run under VSCodium's bundled node since this
-machine has no npm. Measured coverage (V8, `NODE_V8_COVERAGE=dir ./test.sh`):
-**89.7% of lines**, every module included. The CDP protocol is driven against a
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 292 checks across 21 files, zero dependencies, run under VSCodium's bundled node since this
+machine has no npm. Measured coverage: **95.1% of lines**, every module included
+— `rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3
+../tools/coverage.py /tmp/cov out` prints the per-module table (a line counts as
+covered unless every non-whitespace byte on it is inside a zero-count V8 range;
+tsc's import prologue is excluded from the denominator). The CDP protocol is driven against a
 fake DevTools server (`test/fake-devtools.js`) — HTTP discovery plus a websocket
 that answers auto-attach and `Runtime.evaluate` — so the reader's nesting,
 two-pass and timeout behaviour is tested without a browser. Suite takes ~10s

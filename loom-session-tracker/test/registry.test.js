@@ -1,4 +1,4 @@
-const { suite, ok, eq, load, makeRepo, busPath, writeJson, readJson } = require("./harness");
+const { suite, ok, eq, load, makeRepo, busPath, writeJson, readJson, setStatus } = require("./harness");
 const fs = require("fs");
 const { boardRoles, roleToRepo, writeTargetmaps, loadBindings, loadTargetmap, busRepos } = load("registry.js");
 
@@ -11,6 +11,40 @@ suite("registry: reads a FLAT board and filters metadata keys", () => {
   // A flat board mixes roles with metadata; only the metadata must be dropped.
   const repo = makeRepo({ repo: "x", bus: "y", orchestrator: "po", decisions: [], alpha: {}, beta: {} });
   eq(boardRoles(repo).sort(), ["alpha", "beta"], "metadata keys excluded");
+});
+
+suite("registry: flat-board metadata is excluded by SHAPE, not by a name denylist", () => {
+  // funisland's real board, reduced: prose keys plus `lanes`, an object that is not a role entry.
+  // The old name-denylist let all of these through as roles.
+  const repo = makeRepo({
+    _comment: "PO dispatch queue", updated: "2026-08-31", standing_order: "Do not idle",
+    priority_rule: "TRIAGE FIRST", standing_laws_for_every_item: ["measure the kid"],
+    free_now: "gamification — stood down",
+    lanes: { curriculum: [], gamification: [], UNOWNED: [] },
+    gamification: { session_id: "s1", branch: "b", status: "working", bound_at: "t" },
+  });
+  eq(boardRoles(repo), ["gamification"], "only the role-shaped entry survives");
+});
+
+suite("registry: a role with a mailbox is on the roster even if the board forgot it", () => {
+  // Measured 2026-09-08: funisland's board listed 3 of its 11 roles, gaming's omitted `gameplay`
+  // and livegita's omitted `developer` — all of them with full mailboxes on the bus. A dropped role
+  // is invisible to the tracker AND makes its worktree look orphaned, so the bus wins.
+  const repo = makeRepo({ declared: { session_id: "s1" } });
+  setStatus(repo, "forgotten", { status: "working" });
+  fs.mkdirSync(busPath(repo, "hasinbox"), { recursive: true });
+  fs.writeFileSync(busPath(repo, "hasinbox", "inbox.md"), "hi");
+  eq(boardRoles(repo), ["declared", "forgotten", "hasinbox"], "board roster UNION mailbox roles");
+});
+
+suite("registry: a bus directory with no mailbox is not a role", () => {
+  // funisland/.pytest_cache and funisland/audit both live on the bus and are not roles.
+  const repo = makeRepo({ declared: { session_id: "s1" } });
+  fs.mkdirSync(busPath(repo, "audit"), { recursive: true });
+  fs.writeFileSync(busPath(repo, "audit", "notes.md"), "not a mailbox");
+  fs.mkdirSync(busPath(repo, ".pytest_cache"), { recursive: true });
+  fs.writeFileSync(busPath(repo, ".pytest_cache", "status.json"), "{}");
+  eq(boardRoles(repo), ["declared"], "no mailbox (or a dotted name) -> not a role");
 });
 
 suite("registry: a nested roster is NOT metadata-filtered", () => {

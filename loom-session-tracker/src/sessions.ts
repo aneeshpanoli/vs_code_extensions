@@ -29,6 +29,20 @@ const SESSIONS_LIST = /^\s*ACCOUNT & USAGE/;
 
 export interface FrameLike { webviewId?: string | null; text?: string; }
 
+/** How far back from the end the working indicator can sit (it renders just above the footer chips). */
+export const BUSY_TAIL_CHARS = 400;
+/** Measured 2026-09-08 on two mid-turn panels: the footer reads
+ *  "... Stewing... ⏎ Claude is working ⏎ Remote Control ⏎ Opus 5 ⏎ Medium ⏎ Bypass permissions",
+ *  while an idle panel goes straight from the last reply to "Remote Control". The spinner WORD varies
+ *  ("Stewing", "Finagling", ...) so it is useless as a marker; the accessibility line does not. */
+const BUSY_RE = /Claude is working|esc to interrupt|Stop responding/i;
+
+/** Is this panel in the middle of a turn? Only the tail is examined, so a conversation that merely
+ *  discusses the phrase (this one does) is not mistaken for a working session. */
+export function isBusy(text: string | null | undefined): boolean {
+  return BUSY_RE.test(String(text || "").slice(-BUSY_TAIL_CHARS));
+}
+
 export interface SessionCount {
   at: string;
   /** Claude conversations open simultaneously in this editor (all windows). */

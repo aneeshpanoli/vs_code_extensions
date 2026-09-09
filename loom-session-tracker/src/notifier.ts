@@ -9,13 +9,12 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execFile } from "child_process";
+import { injectTo } from "./inject";
 import { boardRoles } from "./registry";
 import { getOrchestrator } from "./orchestrator";
+import { isWorkingLike } from "./health";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
-const LOOM_CDP = path.join(LOOM_ROOT, "loom_cdp.py");
-const INJECT_TIMEOUT_MS = 60_000;
 
 interface RoleStatus { status: string; current?: string; last_line?: string; updated_at?: string; }
 
@@ -101,12 +100,19 @@ export class Notifier {
       cur[role] = { status: s.status, current: String(s.current || "") };
       // A role back at work clears its old announcements, so its NEXT finish is announced
       // even if it repeats the same handoff id.
-      if (s.status === "working") {
+      if (isWorkingLike(s.status)) {
         for (const k of Array.from(announced)) if (k.startsWith(role + "|")) announced.delete(k);
         continue;
       }
       const before = prev?.get(role);
-      if (!before || before.status !== "working") continue;   // only working -> done counts
+      // WORKING-LIKE, not literally "working". The protocol says idle | working | blocked, but the
+      // sessions do not all obey it — measured 2026-09-08, shwab_docker/trader sat in "active" and
+      // livegita/po in "orchestrating". Comparing `before.status === "working"` meant a role that
+      // works under any other name could NEVER announce a finish: the transition was invisible and
+      // the orchestrator was never told. health.ts already reports this as a protocol violation;
+      // now the notifier survives it instead of going silent. (Finishing INTO an off-protocol status
+      // always worked — only the baseline was too strict.)
+      if (!before || !isWorkingLike(before.status)) continue;   // only working -> done counts
       const task = String(s.current || before.current || "");
       const key = `${role}|${task}|${s.status}`;
       if (announced.has(key)) continue;
@@ -124,7 +130,10 @@ export class Notifier {
     return firstEver ? [] : events;
   }
 
-  /** Inject a "check the outbox" prompt into the orchestrator's composer. Fire-and-forget. */
+  /** Inject a "check the outbox" prompt into the orchestrator's composer. Fire-and-forget.
+   *  Addressed by the tag's FRAME id when it has one: `--role product-owner` cannot reach the
+   *  orchestrator at all (loom_cdp.py's self-guard drops owner-detected frames), which is why this
+   *  path had never actually delivered anything. */
   notifyOrchestrator(ev: FinishEvent, done?: (ok: boolean, note: string) => void): void {
     const orch = getOrchestrator(ev.repo);
     if (!orch) { done?.(false, "no orchestrator tagged"); return; }
@@ -133,22 +142,7 @@ export class Notifier {
       `[loom-notify] ${ev.role} ${verb}${ev.task ? ` on ${ev.task}` : ""}` +
       `${ev.lastLine ? ` — "${ev.lastLine}"` : ""}. ` +
       `Read ~/.claude/loom/${ev.repo}/${ev.role}/outbox.md and act on it.`;
-    execFile(
-      "python3", [LOOM_CDP, "inject", "--role", orch.role, "--message", msg, "--submit"],
-      { timeout: INJECT_TIMEOUT_MS },
-      (err, stdout, stderr) => {
-        const ok = !err;
-        this.debug({
-          at: new Date().toISOString(), event: ev, orchestrator: orch.role, ok,
-          out: String(stdout || "").slice(-400), err: String((err && err.message) || stderr || "").slice(-400),
-        });
-        done?.(ok, ok ? "injected" : String((err && err.message) || "inject failed"));
-      });
+    injectTo({ role: orch.role, webviewId: orch.webviewId }, msg, "notify-debug.json", done);
   }
 
-  private debug(obj: unknown): void {
-    try {
-      fs.writeFileSync(path.join(LOOM_ROOT, "notify-debug.json"), JSON.stringify(obj, null, 2));
-    } catch { /* ignore */ }
-  }
 }

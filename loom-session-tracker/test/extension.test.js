@@ -225,3 +225,151 @@ suite("tick: the limit watcher runs — a lifted limit resumes the session", asy
     eq(readJson(busPath(repo, "limit-state.json")).roles.alpha, undefined, "and the role was cleared");
   } finally { off(); }
 });
+
+// ── orchestrator context memory (end to end through activate) ─────────────────────────────────
+/** A transcript for `sessionId` reporting `tokens` of context, in its own project directory. */
+function transcript(dirName, sessionId, tokens) {
+  const dir = path.join(os.homedir(), ".claude", "projects", dirName);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, sessionId + ".jsonl"), JSON.stringify({
+    type: "assistant", sessionId,
+    message: { model: "claude-opus-5", usage: { input_tokens: tokens } },
+  }) + "\n");
+  return dir;
+}
+const poFrame = (wid, extra = "") =>
+  frame(wid, "orchestrating the board" + extra + marker("product-owner") + footer());
+
+suite("context memory: a full orchestrator is asked to bank its memory", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx1" } }, "ctxA");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  transcript("-ctx-a", "sid-ctx1", 700000);              // 70% of the 1M window
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    const st = readJson(busPath(repo, "context-state.json"));
+    eq(st.phase, "saving", "cycle started");
+    eq(st.triggerTokens, 700000, "recorded what triggered it");
+    const dbg = readJson(path.join(LOOM, "context-debug.json"));
+    match(dbg.out, /--webview-id wid-po/, "injected into the orchestrator's own frame");
+    match(dbg.message, /write your working memory/, "asking for the memory doc");
+    ok(vscode._messages.info.some((m) => /70% context|bank its memory/.test(m)), "and the user is told");
+  } finally { off(); }
+});
+
+suite("context memory: a comfortable context is left alone", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx2" } }, "ctxB");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  transcript("-ctx-b", "sid-ctx2", 200000);              // 20%
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    const st = readJson(busPath(repo, "context-state.json"));
+    ok(!st || st.phase === "watch", "still watching");
+    match(vscode._statusItems[0].tooltip, /Orchestrator: ~20% context.*estimated/, "the reading is surfaced");
+  } finally { off(); }
+});
+
+suite("context memory: /clear follows only once the memory file is on disk", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx3" } }, "ctxC");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  transcript("-ctx-c", "sid-ctx3", 800000);
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    eq(readJson(busPath(repo, "context-state.json")).phase, "saving", "asked for the save");
+    // Tick again with NO memory file: nothing may be cleared.
+    await vscode.commands.executeCommand("loomSessionTracker.refresh");
+    await settle(60);
+    eq(readJson(busPath(repo, "context-state.json")).phase, "saving", "still waiting, nothing cleared");
+    // Now the orchestrator writes it.
+    writeJson(busPath(repo, "po", "memory.md"), {});      // just to make the directory
+    fs.writeFileSync(busPath(repo, "po", "memory.md"), "# working memory\n" + "x".repeat(500));
+    await vscode.commands.executeCommand("loomSessionTracker.refresh");
+    await settle(60);
+    eq(readJson(busPath(repo, "context-state.json")).phase, "clearing", "now it clears");
+    eq(readJson(path.join(LOOM, "context-debug.json")).message, "/clear", "with /clear");
+  } finally { off(); }
+});
+
+suite("context memory: the fresh session is restored from the memory doc", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx4" } }, "ctxD");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  const dir = transcript("-ctx-d", "sid-ctx4", 800000);
+  fs.mkdirSync(busPath(repo, "po"), { recursive: true });
+  fs.writeFileSync(busPath(repo, "po", "memory.md"), "# working memory\n" + "x".repeat(500));
+  writeJson(busPath(repo, "context-state.json"), {
+    phase: "clearing", sessionId: "sid-ctx4", transcriptDir: dir, phaseAt: Date.now() - 1000,
+  });
+  transcript("-ctx-d", "sid-ctx5", 900);                 // the post-/clear session
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    const st = readJson(busPath(repo, "context-state.json"));
+    eq(st.phase, "watch", "cycle complete");
+    eq(st.sessionId, "sid-ctx5", "now following the new session");
+    eq(st.cycles, 1, "counted");
+    match(readJson(path.join(LOOM, "context-debug.json")).message, /Fresh context/, "restore prompt sent");
+  } finally { off(); }
+});
+
+suite("context memory: nothing happens without a tagged orchestrator", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx6" } }, "ctxE");
+  openProject(repo);
+  transcript("-ctx-e", "sid-ctx6", 900000);              // 90% full, but nobody is tagged
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    ok(!readJson(busPath(repo, "context-state.json")), "no cycle without a tag");
+  } finally { off(); }
+});
+
+suite("context memory: the manual command runs the cycle regardless of the threshold", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx7" } }, "ctxF");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  transcript("-ctx-f", "sid-ctx7", 50000);               // only 5% — far below the threshold
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    const before = readJson(busPath(repo, "context-state.json"));
+    ok(!before || before.phase === "watch", "the tick left it alone");
+    vscode._warnAnswer = "Bank & clear";                 // confirm the modal
+    await vscode.commands.executeCommand("loomSessionTracker.bankContext");
+    await settle(60);
+    eq(readJson(busPath(repo, "context-state.json")).phase, "saving", "manual run started the cycle");
+  } finally { off(); }
+});
+
+suite("context memory: the manual command does nothing when it is not confirmed", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-ctx8" } }, "ctxG");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  transcript("-ctx-g", "sid-ctx8", 900000);
+  const off = await activate([poFrame("wid-po")]);
+  try {
+    await settle(60);
+    writeJson(busPath(repo, "context-state.json"), { phase: "watch", lastCycleAt: Date.now() });
+    vscode._warnAnswer = undefined;                      // dismissed
+    await vscode.commands.executeCommand("loomSessionTracker.bankContext");
+    await settle(60);
+    eq(readJson(busPath(repo, "context-state.json")).phase, "watch", "nothing started");
+  } finally { off(); }
+});
+
+suite("tagging: the orchestrator's frame id is recorded, so it can be injected into", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ctxH");
+  openProject(repo);
+  const off = await activate([poFrame("wid-owner"), frame("wid-a", "work" + marker("alpha") + footer())]);
+  try {
+    vscode._quickPick = "product-owner";
+    await vscode.commands.executeCommand("loomSessionTracker.tagOrchestrator");
+    const tag = readJson(busPath(repo, "orchestrator.json"));
+    eq(tag.role, "product-owner", "tagged");
+    eq(tag.webviewId, "wid-owner", "with the detected frame");
+  } finally { off(); }
+});

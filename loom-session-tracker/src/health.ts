@@ -7,8 +7,9 @@
 //
 // Two related blind spots, also measured:
 //   * Non-conforming statuses. The protocol is idle | working | blocked, but `shwab_docker/trader`
-//     sat in "active" and `livegita/po` in "orchestrating". The notifier only reacts when the
-//     PREVIOUS status was "working", so a role in "active" can never announce a finish at all.
+//     sat in "active" and `livegita/po` in "orchestrating". The notifier now baselines on any
+//     WORKING_LIKE status so those finishes still announce, but the roles are still reported: a
+//     status nothing else recognises is a protocol break worth fixing at the source.
 //   * `updated_at` drift: trader's timestamp was 1205h stale while its file had been touched 4.9h
 //     ago, i.e. something rewrites the file without maintaining the field the panel displays.
 //
@@ -18,11 +19,12 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execFile, execFileSync } from "child_process";
+import { execFileSync } from "child_process";
 import { boardRoles, busRepos } from "./registry";
+import { injectTo } from "./inject";
+import { getOrchestrator } from "./orchestrator";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
-const LOOM_CDP = path.join(LOOM_ROOT, "loom_cdp.py");
 const WORKING_FILE = path.join(LOOM_ROOT, "working-sessions.json");
 const HOUR_MS = 3_600_000;
 
@@ -280,22 +282,12 @@ export class HealthWatcher {
     return events;
   }
 
-  /** Tell the orchestrator a worker appears stuck. Fire-and-forget, like the other injectors. */
+  /** Tell the orchestrator a worker appears stuck. Fire-and-forget, like the other injectors, and
+   *  addressed by the tag's frame id for the same reason (see inject.ts). */
   alert(ev: StallEvent, orchestratorRole: string, done?: (ok: boolean, note: string) => void): void {
     const msg = `[loom-stall] ${ev.role} has been "${ev.status}" with no status update for ` +
       `${ev.staleHours.toFixed(1)}h. Check whether it is stuck, blocked, or finished without saying so.`;
-    execFile("python3", [LOOM_CDP, "inject", "--role", orchestratorRole, "--message", msg, "--submit"],
-      { timeout: 60_000 },
-      (err, stdout, stderr) => {
-        const ok = !err;
-        try {
-          fs.writeFileSync(path.join(LOOM_ROOT, "stall-debug.json"), JSON.stringify({
-            at: new Date().toISOString(), event: ev, orchestrator: orchestratorRole, ok,
-            out: String(stdout || "").slice(-400),
-            err: String((err && err.message) || stderr || "").slice(-400),
-          }, null, 2));
-        } catch { /* ignore */ }
-        done?.(ok, ok ? "alerted" : String((err && err.message) || "inject failed"));
-      });
+    const tag = getOrchestrator(ev.repo);
+    injectTo({ role: orchestratorRole, webviewId: tag ? tag.webviewId : null }, msg, "stall-debug.json", done);
   }
 }

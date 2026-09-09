@@ -16,6 +16,11 @@ export const ORCHESTRATOR_CANDIDATES = ["product-owner", "productowner"];
 export interface OrchestratorTag {
   role: string;
   taggedAt: string;   // ISO
+  /** The exact frame the orchestrator is running in. Injection into the orchestrator MUST address this
+   *  id: loom_cdp.py's find_role() drops any frame that content-detects as product-owner (the self-woke
+   *  guard), so `--role product-owner` can never land. Refreshed each tick while it is detectable, and
+   *  left alone when it is not — a stale id is better than none, and the injector reports a miss. */
+  webviewId?: string | null;
 }
 
 function file(repo: string): string {
@@ -31,7 +36,7 @@ export function getOrchestrator(repo: string | null): OrchestratorTag | null {
   return null;
 }
 
-export function setOrchestrator(repo: string, role: string | null): void {
+export function setOrchestrator(repo: string, role: string | null, webviewId?: string | null): void {
   const f = file(repo);
   if (role === null) {
     try { fs.unlinkSync(f); } catch { /* already gone */ }
@@ -39,6 +44,20 @@ export function setOrchestrator(repo: string, role: string | null): void {
   }
   fs.mkdirSync(path.dirname(f), { recursive: true });
   const tmp = f + ".tmp." + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify({ role, taggedAt: new Date().toISOString() }, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(
+    { role, taggedAt: new Date().toISOString(), webviewId: webviewId ?? null }, null, 2));
   fs.renameSync(tmp, f);
+}
+
+/** Record the frame the orchestrator is in, keeping the tag otherwise intact. No-op when untagged or
+ *  when nothing changed, so a tick never churns the file. */
+export function setOrchestratorFrame(repo: string, webviewId: string | null): void {
+  const cur = getOrchestrator(repo);
+  if (!cur || !webviewId || cur.webviewId === webviewId) return;
+  const f = file(repo);
+  try {
+    const tmp = f + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify({ ...cur, webviewId }, null, 2));
+    fs.renameSync(tmp, f);
+  } catch { /* a frame refresh must never throw from a tick */ }
 }

@@ -8,7 +8,12 @@ import * as fs from "fs";
 import * as os from "os";
 import WebSocket from "ws";
 
-export interface Frame { webviewId: string | null; url: string; text: string; }
+export interface Frame {
+  webviewId: string | null; url: string; text: string;
+  /** The panel's OWN "% context used", read off the compact button's title attribute. null when the
+   *  button is absent — which the shipped webview does deliberately below 50% used (see CONTEXT_RE). */
+  contextPct: number | null;
+}
 
 /** Timing overrides. Defaults are the production constants; tests drive the protocol fast. */
 export interface ReadOpts { settleMs?: number; hardCapMs?: number; }
@@ -43,11 +48,39 @@ function httpJson(host: string, port: number, path: string, timeoutMs: number): 
 
 // Recursive innerText grab, descending into #active-frame and nested same-process iframes (depth 4) —
 // the OOPIF conversation lives there, NOT in the empty webview shell body.
-const DEEP_TEXT =
+//
+// It ALSO pulls the context-usage percentage, which innerText cannot see. Read out of the shipped
+// webview bundle (2.1.263), the compact button renders as
+//     <button title="73% context used — click to compact"><svg pie/></button>
+// i.e. the number lives in an ATTRIBUTE and in a hover-only popup ("N% of context remaining until
+// auto-compact." / "Click to compact now.") — never in text. The button is rendered only when
+// `100 - used >= 50` is false, so its mere presence means the session is past 50% used, and its
+// denominator is the app's own `contextWindow - maxOutputTokens - 13000`. That is a better number
+// than anything computed outside the app, so it wins when it is there.
+const DEEP_READ =
   "(function(){function g(d,k){var t=(d&&d.body)?(d.body.innerText||''):'';" +
   "if(k>0&&d&&d.querySelectorAll){var f=d.querySelectorAll('iframe');" +
   "for(var i=0;i<f.length;i++){try{var c=f[i].contentDocument;if(c)t+='\\n'+g(c,k-1);}catch(e){}}}return t;}" +
-  "return g(document,4);})()";
+  "function p(d,k){try{var b=d.querySelectorAll('button[title]');" +
+  "for(var i=0;i<b.length;i++){var m=/([0-9]{1,3})% context used/.exec(b[i].getAttribute('title')||'');" +
+  "if(m)return parseInt(m[1],10);}}catch(e){}" +
+  "if(k>0&&d&&d.querySelectorAll){var f=d.querySelectorAll('iframe');" +
+  "for(var i=0;i<f.length;i++){try{var c=f[i].contentDocument;" +
+  "if(c){var r=p(c,k-1);if(r!==null)return r;}}catch(e){}}}return null;}" +
+  "return JSON.stringify({t:g(document,4),c:p(document,4)});})()";
+
+/** The reader's payload. A plain string (no envelope) is still accepted as text with no percentage. */
+export function parseRead(value: string): { text: string; contextPct: number | null } {
+  if (value.charCodeAt(0) === 123 /* { */) {
+    try {
+      const o = JSON.parse(value);
+      if (o && typeof o === "object" && typeof o.t === "string") {
+        return { text: o.t, contextPct: typeof o.c === "number" && isFinite(o.c) ? o.c : null };
+      }
+    } catch { /* not our envelope — treat it as text */ }
+  }
+  return { text: value, contextPct: null };
+}
 
 const WEBVIEW_ID_RE = /[?&]id=([0-9a-f][0-9a-f-]+)/i;
 function webviewId(url: string): string | null {
@@ -78,7 +111,7 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
     let idCtr = 1;
     const sessions = new Map<string, any>();   // sessionId -> targetInfo
     const armed = new Set<string>();
-    const text = new Map<string, string>();    // sessionId -> best innerText
+    const text = new Map<string, { text: string; contextPct: number | null }>();   // sessionId -> best read
     const socket = ws;
 
     const send = (method: string, params?: any, sessionId?: string): number => {
@@ -139,22 +172,33 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
     await pump(null);
     const pending = new Map<number, string>();
     for (const sid of Array.from(sessions.keys()))
-      pending.set(send("Runtime.evaluate", { expression: DEEP_TEXT, returnByValue: true }, sid), sid);
+      pending.set(send("Runtime.evaluate", { expression: DEEP_READ, returnByValue: true }, sid), sid);
     const r1 = await pump(null);
     for (const sid of Array.from(sessions.keys()))
-      pending.set(send("Runtime.evaluate", { expression: DEEP_TEXT, returnByValue: true }, sid), sid);
+      pending.set(send("Runtime.evaluate", { expression: DEEP_READ, returnByValue: true }, sid), sid);
     const r2 = await pump(null);
     const merged = new Map<number, any>([...r1, ...r2]);
     for (const [id, sid] of pending) {
       const res = merged.get(id);
       const val = res && res.result && res.result.type === "string" ? (res.result.value || "") : "";
-      if (val.length > (text.get(sid) || "").length) text.set(sid, val);
+      if (!val) continue;
+      const read = parseRead(val);
+      const prev = text.get(sid);
+      // Longest text wins (a partial render must not beat a full one), but a percentage seen on
+      // EITHER pass is kept: the button can be missing from one read and present in the next.
+      if (!prev || read.text.length > prev.text.length) {
+        text.set(sid, { text: read.text, contextPct: read.contextPct ?? (prev ? prev.contextPct : null) });
+      } else if (prev.contextPct === null && read.contextPct !== null) {
+        text.set(sid, { ...prev, contextPct: read.contextPct });
+      }
     }
 
     const frames: Frame[] = [];
     for (const [sid, info] of sessions) {
       const url = (info && info.url) || "";
-      frames.push({ webviewId: webviewId(url), url, text: text.get(sid) || "" });
+      const read = text.get(sid);
+      frames.push({ webviewId: webviewId(url), url, text: read ? read.text : "",
+                    contextPct: read ? read.contextPct : null });
     }
     return frames;
   } catch {
