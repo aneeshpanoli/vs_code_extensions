@@ -99,18 +99,34 @@ on this machine) it is asked to write its working memory to a file (default
 that reads that file, the board, and the project docs — reconciling the memory
 against them so it stays true.
 
-Context is read from **two** sources. The panel's own compact button carries it
+The orchestrator's frame is identified by **attribution**, not by being the only
+candidate: the CDP read is editor-wide, so every window sees every window's
+panels. A frame is adopted for this project only when its own text names this
+project's paths (`loom/<repo>/`, `Containers/<repo>/`) and no other's — measured,
+the live PO frames scored Gaming:76, livegita:115, funisland:36,
+shwab_docker:24, so the signal is not close. An unattributable frame is adopted
+by nobody and the cycle holds instead of typing into a stranger.
+
+Context is read from **two** sources, and either alone is enough. The panel's own compact button carries it
 in a title attribute — `73% context used — click to compact` — and the shipped
 webview renders that button only once usage passes ~50% (`100 - used >= 50`
 returns nothing), dividing by the app's own `contextWindow - maxOutputTokens -
 13000`. That is the best number available, so it wins when it is there; the CDP
 read pulls it alongside the panel text, since `innerText` cannot see an
-attribute. Below the button's threshold, and for the token count and the session
-identity, the session's own transcript is used
+attribute. Below the button's threshold, and for the token count, the session's own
+transcript is used when the board records a `session_id` for the tagged role
 (`~/.claude/projects/<slug>/<sessionId>.jsonl`: `input + cache_read +
 cache_creation` of the last main-thread turn; subagent turns skipped, tail-only
 — one live transcript is 63 MB). The percentages in Claude's sessions sidebar
 are usage-limit percentages, unrelated to context.
+
+A completed `/clear` is confirmed by either of two witnesses, because only one is
+always available: a **new session id** in the same project directory, or the
+**panel emptying out** (a cleared tab renders ~170 characters and loses its
+compact button; the live orchestrator conversation it replaces was 145,680). The
+second is what makes the cycle work for an orchestrator tagged as
+`product-owner`, which no board lists and which therefore has no transcript at
+all.
 
 `/clear` is irreversible from inside the session, so it is sent only when the
 memory file exists, is newer than the moment it was asked for, and is more than a
@@ -163,8 +179,8 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 292 checks across 21 files, zero dependencies, run under VSCodium's bundled node since this
-machine has no npm. Measured coverage: **95.1% of lines**, every module included
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 303 checks across 21 files, zero dependencies, run under VSCodium's bundled node since this
+machine has no npm. Measured coverage: **95.2% of lines**, every module included
 — `rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3
 ../tools/coverage.py /tmp/cov out` prints the per-module table (a line counts as
 covered unless every non-whitespace byte on it is inside a zero-count V8 range;

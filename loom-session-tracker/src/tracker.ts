@@ -4,8 +4,8 @@
 // targetmaps degrade gracefully instead of going blank on a transient CDP hiccup.
 
 import { readFrames, Frame } from "./cdp";
-import { classify, detectOwner } from "./roles";
-import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings } from "./registry";
+import { classify, detectOwner, attributeRepo } from "./roles";
+import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings, busRepos } from "./registry";
 import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
 import { detectLimit, LimitInfo } from "./limits";
 import { detectModel, ModelInfo } from "./models";
@@ -21,6 +21,12 @@ export interface OwnerView {
   busy: boolean;
   /** The panel's own "% context used" (its compact button). null below ~50%, where it isn't rendered. */
   contextPct: number | null;
+  /** Which project this orchestrator frame is about, by dominant path mentions. null = can't tell.
+   *  The CDP read is editor-wide, so without this every window adopts the same frame. */
+  repo: string | null;
+  /** How much text the panel is showing. A freshly cleared panel holds a couple of hundred
+   *  characters, which is how a `/clear` is confirmed when there is no transcript to check. */
+  chars: number;
 }
 
 export interface TickResult {
@@ -34,7 +40,9 @@ const STALE_AFTER_MS = 90_000;   // an agent unseen this long is dropped from th
 
 export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
-  private owners = new Map<string, { lastSeen: number; busy: boolean; contextPct: number | null }>();
+  private owners = new Map<string, {
+    lastSeen: number; busy: boolean; contextPct: number | null; repo: string | null; chars: number;
+  }>();
   private lastOk = 0;
   private models = new Map<string, ModelInfo | null>();   // role -> model shown in its footer
   private limits = new Map<string, LimitInfo | null>();   // role -> usage-limit banner state
@@ -80,6 +88,7 @@ export class Tracker {
     // AUTHORITATIVE bindings recorded at /loom-inject time (webviewId->role) in bindings.json — a file the
     // tracker NEVER writes, so a /loom self-binding is durable and can't be clobbered by our own detection cache.
     const authoritative = this.repoFilter ? loadBindings(this.repoFilter) : new Map<string, string>();
+    const allRepos = busRepos();          // for attributing an orchestrator frame to ONE project
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
     const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string }>();
     const now0 = Date.now();
@@ -98,8 +107,10 @@ export class Tracker {
       }
       if (!role) {
         // Not a worker frame. If it looks like the orchestrator/PO, remember it as a tag candidate.
-        if (detectOwner(f.text)) this.owners.set(f.webviewId,
-          { lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null });
+        if (detectOwner(f.text)) this.owners.set(f.webviewId, {
+          lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
+          repo: attributeRepo(f.text, allRepos).repo, chars: (f.text || "").length,
+        });
         continue;
       }
       // In a filtered window, `role` is already guaranteed to be in repoFilter's roster (validRoles came
@@ -164,6 +175,7 @@ export class Tracker {
     return Array.from(this.owners.entries())
       .map(([webviewId, o]) => ({
         webviewId, lastSeen: o.lastSeen, busy: o.busy, contextPct: o.contextPct,
+        repo: o.repo, chars: o.chars,
         liveness: this.livenessOf(o.lastSeen),
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);

@@ -69,3 +69,41 @@ export function detectOwner(text: string): boolean {
 
 /** The canonical orchestrator role name to tag when a candidate frame is picked. */
 export const OWNER_ROLE_NAME = "product-owner";
+
+// ── which PROJECT a frame is about ──────────────────────────────────────────────────────────
+// A worker frame says which role it is (above). An ORCHESTRATOR frame says no such thing — it is
+// excluded from role classification by design — so nothing here could tell which project's
+// orchestrator it was. That mattered the moment tagging worked: `ownerView()` is editor-WIDE (the
+// CDP read sees every window), so "the only detected orchestrator frame" was adopted by every
+// project window at once. Measured live 2026-09-09, one frame (a8faad83) was tagged as the
+// orchestrator of BOTH Gaming and livegita while being neither: its text mentions shwab_docker 24
+// times and the other two zero times.
+//
+// A session working on a project cannot avoid naming its paths — its bus (`loom/<repo>/`) and its
+// checkout (`Containers/<repo>/`). Measured across the same read, the signal is not close:
+//   9130bb00 Gaming:76   3c1e2d8b livegita:115   51d1f960 funisland:36   a8faad83 shwab_docker:24
+// and only one frame mentioned two projects at all (funisland:3 Gaming:2 — correctly ambiguous).
+const REPO_PATH_RE = (repo: string) =>
+  new RegExp(`(?:loom|Containers|worktrees)[\\/\\\\]${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\/\\\\]`, "g");
+
+export interface RepoAttribution { repo: string | null; purity: number; hits: number; }
+
+/**
+ * Which project a frame is about, by dominant path mentions. `null` when nothing is mentioned or no
+ * project dominates — an unattributable frame is never adopted, which is the safe direction: the
+ * cycle then reports that it cannot identify the orchestrator instead of typing into a stranger.
+ */
+export function attributeRepo(text: string, repos: string[]): RepoAttribution {
+  const t = text || "";
+  let total = 0, dom: string | null = null, domN = 0;
+  for (const repo of repos) {
+    if (!repo) continue;
+    const n = (t.match(REPO_PATH_RE(repo)) || []).length;
+    if (!n) continue;
+    total += n;
+    if (n > domN) { dom = repo; domN = n; }
+  }
+  if (!dom) return { repo: null, purity: 0, hits: 0 };
+  const purity = domN / total;
+  return purity >= PURITY_MIN ? { repo: dom, purity, hits: domN } : { repo: null, purity, hits: domN };
+}

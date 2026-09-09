@@ -22,7 +22,7 @@ const reading = (tokens, sessionId = "s-old", file = "/tmp/x/s-old.jsonl") =>
 function input(over = {}) {
   return {
     repo: "demo", role: "po", webviewId: "wid-po",
-    reading: reading(600_000), busy: false, frameSeen: true, panelPct: null,
+    reading: reading(600_000), busy: false, frameSeen: true, panelPct: null, panelChars: 150000,
     memoryFile: "/tmp/demo/po/memory.md", memoryMtime: null, memorySize: 0,
     now: NOW, cfg: { ...DEFAULT_CONFIG }, state: { phase: "watch" },
     ...over,
@@ -82,10 +82,21 @@ suite("memory: the cooldown stops a second cycle from stacking up", () => {
   eq(later.kind, "save", "past the cooldown it fires");
 });
 
-suite("memory: with no transcript the context is unknown and nothing is done", () => {
-  const s = decide(input({ reading: null }));
+suite("memory: with neither a panel figure nor a transcript, nothing is done", () => {
+  const s = decide(input({ reading: null, panelPct: null }));
   eq(s.kind, "none", "no action on an unknown context");
   match(s.note, /context unknown/, "says what is missing");
+});
+
+suite("memory: the panel alone is enough to run a cycle", () => {
+  // The normal case for an orchestrator: measured 2026-09-09, both live tags name `product-owner`,
+  // which no board lists — so there is no session_id, no transcript, and the panel is all there is.
+  const s = decide(input({ reading: null, panelPct: 68 }));
+  eq(s.kind, "save", "the cycle starts");
+  eq(s.next.triggerPct, 68, "on the panel's number");
+  eq(s.next.sessionId, undefined, "with no session identity to record");
+  eq(s.next.transcriptDir, undefined, "and nowhere to watch for a new transcript");
+  match(s.message, /68% full\./, "and the prompt states the percentage without inventing a token count");
 });
 
 suite("memory: an unidentified frame blocks the whole cycle", () => {
@@ -280,4 +291,43 @@ suite("memory: the restore prompt re-establishes who it is and what to trust", (
   match(m, /you are po, the orchestrator of demo/, "identity");
   match(m, /~\/\.claude\/loom\/demo\/board\.json/, "the board");
   match(m, /correct \/bus\/memory\.md on the spot/, "keeps the memory doc true");
+});
+
+// ── confirming a clear with no transcript to check ──────────────────────────
+suite("memory: an emptied panel is proof enough that /clear landed", () => {
+  // A cleared tab renders ~170 characters and loses its compact button; the live orchestrator
+  // conversation it replaces was 145,680.
+  const s = decide(input({
+    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    reading: null, panelPct: null, panelChars: 170,
+  }));
+  eq(s.kind, "restore", "restored");
+  match(s.note, /panel emptied/, "and says which witness it used");
+  eq(s.next.cycles, 1, "cycle counted");
+});
+
+suite("memory: a still-full panel is not a clear", () => {
+  const s = decide(input({
+    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    reading: null, panelPct: null, panelChars: 145680,
+  }));
+  eq(s.kind, "none", "no restore");
+  match(s.note, /waiting for the cleared session/, "keeps waiting");
+});
+
+suite("memory: a small panel that still shows a context button has NOT been cleared", () => {
+  // Belt and braces: the button only exists past 50% used, so its presence contradicts a clear.
+  const s = decide(input({
+    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    reading: null, panelPct: 62, panelChars: 500,
+  }));
+  eq(s.kind, "none", "not treated as cleared");
+});
+
+suite("memory: an unseen panel during clearing is not mistaken for an empty one", () => {
+  const s = decide(input({
+    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    reading: null, panelPct: null, panelChars: null, frameSeen: false,
+  }));
+  eq(s.kind, "none", "unknown is not proof");
 });

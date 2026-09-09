@@ -29,6 +29,9 @@ const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
 /** A memory doc smaller than this is not a handoff — treat it as "not written yet". */
 export const MIN_MEMORY_BYTES = 200;
+/** A panel holding less than this has been cleared. Measured: a cleared tab renders ~170 characters;
+ *  a live orchestrator conversation ran 145,680. Two orders of magnitude of daylight. */
+export const CLEARED_PANEL_CHARS = 4000;
 
 export type Phase = "watch" | "saving" | "clearing";
 
@@ -74,7 +77,10 @@ export interface ContextInput {
   role: string;
   /** The exact frame to inject into. Without it the orchestrator cannot be reached (see inject.ts). */
   webviewId: string | null;
-  /** Current occupancy, or null when no transcript could be read. */
+  /** Current occupancy, or null when no transcript could be read — which is the NORMAL case for an
+   *  orchestrator: measured 2026-09-09, both live tags name `product-owner`, and no board lists that
+   *  role (they list `productowner` or `po`), so there is no session_id to find a transcript by. The
+   *  cycle therefore must not require one. */
   reading: ContextReading | null;
   /** The panel's OWN "% context used", off its compact button (cdp.ts). null when the button is not
    *  rendered — which the app does below 50% used, so its absence is itself information. This is the
@@ -83,6 +89,10 @@ export interface ContextInput {
   panelPct: number | null;
   /** Is the session mid-turn? Never type into a working composer. */
   busy: boolean;
+  /** How much text the panel is showing, or null when the frame was not seen. A cleared panel holds
+   *  a couple of hundred characters (playbook §13: "a cleared tab is ~170 characters"), which is how
+   *  a /clear is confirmed when no transcript identifies the session. */
+  panelChars: number | null;
   /** Was the orchestrator's frame actually seen in this tick's CDP read? When it was not, `busy` is a
    *  guess rather than a fact — and a `/clear` typed into a turn that is still running interrupts it.
    *  So the two steps that carry consequences wait for a frame we can see. The RESTORE step is exempt
@@ -111,8 +121,9 @@ export interface Step {
 
 // ── the three prompts ───────────────────────────────────────────────────────────────────────
 /** Asked BEFORE the clear. It has to be explicit that the file is the only thing that survives. */
-export function saveMessage(memoryFile: string, tokens: number, percent: number): string {
-  return `[loom-context] Your context is ${percent}% full (${tokens.toLocaleString()} tokens). ` +
+export function saveMessage(memoryFile: string, tokens: number | null, percent: number): string {
+  return `[loom-context] Your context is ${percent}% full` +
+    `${tokens ? ` (${tokens.toLocaleString()} tokens)` : ""}. ` +
     `Before it fills up, write your working memory to ${memoryFile} — overwrite it, keep it current:\n` +
     `  • what you are doing RIGHT NOW and the exact next step;\n` +
     `  • every role: what it was handed, what it owes you, what it is waiting on;\n` +
@@ -181,16 +192,22 @@ export function decide(input: ContextInput): Step {
   }
 
   if (phase === "clearing") {
-    // A cleared session is a NEW session id in the same project directory. Until one shows up, the
-    // clear has not landed — and a cleared session is small, so the size check is a second witness.
-    const fresh = input.reading && input.reading.sessionId !== state.sessionId;
-    if (fresh && input.reading) {
+    // TWO independent witnesses that the clear landed, because only one of them is always available:
+    //   * a NEW session id in the same project directory (when a transcript identifies the session);
+    //   * the PANEL emptying out — a cleared tab renders a couple of hundred characters and loses its
+    //     compact button. This is the one that works for an orchestrator with no board entry.
+    const fresh = !!(input.reading && input.reading.sessionId !== state.sessionId);
+    const emptied = input.panelChars !== null && input.panelChars < CLEARED_PANEL_CHARS &&
+      (input.panelPct === null || input.panelPct === undefined);
+    if (fresh || emptied) {
       return {
         kind: "restore",
         message: restoreMessage(input.memoryFile, input.repo, input.role),
-        note: `cleared — restoring ${input.role} from ${path.basename(input.memoryFile)}`,
+        note: `cleared (${fresh ? "new session id" : "panel emptied"}) — ` +
+          `restoring ${input.role} from ${path.basename(input.memoryFile)}`,
         next: { ...state, phase: "watch", phaseAt: now, lastCycleAt: now,
-                sessionId: input.reading.sessionId, memoryBaseline: undefined,
+                sessionId: input.reading ? input.reading.sessionId : state.sessionId,
+                memoryBaseline: undefined,
                 cycles: (state.cycles ?? 0) + 1, lastNote: "cycle complete" },
       };
     }
@@ -207,12 +224,15 @@ export function decide(input: ContextInput): Step {
   }
 
   // watch
-  if (!input.reading) return keep("no transcript for the orchestrator — context unknown");
   // The panel's figure when it has one, the transcript's when it does not. They can disagree: the
   // panel divides by the USABLE window (its own `contextWindow - maxOutputTokens - 13000`), while the
-  // transcript only knows the tokens sent. Where the app has an opinion, the app is right.
+  // transcript only knows the tokens sent. Where the app has an opinion, the app is right — and it is
+  // the only source that needs nothing else to work.
   const fromPanel = typeof input.panelPct === "number" && isFinite(input.panelPct);
-  const percent = fromPanel ? Math.round(input.panelPct as number) : pct(input.reading.fraction);
+  if (!fromPanel && !input.reading) {
+    return keep("context unknown — no compact button on the panel and no transcript for this role");
+  }
+  const percent = fromPanel ? Math.round(input.panelPct as number) : pct((input.reading as ContextReading).fraction);
   if (percent < cfg.thresholdPct) {
     return keep(`context ${percent}% (< ${cfg.thresholdPct}%)${fromPanel ? "" : ", estimated"}`);
   }
@@ -223,14 +243,17 @@ export function decide(input: ContextInput): Step {
   if (input.busy) return keep(`context ${percent}% — waiting for the current turn to finish`);
   return {
     kind: "save",
-    message: saveMessage(input.memoryFile, input.reading.tokens, percent),
-    note: `context ${percent}%${fromPanel ? "" : " (estimated)"} ` +
-      `(${input.reading.tokens.toLocaleString()} tokens) — asking ${input.role} to bank its memory`,
+    message: saveMessage(input.memoryFile, input.reading ? input.reading.tokens : null, percent),
+    note: `context ${percent}%${fromPanel ? "" : " (estimated)"}` +
+      `${input.reading ? ` (${input.reading.tokens.toLocaleString()} tokens)` : ""}` +
+      ` — asking ${input.role} to bank its memory`,
     next: {
       ...state, phase: "saving", phaseAt: now, role: input.role,
-      sessionId: input.reading.sessionId, transcriptDir: path.dirname(input.reading.file),
+      sessionId: input.reading ? input.reading.sessionId : undefined,
+      transcriptDir: input.reading ? path.dirname(input.reading.file) : undefined,
       memoryBaseline: input.memoryMtime ?? 0,
-      triggerTokens: input.reading.tokens, triggerPct: percent, triggerFromPanel: fromPanel,
+      triggerTokens: input.reading ? input.reading.tokens : undefined,
+      triggerPct: percent, triggerFromPanel: fromPanel,
       lastNote: "save requested",
     },
   };

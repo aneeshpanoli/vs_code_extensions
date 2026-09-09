@@ -1,5 +1,5 @@
 const { suite, ok, eq, load } = require("./harness");
-const { classify, detectOwner, OWNER_ROLE_NAME } = load("roles.js");
+const { classify, detectOwner, attributeRepo, OWNER_ROLE_NAME } = load("roles.js");
 
 const ROLES = new Set(["gamification", "curriculum", "art", "product-owner"]);
 const marker = (r) => "\nLOOMROLE=" + r + "\n";
@@ -72,4 +72,38 @@ suite("roles: role names are matched lowercase (boards must use lowercase ids)",
   // could never be detected. Every real board uses lowercase; this pins the constraint.
   eq(classify("x\nLOOMROLE=Gamification\n", ROLES).role, "gamification", "marker case is normalised");
   eq(classify("x\nLOOMROLE=alpha\n", new Set(["Alpha"])).role, null, "a capitalised ROSTER id never matches");
+});
+
+// ── which project an orchestrator frame belongs to ──────────────────────────
+const REPOS = ["Gaming", "livegita", "funisland", "shwab_docker"];
+
+suite("repo: an orchestrator frame is attributed by its own bus paths", () => {
+  // Measured live 2026-09-09: the PO frames scored Gaming:76, livegita:115, funisland:36,
+  // shwab_docker:24 — a session cannot work on a project without naming its paths.
+  const t = "read ~/.claude/loom/Gaming/developer/outbox.md then Containers/Gaming/src and " +
+            "~/.claude/loom/Gaming/board.json";
+  eq(attributeRepo(t, REPOS).repo, "Gaming", "dominant project wins");
+});
+
+suite("repo: a frame that names no project is attributed to none", () => {
+  // This is the safe direction: an unattributable frame is never adopted as anyone's orchestrator.
+  eq(attributeRepo("just a chat about keto and lifting", REPOS).repo, null, "no paths, no claim");
+  eq(attributeRepo("", REPOS).repo, null, "empty text");
+  eq(attributeRepo("loom/not-a-project/x", REPOS).repo, null, "unknown project name");
+});
+
+suite("repo: a frame torn between two projects is attributed to neither", () => {
+  const t = "loom/Gaming/a loom/Gaming/b loom/funisland/c loom/funisland/d loom/funisland/e";
+  const r = attributeRepo(t, REPOS);
+  eq(r.repo, null, "no clear owner -> no adoption");
+  ok(r.purity < 0.8, "and the purity says why: " + r.purity.toFixed(2));
+});
+
+suite("repo: this is what stops one PO frame being every project's orchestrator", () => {
+  // The live bug: a8faad83 was tagged as orchestrator of BOTH Gaming and livegita while mentioning
+  // only shwab_docker. Attribution gives each window a way to refuse it.
+  const shwab = "TR-027 ruling; see ~/.claude/loom/shwab_docker/trader/inbox.md and " +
+                "~/.claude/loom/shwab_docker/board.json";
+  eq(attributeRepo(shwab, REPOS).repo, "shwab_docker", "belongs to shwab_docker");
+  ok(attributeRepo(shwab, REPOS).repo !== "Gaming", "and therefore not to Gaming");
 });

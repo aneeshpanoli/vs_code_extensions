@@ -328,8 +328,9 @@ const transcript = (dirName, sessionId, tokens) => {
   }) + "\n");
   return dir;
 };
-const poFrame = (wid, extra = {}) =>
-  ({ ...frame(wid, "orchestrating" + marker("product-owner") + footer()), ...extra });
+const poFrame = (wid, repo, extra = {}) =>
+  ({ ...frame(wid, `orchestrating ~/.claude/loom/${repo}/board.json ~/.claude/loom/${repo}/po/inbox.md `
+      + marker("product-owner") + footer()), ...extra });
 
 suite("tick: a stalled role is warned about, and the orchestrator is told", async () => {
   const repo = makeRepo({ roles: { alpha: {} } }, "rptA");
@@ -339,7 +340,7 @@ suite("tick: a stalled role is warned about, and the orchestrator is told", asyn
   writeJson(busPath(repo, "alpha", "status.json"), { status: "working", current: "H-1" });
   const old = Date.now() - 5 * 3600_000;
   fs.utimesSync(busPath(repo, "alpha", "status.json"), new Date(old), new Date(old));
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     match(warns(), /alpha has been "working" for 5\.0h with no status update/, "warned with the duration");
@@ -352,7 +353,7 @@ suite("tick: a context-memory step that cannot be delivered is surfaced, not swa
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-rpt-b", "sid-rptB", 800000);
-  const off = await activate([poFrame("wid-po")], undefined, "fail");
+  const off = await activate([poFrame("wid-po", repo)], undefined, "fail");
   try {
     await settle(120);
     match(warns(), /could not deliver the context-memory save to po/, "says which step failed");
@@ -368,7 +369,7 @@ suite("tick: a cycle whose memory never arrives warns and clears nothing", async
   writeJson(busPath(repo, "context-state.json"),
     { phase: "saving", phaseAt: Date.now() - 30 * 60_000, memoryBaseline: 0, sessionId: "sid-rptC" });
   fs.rmSync(path.join(LOOM, "context-debug.json"), { force: true });   // this file is shared
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     match(warns(), /did not write .*memory\.md within 10m — NOT clearing/, "explicit that nothing was destroyed");
@@ -382,7 +383,7 @@ suite("tick: the orchestrator's frame is adopted when the tag has a stale one", 
   const repo = makeRepo({ roles: { alpha: {} } }, "rptD");
   openProject(repo);
   setOrchestrator(repo, "product-owner", "wid-old");
-  const off = await activate([poFrame("wid-new")]);
+  const off = await activate([poFrame("wid-new", repo)]);
   try {
     await settle(60);
     eq(readJson(busPath(repo, "orchestrator.json")).webviewId, "wid-new", "followed the live frame");
@@ -394,7 +395,7 @@ suite("tick: the panel's own context figure is what the tooltip shows when it is
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-rpt-e", "sid-rptE", 100000);            // the estimate would say 10%
-  const off = await activate([poFrame("wid-po", { contextPct: 64 })]);
+  const off = await activate([poFrame("wid-po", repo, { contextPct: 64 })]);
   try {
     await settle(60);
     match(vscode._statusItems[0].tooltip, /Orchestrator: 64% context used \(its own figure\)/,
@@ -437,7 +438,7 @@ suite("command digest: says nothing needs you when nothing does", async () => {
   const repo = makeRepo({ roles: {} }, "rptH");
   openProject(repo);
   setOrchestrator(repo, "product-owner", "wid-po");
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await run("digest");
     await settle(30);
@@ -474,5 +475,40 @@ suite("command worktreeReport: a confirmed removal keeps the branch and logs the
     match(infos(), /ghost: removed — branch worktree-ghost kept/, "branch kept, and said so");
     const log = readJson(path.join(LOOM, "worktree-removals.json"));
     ok(log.some((e) => e.role === "ghost" && e.branch === "worktree-ghost"), "removal logged with its branch");
+  } finally { off(); }
+});
+
+suite("tick: a foreign orchestrator frame is never adopted as this project's", async () => {
+  // The live bug this prevents (2026-09-09): the CDP read is editor-wide, so shwab_docker's PO frame
+  // was the only candidate in every window and got tagged as the orchestrator of Gaming AND livegita.
+  // A cycle there would have banked one project's memory into a session that had never seen it.
+  const other = makeRepo({ roles: { x: {} } }, "cmdForeign");
+  const repo = makeRepo({ po: { session_id: "sid-foreign" } }, "cmdW");
+  openProject(repo);
+  setOrchestrator(repo, "po", null);
+  transcript("-cmd-w", "sid-foreign", 900000);          // 90% full: it would fire if it could
+  const off = await activate([poFrame("wid-other", other)]);   // a PO frame belonging elsewhere
+  try {
+    await settle(60);
+    eq(readJson(busPath(repo, "orchestrator.json")).webviewId, null, "not adopted");
+    const st = readJson(busPath(repo, "context-state.json"));
+    eq(st.phase, "watch", "and no cycle started");
+  } finally { off(); }
+});
+
+suite("tick: the cycle runs on the panel alone when the role has no transcript", async () => {
+  // `product-owner` is what the tag command offers first, and no board lists it — so there is no
+  // session_id and no transcript. The compact button is the whole signal.
+  const repo = makeRepo({ roles: { alpha: {} } }, "cmdX");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  const off = await activate([poFrame("wid-po", repo, { contextPct: 71 })]);
+  try {
+    await settle(80);
+    const st = readJson(busPath(repo, "context-state.json"));
+    eq(st.phase, "saving", "the cycle started with no transcript at all");
+    eq(st.triggerPct, 71, "on the panel's own figure");
+    eq(st.triggerFromPanel, true, "recorded as the panel's number");
+    match(readJson(path.join(LOOM, "context-debug.json")).message, /71% full/, "and the prompt says so");
   } finally { off(); }
 });

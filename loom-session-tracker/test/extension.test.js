@@ -237,15 +237,18 @@ function transcript(dirName, sessionId, tokens) {
   }) + "\n");
   return dir;
 }
-const poFrame = (wid, extra = "") =>
-  frame(wid, "orchestrating the board" + extra + marker("product-owner") + footer());
+// A real orchestrator frame names its own project's bus constantly; that is how the tracker tells
+// WHICH project's orchestrator it is (the CDP read is editor-wide).
+const poFrame = (wid, repo, extra = "") =>
+  frame(wid, `orchestrating ~/.claude/loom/${repo}/ and ~/.claude/loom/${repo}/board.json ` +
+    extra + marker("product-owner") + footer());
 
 suite("context memory: a full orchestrator is asked to bank its memory", async () => {
   const repo = makeRepo({ po: { session_id: "sid-ctx1" } }, "ctxA");
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-ctx-a", "sid-ctx1", 700000);              // 70% of the 1M window
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     const st = readJson(busPath(repo, "context-state.json"));
@@ -263,7 +266,7 @@ suite("context memory: a comfortable context is left alone", async () => {
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-ctx-b", "sid-ctx2", 200000);              // 20%
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     const st = readJson(busPath(repo, "context-state.json"));
@@ -277,7 +280,7 @@ suite("context memory: /clear follows only once the memory file is on disk", asy
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-ctx-c", "sid-ctx3", 800000);
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     eq(readJson(busPath(repo, "context-state.json")).phase, "saving", "asked for the save");
@@ -306,7 +309,7 @@ suite("context memory: the fresh session is restored from the memory doc", async
     phase: "clearing", sessionId: "sid-ctx4", transcriptDir: dir, phaseAt: Date.now() - 1000,
   });
   transcript("-ctx-d", "sid-ctx5", 900);                 // the post-/clear session
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     const st = readJson(busPath(repo, "context-state.json"));
@@ -321,7 +324,7 @@ suite("context memory: nothing happens without a tagged orchestrator", async () 
   const repo = makeRepo({ po: { session_id: "sid-ctx6" } }, "ctxE");
   openProject(repo);
   transcript("-ctx-e", "sid-ctx6", 900000);              // 90% full, but nobody is tagged
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     ok(!readJson(busPath(repo, "context-state.json")), "no cycle without a tag");
@@ -333,7 +336,7 @@ suite("context memory: the manual command runs the cycle regardless of the thres
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-ctx-f", "sid-ctx7", 50000);               // only 5% — far below the threshold
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     const before = readJson(busPath(repo, "context-state.json"));
@@ -350,7 +353,7 @@ suite("context memory: the manual command does nothing when it is not confirmed"
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
   transcript("-ctx-g", "sid-ctx8", 900000);
-  const off = await activate([poFrame("wid-po")]);
+  const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
     writeJson(busPath(repo, "context-state.json"), { phase: "watch", lastCycleAt: Date.now() });

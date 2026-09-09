@@ -127,10 +127,14 @@ export function activate(context: vscode.ExtensionContext) {
       if (!repo) return null;
       const orch = getOrchestrator(repo);
       if (!orch) { contextNote = ""; return null; }
-      // Keep the tag's frame id current: prefer the detected frame it already names, else adopt the
-      // ONLY detected orchestrator frame. Two candidates and no match = ambiguous, so nothing is
-      // adopted and the cycle simply reports that it cannot inject safely.
-      const owners = tracker.ownerView();
+      // WHICH FRAME IS THIS PROJECT'S ORCHESTRATOR. The CDP read is editor-wide, so "the only
+      // detected orchestrator frame" is not this window's — measured 2026-09-09, one shwab_docker PO
+      // frame had been adopted as the orchestrator of BOTH Gaming and livegita, and a cycle there
+      // would have banked Gaming's memory into a session that has never seen Gaming. So a frame is
+      // only used when it is ATTRIBUTABLE to this project (dominant `loom/<repo>/` path mentions),
+      // whether it was adopted this tick or recorded at tag time. Unattributable = no frame = the
+      // cycle holds and says so.
+      const owners = tracker.ownerView().filter((o) => o.repo === repo);
       const known = owners.find((o) => o.webviewId === orch.webviewId) ||
                     (owners.length === 1 ? owners[0] : undefined);
       if (known && known.webviewId !== orch.webviewId) setOrchestratorFrame(repo, known.webviewId);
@@ -142,9 +146,10 @@ export function activate(context: vscode.ExtensionContext) {
       const base = contextConfig();
       const step = decide({
         repo, role: orch.role,
-        webviewId: known ? known.webviewId : (orch.webviewId ?? null),
+        webviewId: known ? known.webviewId : null,
         reading, busy: known ? known.busy : false, frameSeen: !!known,
         panelPct: known ? known.contextPct : null,
+        panelChars: known ? known.chars : null,
         memoryFile, memoryMtime: mem.mtime, memorySize: mem.size, now: Date.now(),
         // A manual run skips the threshold and the cooldown — and NOTHING else. Every safety rule
         // (verified save, not mid-turn, timeouts) still applies.
@@ -162,7 +167,7 @@ export function activate(context: vscode.ExtensionContext) {
       debugLog({ contextMemory: { step: step.kind, note: step.note, phase: step.next.phase, reading } });
       if (step.kind === "none") return step;
       if (step.kind === "abort") { vscode.window.showWarningMessage(`Loom: ${step.note}`); return step; }
-      const target = { role: orch.role, webviewId: known ? known.webviewId : (orch.webviewId ?? null) };
+      const target = { role: orch.role, webviewId: known ? known.webviewId : null };
       const label = step.kind === "save" ? `Loom: ${step.note}`
         : step.kind === "clear" ? `Loom: ${orch.role} — ${step.note} (its context is being reset)`
         : `Loom: ${step.note}`;
