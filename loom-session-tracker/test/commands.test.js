@@ -512,3 +512,39 @@ suite("tick: the cycle runs on the panel alone when the role has no transcript",
     match(readJson(path.join(LOOM, "context-debug.json")).message, /71% full/, "and the prompt says so");
   } finally { off(); }
 });
+
+suite("tick: a weak candidate is offered but never silently adopted", async () => {
+  // "Works on this project and is not one of its roles" is enough to OFFER a session for tagging;
+  // it is not enough to start typing /clear into one without a click.
+  const repo = makeRepo({ roles: { alpha: {} } }, "cmdY");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", null);
+  // attributed to this repo, but it never signs itself as the orchestrator
+  const weak = frame("wid-weak", `working in ~/.claude/loom/${repo}/ and Containers/${repo}/src` + footer());
+  const off = await activate([{ ...weak, contextPct: 88 }]);
+  try {
+    await settle(60);
+    eq(readJson(busPath(repo, "orchestrator.json")).webviewId, null, "not adopted despite being alone");
+    const st = readJson(busPath(repo, "context-state.json"));
+    ok(!st || st.phase === "watch", "and no cycle started");
+    const tree = vscode._trees.loomSessions;
+    const cands = tree.getChildren(tree.getChildren()[0]).filter((n) => n.kind === "ownerCandidate");
+    eq(cands.length, 1, "but it IS offered in the tree");
+    eq(cands[0].webviewId, "wid-weak", "as the candidate to tag");
+  } finally { off(); }
+});
+
+suite("command tagOrchestrator: a click on a candidate records that exact frame", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "cmdZ");
+  openProject(repo);
+  const weak = frame("wid-weak", `~/.claude/loom/${repo}/board.json Containers/${repo}/x` + footer());
+  const off = await activate([weak]);
+  try {
+    const tree = vscode._trees.loomSessions;
+    const cand = tree.getChildren(tree.getChildren()[0]).find((n) => n.kind === "ownerCandidate");
+    await run("tagOrchestrator", cand);
+    const tag = readJson(busPath(repo, "orchestrator.json"));
+    eq(tag.webviewId, "wid-weak", "the clicked frame, not a guess");
+    eq(tag.role, "product-owner", "tagged under the canonical name");
+  } finally { off(); }
+});

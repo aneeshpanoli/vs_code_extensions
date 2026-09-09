@@ -14,7 +14,15 @@ export type Liveness = "live" | "stale";
 export interface AgentView extends Agent { liveness: Liveness; limit?: LimitInfo | null; model?: ModelInfo | null; }
 
 /** An ORCHESTRATOR/PO frame. Never a tracked agent (classify() excludes owners so it can never be
- *  retired/deleted) — surfaced separately purely so the UI can show it and let the user tag it. */
+ *  retired/deleted) — surfaced separately purely so the UI can show it and let the user tag it.
+ *
+ *  TWO STRENGTHS, because the strong signal misses the sessions that need this most. `detectOwner`
+ *  wants a `LOOMROLE=product-owner` sign-off or three distinct roles quoted; measured live
+ *  2026-09-09, exactly ONE frame editor-wide passed it, while funisland's orchestrator — sitting at
+ *  71% context, the very session the memory cycle exists for — passed neither that nor role
+ *  classification, and so could not be tagged at all. A frame that is attributed to a project and is
+ *  NOT one of its workers is therefore offered as a candidate too. The strengths are kept apart:
+ *  a weak candidate can be TAGGED (a person's click), never silently adopted. */
 export interface OwnerView {
   webviewId: string; lastSeen: number; liveness: Liveness;
   /** Mid-turn right now. The context-memory cycle must never type into a working composer. */
@@ -24,6 +32,9 @@ export interface OwnerView {
   /** Which project this orchestrator frame is about, by dominant path mentions. null = can't tell.
    *  The CDP read is editor-wide, so without this every window adopts the same frame. */
   repo: string | null;
+  /** True when the frame identifies itself as the orchestrator (a `LOOMROLE=product-owner` sign-off,
+   *  or three distinct roles quoted). Only a strong candidate is ever adopted without a click. */
+  strong: boolean;
   /** How much text the panel is showing. A freshly cleared panel holds a couple of hundred
    *  characters, which is how a `/clear` is confirmed when there is no transcript to check. */
   chars: number;
@@ -42,6 +53,7 @@ export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
   private owners = new Map<string, {
     lastSeen: number; busy: boolean; contextPct: number | null; repo: string | null; chars: number;
+    strong: boolean;
   }>();
   private lastOk = 0;
   private models = new Map<string, ModelInfo | null>();   // role -> model shown in its footer
@@ -107,10 +119,16 @@ export class Tracker {
       }
       if (!role) {
         // Not a worker frame. If it looks like the orchestrator/PO, remember it as a tag candidate.
-        if (detectOwner(f.text)) this.owners.set(f.webviewId, {
-          lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
-          repo: attributeRepo(f.text, allRepos).repo, chars: (f.text || "").length,
-        });
+        // Not a worker. Strong signal = it says it is the orchestrator; weak = it is unmistakably
+        // working on ONE project without being one of that project's roles.
+        const owned = attributeRepo(f.text, allRepos).repo;
+        const strong = detectOwner(f.text);
+        if (strong || owned) {
+          this.owners.set(f.webviewId, {
+            lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
+            repo: owned, chars: (f.text || "").length, strong,
+          });
+        }
         continue;
       }
       // In a filtered window, `role` is already guaranteed to be in repoFilter's roster (validRoles came
@@ -175,7 +193,7 @@ export class Tracker {
     return Array.from(this.owners.entries())
       .map(([webviewId, o]) => ({
         webviewId, lastSeen: o.lastSeen, busy: o.busy, contextPct: o.contextPct,
-        repo: o.repo, chars: o.chars,
+        repo: o.repo, chars: o.chars, strong: o.strong,
         liveness: this.livenessOf(o.lastSeen),
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);

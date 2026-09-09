@@ -134,9 +134,13 @@ export function activate(context: vscode.ExtensionContext) {
       // only used when it is ATTRIBUTABLE to this project (dominant `loom/<repo>/` path mentions),
       // whether it was adopted this tick or recorded at tag time. Unattributable = no frame = the
       // cycle holds and says so.
-      const owners = tracker.ownerView().filter((o) => o.repo === repo);
-      const known = owners.find((o) => o.webviewId === orch.webviewId) ||
-                    (owners.length === 1 ? owners[0] : undefined);
+      const mine = tracker.ownerView().filter((o) => o.repo === repo);
+      // The tagged frame if it is still here, else adopt only a STRONG candidate and only when it is
+      // the only one: a weak candidate (attributed but not self-identified) is a person's click, not
+      // something to start typing `/clear` into on our own.
+      const strong = mine.filter((o) => o.strong);
+      const known = mine.find((o) => o.webviewId === orch.webviewId) ||
+                    (strong.length === 1 ? strong[0] : undefined);
       if (known && known.webviewId !== orch.webviewId) setOrchestratorFrame(repo, known.webviewId);
       const state = loadState(repo);
       const windowTokens = Math.max(1000, Number(cfg().get("contextWindowTokens", DEFAULT_WINDOW_TOKENS)) || DEFAULT_WINDOW_TOKENS);
@@ -446,8 +450,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (!role) return;
         // A candidate node knows the exact frame; recording it is what makes the orchestrator
         // injectable at all (see inject.ts).
+        // The clicked candidate's frame, else the one unambiguous candidate FOR THIS PROJECT —
+        // never "the only frame in the editor", which belongs to whichever project it belongs to.
+        const forTarget = tracker.ownerView().filter((o) => o.repo === target);
         const wid = (node && typeof node.webviewId === "string") ? node.webviewId
-          : (tracker.ownerView().length === 1 ? tracker.ownerView()[0].webviewId : null);
+          : (forTarget.length === 1 ? forTarget[0].webviewId : null);
         setOrchestrator(target, role, wid);
         vscode.window.showInformationMessage(`Loom: '${role}' tagged as orchestrator of ${target} — workers finishing will notify it automatically.`);
         tree.refresh();

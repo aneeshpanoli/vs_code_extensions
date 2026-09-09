@@ -367,7 +367,7 @@ suite("context memory: the manual command does nothing when it is not confirmed"
 suite("tagging: the orchestrator's frame id is recorded, so it can be injected into", async () => {
   const repo = makeRepo({ roles: { alpha: {} } }, "ctxH");
   openProject(repo);
-  const off = await activate([poFrame("wid-owner"), frame("wid-a", "work" + marker("alpha") + footer())]);
+  const off = await activate([poFrame("wid-owner", repo), frame("wid-a", "work" + marker("alpha") + footer())]);
   try {
     vscode._quickPick = "product-owner";
     await vscode.commands.executeCommand("loomSessionTracker.tagOrchestrator");

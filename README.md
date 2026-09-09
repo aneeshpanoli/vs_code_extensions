@@ -99,6 +99,18 @@ on this machine) it is asked to write its working memory to a file (default
 that reads that file, the board, and the project docs — reconciling the memory
 against them so it stays true.
 
+Tag candidates come in two strengths, because the strong signal misses the
+sessions that need this most. `detectOwner` wants a `LOOMROLE=product-owner`
+sign-off or three distinct roles quoted — measured, exactly one frame editor-wide
+passed it, while funisland's orchestrator (sitting at 71% context, the very
+session the cycle exists for) passed neither that nor role classification and so
+could not be tagged at all. A session that is attributed to a project and is
+**not one of its roles** is therefore offered as a candidate too, labelled
+"possible orchestrator" with its context percentage. A weak candidate can be
+tagged with a click; only a strong one is ever adopted silently. A tag whose
+frame this project cannot see is shown as `frame not identified` and the real
+candidates are offered beneath it, so it is re-pointable in one click.
+
 The orchestrator's frame is identified by **attribution**, not by being the only
 candidate: the CDP read is editor-wide, so every window sees every window's
 panels. A frame is adopted for this project only when its own text names this
@@ -179,7 +191,7 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 303 checks across 21 files, zero dependencies, run under VSCodium's bundled node since this
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 308 checks across 21 files, zero dependencies, run under VSCodium's bundled node since this
 machine has no npm. Measured coverage: **95.2% of lines**, every module included
 — `rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3
 ../tools/coverage.py /tmp/cov out` prints the per-module table (a line counts as
