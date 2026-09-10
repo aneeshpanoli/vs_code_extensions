@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // live-check.js — assert, against the RUNNING editor and the REAL bus, the things the unit tests
 // cannot: that the world still looks the way the code assumes it does.
 //
@@ -18,7 +17,8 @@
 // READ-ONLY. It opens a CDP read and reads files. It never injects, never writes to the bus, never
 // closes anything. Safe to run against a live working editor at any time.
 //
-//   ./live-check.js            (or: ELECTRON_RUN_AS_NODE=1 codium live-check.js)
+//   ./live.sh                  (there is no `node` on this machine; live.sh runs it under the
+//                               editor's bundled one, exactly as test.sh does for the suite)
 
 const path = require("path");
 const OUT = path.join(__dirname, "out");

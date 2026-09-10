@@ -342,7 +342,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "test": "./test.sh",
-    "live": "ELECTRON_RUN_AS_NODE=1 ${CODIUM:-/usr/share/codium/codium} live-check.js"
+    "live": "./live.sh"
   },
   "dependencies": {
     "ws": "^8.18.0"

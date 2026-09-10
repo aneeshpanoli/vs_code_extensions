@@ -39,6 +39,10 @@ Piper setup (one-time): `pipx install piper-tts`, then
 
 ## loom-session-tracker
 
+**[Full documentation: loom-session-tracker/README.md](loom-session-tracker/README.md)** — what it
+is for, the major features, setup, settings, and troubleshooting. What follows is the engineering
+record: what was measured, and why each decision went the way it did.
+
 Loom-orchestration specific: keeps a live per-project map of Loom session
 agents (role ↔ webviewId) fresh over CDP, with spawn / retire / lock / delete
 commands in a dedicated activity-bar view. Read-only polling; destructive
