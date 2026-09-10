@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-09-10T06:22:11.591Z",
+  "capturedAt": "2026-09-10T06:45:43.233Z",
   "buses": [
     "Gaming",
     "ReciEats",
@@ -20,7 +20,31 @@
       ],
       "aliases": {},
       "ownerRole": "productowner",
-      "ownerFrames": []
+      "ownerFrames": [
+        "113ae63b-c975-4b20-adb8-98aaec0f3e68"
+      ],
+      "declared": [
+        {
+          "webviewId": "849774ff-fa5c-47fb-b835-9f03591b9962",
+          "role": "developer",
+          "source": "idfile",
+          "guard": "LOOMROLE=developer"
+        },
+        {
+          "webviewId": "113ae63b-c975-4b20-adb8-98aaec0f3e68",
+          "role": "productowner",
+          "source": "idfile",
+          "guard": "LOOMROLE=productowner"
+        }
+      ],
+      "mailboxWritten": {
+        "developer": 1789019624789.5745,
+        "lowpoly": 1784271166889.597,
+        "productowner": 1783837359361.7378,
+        "prototyping": 1784002955852.8008,
+        "research": 1784008541421.915,
+        "treeoflife": 1783996192764.2124
+      }
     },
     "ReciEats": {
       "roles": [
@@ -29,7 +53,27 @@
       ],
       "aliases": {},
       "ownerRole": "productowner",
-      "ownerFrames": []
+      "ownerFrames": [
+        "113ae63b-c975-4b20-adb8-98aaec0f3e68"
+      ],
+      "declared": [
+        {
+          "webviewId": "849774ff-fa5c-47fb-b835-9f03591b9962",
+          "role": "developer",
+          "source": "idfile",
+          "guard": "LOOMROLE=developer"
+        },
+        {
+          "webviewId": "113ae63b-c975-4b20-adb8-98aaec0f3e68",
+          "role": "productowner",
+          "source": "idfile",
+          "guard": "LOOMROLE=productowner"
+        }
+      ],
+      "mailboxWritten": {
+        "developer": 1789021349170.2512,
+        "productowner": 1789021734015.5808
+      }
     },
     "funisland": {
       "roles": [
@@ -49,7 +93,32 @@
       ],
       "aliases": {},
       "ownerRole": "product-owner",
-      "ownerFrames": []
+      "ownerFrames": [
+        "5cb38933-df1a-4980-90cc-4debb7875ea6"
+      ],
+      "declared": [
+        {
+          "webviewId": "5cb38933-df1a-4980-90cc-4debb7875ea6",
+          "role": "productowner",
+          "source": "idfile",
+          "guard": null
+        }
+      ],
+      "mailboxWritten": {
+        "art": 1782428257326.898,
+        "character": 1782431211174.5947,
+        "content": null,
+        "curriculum": 1789008469558.316,
+        "gamification": 1789020920249.2778,
+        "learningactivity": 1789005748787.212,
+        "metagame": 1784845816005.3394,
+        "music": null,
+        "playtest": 1782881991130.6685,
+        "product-owner": null,
+        "scriptwriter": 1784608354363.6697,
+        "simulation": 1787343481551.408,
+        "testgamification": 1782276623484.1028
+      }
     },
     "gaming": {
       "roles": [
@@ -67,7 +136,21 @@
       ],
       "aliases": {},
       "ownerRole": "product-owner",
-      "ownerFrames": []
+      "ownerFrames": [],
+      "declared": [],
+      "mailboxWritten": {
+        "art": 1782782642961.897,
+        "artist": 1782764719376.6472,
+        "gamedesign": 1782859362755.8318,
+        "gameplay": 1782744984446.6812,
+        "leveldesign": 1782848419400.697,
+        "mobileengineer": 1782833548563.0183,
+        "productmanager": 1782769384520.5984,
+        "prototyping": 1783801045807.7913,
+        "qa": 1782790212083.925,
+        "soundengineer": 1782866498192.8013,
+        "uiux": 1782766853669.2048
+      }
     },
     "livegita": {
       "roles": [
@@ -82,7 +165,33 @@
       "ownerRole": "po",
       "ownerFrames": [
         "a57ba8a7-75ae-4a50-acce-ff432df785e5"
-      ]
+      ],
+      "declared": [
+        {
+          "webviewId": "45962fe2-42a9-459e-ae9f-3e3d52299774",
+          "role": "gitadeveloper",
+          "source": "board",
+          "guard": null
+        },
+        {
+          "webviewId": "a57ba8a7-75ae-4a50-acce-ff432df785e5",
+          "role": "po",
+          "source": "board",
+          "guard": null
+        },
+        {
+          "webviewId": "a57ba8a7-75ae-4a50-acce-ff432df785e5",
+          "role": "productowner",
+          "source": "board",
+          "guard": null
+        }
+      ],
+      "mailboxWritten": {
+        "developer": 1789021878481.3645,
+        "gitadeveloper": 1789022579534.4487,
+        "po": 1789019564256.44,
+        "productowner": 1789001122740.0615
+      }
     },
     "shwab_docker": {
       "roles": [
@@ -96,7 +205,17 @@
       ],
       "aliases": {},
       "ownerRole": "productowner",
-      "ownerFrames": []
+      "ownerFrames": [],
+      "declared": [],
+      "mailboxWritten": {
+        "productowner": 1788882699375.1926,
+        "quant": 1787854631579.1904,
+        "rhdeveloper": 1788887411842.0151,
+        "robinhoodmcp": 1785371949178.1084,
+        "siteintegrity": 1783010494426.8762,
+        "softwareengineer": 1785560798175.0789,
+        "trader": 1788971170818.651
+      }
     }
   },
   "frames": [
@@ -192,14 +311,14 @@
       "measured": {
         "repo": "livegita",
         "role": "developer",
-        "source": "marker",
+        "source": "path",
         "owner": false,
-        "busy": false,
+        "busy": true,
         "model": "Opus 5",
         "effort": "Medium",
         "limited": false,
         "kind": null,
-        "len": 327870
+        "len": 54181
       }
     },
     {
@@ -208,15 +327,15 @@
       "contextPct": null,
       "measured": {
         "repo": "livegita",
-        "role": null,
-        "source": null,
+        "role": "developer",
+        "source": "path",
         "owner": true,
         "busy": false,
         "model": "Fable 5.1",
         "effort": "Medium",
         "limited": false,
         "kind": null,
-        "len": 77706
+        "len": 133751
       }
     },
     {
@@ -261,13 +380,13 @@
         "repo": null,
         "role": null,
         "source": null,
-        "owner": false,
+        "owner": true,
         "busy": true,
         "model": "Opus 5",
         "effort": "Medium",
         "limited": false,
         "kind": null,
-        "len": 496018
+        "len": 410187
       }
     },
     {
@@ -277,14 +396,14 @@
       "measured": {
         "repo": "ReciEats",
         "role": "developer",
-        "source": "marker",
+        "source": "path",
         "owner": false,
         "busy": true,
         "model": "Opus 5",
         "effort": "Medium",
         "limited": false,
         "kind": null,
-        "len": 469152
+        "len": 374553
       }
     },
     {
@@ -301,7 +420,7 @@
         "effort": "Medium",
         "limited": false,
         "kind": null,
-        "len": 102686
+        "len": 214025
       }
     },
     {

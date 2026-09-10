@@ -24,7 +24,9 @@ const path = require("path");
 const OUT = path.join(__dirname, "out");
 const { readFrames } = require(path.join(OUT, "cdp.js"));
 const { detectOwner, attributeRepo, classify } = require(path.join(OUT, "roles.js"));
-const { busRepos, boardRoles, boardOwnerFrames } = require(path.join(OUT, "registry.js"));
+const { busRepos, boardRoles, boardOwnerFrames, busDeclaredFrames, rivalDeclarers, freshestClaimant } =
+  require(path.join(OUT, "registry.js"));
+const fsx = require("fs");
 const { isOwnerRole, ownerRoleFor, roleAliases, OWNER_ALIASES, ROLE_VOCABULARY,
         inVocabulary } = require(path.join(OUT, "naming.js"));
 const { getOrchestrator } = require(path.join(OUT, "orchestrator.js"));
@@ -52,18 +54,31 @@ const info = (n, d) => record("INFO", n, d);
   // Classify every frame the way the tracker does.
   // Frames each board DECLARES to be its orchestrator's — authoritative, and the only way to find a
   // PO whose team is too small for the >=3-quoted-roles self-tell (see registry.boardOwnerFrames).
-  const declared = new Map();                       // webviewId -> repo
-  for (const r of repos) for (const w of boardOwnerFrames(r)) declared.set(w, r);
+  // webviewId -> the repo that OWNS this declared orchestrator frame. Resolved exactly as tracker.ts
+  // resolves it, via freshestClaimant, and not by "whichever bus this loop reached first": iteration
+  // is alphabetical, so first-wins handed 113ae63b to Gaming and left ReciEats — whose PO was writing
+  // status every few minutes — with no candidate at all. live-check re-implementing the tracker's
+  // rule instead of calling it is how this file lied about the world once already.
+  const declared = new Map();
+  for (const r of repos) {
+    for (const w of boardOwnerFrames(r)) {
+      const rivals = rivalDeclarers(r, w);
+      if (!rivals.length) { declared.set(w, r); continue; }
+      const d = busDeclaredFrames(r).find((x) => x.webviewId === w);
+      const winner = freshestClaimant(r, d.role, w);
+      if (winner === r || (winner === null && !declared.has(w))) declared.set(w, r);
+    }
+  }
   const panels = frames.map((f) => {
     const owned = declared.get(f.webviewId);
     if (owned) {
       return { wid: f.webviewId, repo: owned, role: null, strong: true,
-               pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text), declared: true };
+               pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text), declared: owned };
     }
     const repo = attributeRepo(f.text, repos).repo;
     const role = repo ? classify(f.text, new Set(boardRoles(repo)), repo).role : null;
     return { wid: f.webviewId, repo, role, strong: detectOwner(f.text),
-             pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text), declared: false };
+             pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text), declared: null };
   });
   const candidates = panels.filter((p) => !p.role && (p.strong || p.repo));
 
@@ -164,6 +179,58 @@ const info = (n, d) => record("INFO", n, d);
     if (!off.length) pass(`${repo}: role vocabulary`, `all ${roster.length} role(s) on the standard four`);
     else info(`${repo}: role vocabulary`, `${roster.length - off.length}/${roster.length} on the four; ` +
       `off-vocabulary: ${off.join(", ")}`);
+  }
+
+  // ── 1e. A PROJECT THAT HAS A LIVE ORCHESTRATOR MUST BE ABLE TO SHOW IT ────────────────────
+  // Derived from the BUS, not from anything the classifier believes: if a project's orchestrator
+  // mailbox was written in the last day, that session exists, and the sidebar must be able to offer
+  // it. This is the check that would have caught ReciEats — its PO was running and writing status
+  // every few minutes while the sidebar listed nothing, because the extension did not know the
+  // `<role>.id` convention the buses use and the PO's frame attributed to no project at all.
+  // A test written from the code's own idea of "declared" cannot catch that; this one can.
+  const DAY = 24 * 3600 * 1000;
+  for (const repo of repos) {
+    const owners = boardRoles(repo).filter((r) => isOwnerRole(r));
+    let freshest = 0, which = null;
+    for (const role of owners) {
+      try {
+        const m = fsx.statSync(path.join(require("os").homedir(), ".claude", "loom", repo, role, "status.json")).mtimeMs;
+        if (m > freshest) { freshest = m; which = role; }
+      } catch { /* no mailbox */ }
+    }
+    if (!freshest || Date.now() - freshest > DAY) continue;      // no recently-active orchestrator
+    const offered = candidates.filter((c) => c.repo === repo || c.declared === repo);
+    const ago = Math.round((Date.now() - freshest) / 60000);
+    if (offered.length) {
+      pass(`${repo}: orchestrator is findable`,
+        `${which}/status.json written ${ago}m ago; offered as ${offered.map((c) => c.wid.slice(0, 8)).join(", ")}`);
+    } else {
+      fail(`${repo}: orchestrator is INVISIBLE`,
+        `${which}/status.json was written ${ago}m ago, so that session is running — but nothing in ` +
+        `this read can be offered as ${repo}'s orchestrator. Check ${repo}/${which}.id (line 1 must be ` +
+        `the webviewId, not the session_id) and whether its frame is open.`);
+    }
+  }
+
+  // ── 1f. one frame, one bus ────────────────────────────────────────────────────────────────
+  // Two buses declaring the same frame is drift, and it made one ReciEats session appear as Gaming's
+  // developer: `Gaming/*.id` and `ReciEats/*.id` carry the same webviewIds because the ReciEats bus
+  // was copied from Gaming's. The tracker breaks the tie, but the duplicate files are the real fix.
+  const declaredBy = new Map();
+  for (const repo of repos) {
+    for (const d of busDeclaredFrames(repo)) {
+      const k = d.webviewId;
+      declaredBy.set(k, [...(declaredBy.get(k) || []), `${repo}/${d.role}`]);
+    }
+  }
+  for (const [wid, claims] of declaredBy) {
+    // Only ACROSS buses: one bus naming a frame under two of its own role aliases (livegita's
+    // `po` and `productowner` are the same session) is the alias arrangement working, not drift.
+    const buses = new Set(claims.map((c) => c.split("/")[0]));
+    if (buses.size > 1) {
+      warn("declaration is contested", `${wid.slice(0, 8)} is declared by ${claims.join(" and ")} — ` +
+        `the tracker resolves it by the freshest role mailbox, but one of those id files is a stale copy`);
+    }
   }
 
   // ── 2b. no tag names a WORKER role ────────────────────────────────────────────────────────

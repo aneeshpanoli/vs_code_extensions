@@ -76,6 +76,31 @@ MUTATIONS = [
   "notBefore: (prev && prev.notBefore && info.notBefore) ? Math.min(prev.notBefore, info.notBefore)",
   "notBefore: (prev && prev.notBefore && info.notBefore) ? Math.max(prev.notBefore, info.notBefore)"),
 
+ ("the bus's `<role>.id` files are not read — ReciEats' running orchestrator was invisible",
+  "src/registry.ts",
+  'if (!n.endsWith(".id")) continue;',
+  "if (true) continue;"),
+
+ ("a mixed marker set hides an owner sign-off — the PO classified as its own developer",
+  "src/roles.ts",
+  "if (markers.some((r) => isOwnerRole(r))) return { role: null, purity: 1, source: null };",
+  "if (false) return { role: null, purity: 1, source: null };"),
+
+ ("a declaration is honoured even when another bus makes the same one",
+  "src/tracker.ts",
+  "if (this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {",
+  "if (false && this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {"),
+
+ ("a contested declaration ignores which mailbox is still being written",
+  "src/registry.ts",
+  "if (at > bestAt) { bestAt = at; best = r; }",
+  "if (best === null) { bestAt = at; best = r; }"),
+
+ ("a declared WORKER frame loses its role to a bystander printing its paths",
+  "src/tracker.ts",
+  "} else if (decl && !isOwnerRole(decl.role)) {",
+  "} else if (false) {"),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",
@@ -88,6 +113,17 @@ def sh(cmd):
 def restore():
     sh("git checkout -- src/")
     sh(TSC)
+
+# REFUSE TO RUN OVER UNCOMMITTED WORK. This script restores each mutant with `git checkout -- src/`,
+# which cannot tell a mutation from work in progress: on 2026-09-09 it silently destroyed an hour of
+# uncommitted changes to registry.ts, roles.ts, tracker.ts and statusView.ts. Commit (or stash) first;
+# the whole point of the tool is to run against the code you are about to trust.
+dirty = sh("git status --porcelain -- src/").stdout.strip()
+if dirty:
+    print("REFUSING: src/ has uncommitted changes — this script reverts src/ between mutants and would\n"
+          "          destroy them. Commit or stash first.\n")
+    print(dirty)
+    sys.exit(2)
 
 survived, stale = [], []
 print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")

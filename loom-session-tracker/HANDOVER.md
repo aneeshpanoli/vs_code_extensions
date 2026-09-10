@@ -136,6 +136,38 @@ Capturing the fixtures also exposed a live defect nothing else had: livegita's r
 `developer` — a clean OWNER sign-off fell through to path evidence. Only `boardOwnerFrames()` stood
 between that and the orchestrator being treated as a worker.
 
+## 0.21.0 — the bus declares its frames (2026-09-09, user report)
+
+"I don't see any orchestrated session for ReciEats." Its PO was running and writing status every few
+minutes; the sidebar listed nothing. Cause: the buses address frames through `<repo>/<role>.id` files
+(ReciEats/README-ids.md documents the convention; funisland uses the line-1 form) and this extension
+had never read them. That PO's tab works on `main`, mentions almost no project paths, and so attributed
+to NO project — leaving it offerable to no window at all.
+
+`registry.busDeclaredFrames()` now reads board webviewIds AND id files. Three consequences:
+- a declared OWNER frame is that project's orchestrator candidate regardless of attribution;
+- a declared WORKER frame holds its role above any content guess (a bystander printing
+  `worktrees/developer` can no longer take it);
+- the line-2 guard is honoured, but only on an IDLE tab — on a working one the sign-off scrolls out of
+  the virtualized DOM and a guard check false-refuses a correct id (the bus found this itself).
+
+Declarations are CONTESTED across buses: `Gaming/*.id` and `ReciEats/*.id` carry the same two
+webviewIds, because the ReciEats bus was copied from Gaming's. Attribution breaks the tie, and when it
+is silent the freshest `<role>/status.json` does — Gaming's productowner mailbox was last written
+2026-07-11, ReciEats' minutes ago. `./live.sh` warns on every contested declaration; the real fix is
+deleting the stale copies.
+
+**The testing lesson, again, one level up.** The 0.20.0 fixtures did not catch this because they were
+captured THROUGH THE CODE'S OWN LENS: the bus snapshot recorded `boardOwnerFrames()`, which did not
+read id files, so the fixture encoded the blind spot. The new invariant is derived from the bus
+instead — *a project whose orchestrator mailbox was written recently must have an offerable
+candidate* — in both `live.sh` and the fixture suite. Capture now snapshots the id files and the
+mailbox mtimes as well.
+
+**`test/mutation.py` destroyed uncommitted work** the first time it ran here: it restores each mutant
+with `git checkout -- src/`, which cannot tell a mutation from work in progress. It now refuses to
+start when `src/` is dirty. Commit before running it.
+
 ## The lesson worth keeping
 
 The suite is at ~95% of lines and **caught none of the four defects found this week.** It could not:

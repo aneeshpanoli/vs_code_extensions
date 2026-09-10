@@ -34,10 +34,22 @@ const textOf = (id) => fs.readFileSync(path.join(DIR, id + ".txt"), "utf8");
 for (const [repo, b] of Object.entries(manifest.bus || {})) {
   const board = {};
   for (const role of b.roles) board[role] = {};
-  for (const wid of b.ownerFrames || []) board[b.ownerRole] = { role: "orchestrator", webviewId: wid };
+  for (const d of (b.declared || []).filter((x) => x.source === "board")) {
+    board[d.role] = { ...(board[d.role] || {}), webviewId: d.webviewId };
+  }
   makeRepo(board, repo);
-  if (Object.keys(b.aliases || {}).length) writeJson(busPath(repo, "naming.json"), { aliases: b.aliases, owner: b.ownerRole });
-  else if (b.ownerRole) writeJson(busPath(repo, "naming.json"), { owner: b.ownerRole });
+  writeJson(busPath(repo, "naming.json"), { aliases: b.aliases || {}, owner: b.ownerRole });
+  // the `<role>.id` files, and the mailbox mtimes that decide a contested declaration
+  for (const d of (b.declared || []).filter((x) => x.source === "idfile")) {
+    fs.writeFileSync(busPath(repo, `${d.role}.id`), d.webviewId + (d.guard ? "\n" + d.guard + "\n" : "\n"));
+  }
+  for (const [role, at] of Object.entries(b.mailboxWritten || {})) {
+    if (at === null) continue;
+    const f = busPath(repo, role, "status.json");
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify({ role }));
+    fs.utimesSync(f, at / 1000, at / 1000);
+  }
 }
 
 // ── ground truth, stated by hand ────────────────────────────────────────────────────────────────
@@ -52,7 +64,12 @@ const TRUTH = {
               why: "signs LOOMROLE=gamification" },
   "849774ff": { is: "ReciEats' developer", repo: "ReciEats", role: "developer", owner: false,
               why: "signs LOOMROLE=developer and its paths are ReciEats'; NOT Gaming's, though Gaming's board also has a `developer`" },
-  "3c22c91c": { is: "a diagnostic session about this extension", repo: null, role: null, owner: false,
+  // NOTE its `owner` is deliberately absent below: this session PRINTS `LOOMROLE=` lines while
+  // debugging, so detectOwner reads true for it, and that is the documented residual of a text-based
+  // self-tell (HANDOVER.md). Being a candidate is harmless — a candidate is offered for a click and is
+  // never a target — so what must hold is the two lines asserted separately: it is nobody's WORKER and
+  // nothing is ever typed into it. Those are checked here and in dispatch.test.js.
+  "3c22c91c": { is: "a diagnostic session about this extension", repo: null, role: null,
               why: "prints other roles' worktree paths while debugging; belongs to no project. It received 38 /model injections." },
 };
 
@@ -85,7 +102,8 @@ suite("live: livegita's orchestrator is not mistaken for its developer", () => {
   const t = textOf("a57ba8a7");
   ok(detectOwner(t), "the PO's own sign-off identifies it");
   const c = classify(t, new Set(["developer", "po", "productowner", "gitadeveloper"]), "livegita");
-  eq(c.role, null, "and it is NOT a worker, despite dominant worktrees/developer paths");
+  eq(c.role, null, "and it is NOT a worker, despite 19 worktrees/developer mentions and a QUOTED " +
+    "developer sign-off that makes its marker set mixed");
 });
 
 suite("live: every captured panel classifies as the thing it actually is", () => {
@@ -95,7 +113,20 @@ suite("live: every captured panel classifies as the thing it actually is", () =>
     eq(repo, want.repo, `${id} (${want.is}): project — ${want.why}`);
     const c = repo ? classify(t, new Set(boardRoles(repo)), repo) : { role: null };
     eq(c.role, want.role, `${id} (${want.is}): role — ${want.why}`);
-    eq(detectOwner(t), want.owner, `${id} (${want.is}): owner self-tell`);
+    if ("owner" in want) eq(detectOwner(t), want.owner, `${id} (${want.is}): owner self-tell`);
+  }
+});
+
+suite("live: the diagnostic session is nobody's worker, in any project", () => {
+  // It prints other roles' worktree paths and sign-offs constantly. It may be OFFERED (a candidate is
+  // a click, never a target); it must never be classified as a worker anywhere, which is what made it
+  // the recipient of 38 `/model` injections and one project's resume.
+  const t = textOf("3c22c91c");
+  for (const repo of manifest.buses) {
+    const c = classify(t, new Set(boardRoles(repo)), repo);
+    const owned = attributeRepo(t, manifest.buses).repo;
+    const mine = c.source === "marker" ? (owned === null || owned === repo) : owned === repo;
+    ok(!(c.role && mine), `${repo} would treat the diagnostic session as its ${c.role}`);
   }
 });
 
@@ -117,4 +148,60 @@ suite("live: no captured panel is claimed by two different projects", () => {
     eq(cs.length, 1, `${id} is claimed by ${cs.length} projects: ${cs.join(", ")}`);
   }
   ok(!claims.has("3c22c91c"), "the diagnostic session is nobody's worker");
+});
+
+// ── the category the previous fixture set could not express ─────────────────────────────────────
+
+suite("live: a project whose orchestrator is running can SHOW it", async () => {
+  // The 2026-09-09 report, verbatim: "I don't see any orchestrated session for ReciEats." Its PO was
+  // running and writing status every few minutes; the sidebar listed nothing, because the extension
+  // did not read the `<role>.id` files the buses use and that frame attributes to no project at all.
+  // The previous fixtures could not catch it: they snapshotted only what the code already understood,
+  // so they encoded its blind spot. This asserts from the BUS — a recently-written orchestrator
+  // mailbox means that session exists and must be offerable.
+  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
+  const { isOwnerRole } = load("naming.js");
+  const frames = manifest.frames.map((f) => ({
+    webviewId: f.webviewId, type: "iframe", targetUrl: `vscode-webview://${f.id}`,
+    text: textOf(f.id), contextPct: f.contextPct,
+  }));
+  const DAY = 24 * 3600 * 1000;
+  let checked = 0;
+  for (const [repo, b] of Object.entries(manifest.bus)) {
+    const owners = (b.roles || []).filter(isOwnerRole);
+    const freshest = Math.max(0, ...owners.map((r) => (b.mailboxWritten || {})[r] || 0));
+    if (!freshest || manifest.capturedAt && new Date(manifest.capturedAt).getTime() - freshest > DAY) continue;
+    checked++;
+    const t = new Tracker(repo); const real = cdp.readFrames;
+    cdp.readFrames = async () => frames;
+    try { await t.tick(); } finally { cdp.readFrames = real; }
+    const offered = t.ownerView().filter((o) => o.repo === repo || o.declared);
+    ok(offered.length > 0,
+      `${repo}: its orchestrator mailbox was written ${Math.round((Date.now() - freshest) / 60000)}m ` +
+      `before capture, so that session was running — but nothing was offerable as its orchestrator`);
+  }
+  ok(checked >= 2, `expected several projects with a running orchestrator, checked ${checked}`);
+});
+
+suite("live: a frame declared by two buses goes to the one whose mailbox is alive", () => {
+  // Gaming/*.id and ReciEats/*.id carry the SAME webviewIds — the ReciEats bus was copied from
+  // Gaming's. Gaming/productowner/status.json was last written 2026-07-11; ReciEats' minutes ago.
+  const { rivalDeclarers, freshestClaimant, busDeclaredFrames } = load("registry.js");
+  const contested = [];
+  for (const repo of Object.keys(manifest.bus)) {
+    for (const d of busDeclaredFrames(repo)) {
+      if (rivalDeclarers(repo, d.webviewId).length) contested.push([repo, d]);
+    }
+  }
+  ok(contested.length > 0, "the capture contains a contested declaration to reason about");
+  for (const [repo, d] of contested) {
+    const winner = freshestClaimant(repo, d.role, d.webviewId);
+    ok(winner !== null, `${d.webviewId.slice(0, 8)} (${d.role}): someone must own it`);
+    const winnerAt = (manifest.bus[winner].mailboxWritten || {})[d.role] || 0;
+    for (const rival of rivalDeclarers(repo, d.webviewId)) {
+      const rivalAt = (manifest.bus[rival].mailboxWritten || {})[d.role] || 0;
+      ok(winnerAt >= rivalAt,
+        `${d.role} ${d.webviewId.slice(0, 8)}: ${winner} won but ${rival}'s mailbox is fresher`);
+    }
+  }
 });

@@ -43,6 +43,15 @@ export function classify(text: string, validRoles: Set<string>, repo?: string | 
     const r = alias(m[1].toLowerCase());
     if (validRoles.has(r)) markers.push(r);
   }
+  // ANY owner sign-off present settles it: a worker signs only its own role, and that role is never
+  // an owner name. A CLEAN single marker was not enough — measured 2026-09-09, livegita's PO signed
+  // `productowner` four times and quoted its developer's sign-off once, so the set was mixed, the
+  // clean-single branch below did not fire, and nineteen `worktrees/developer` mentions carried it to
+  // `developer`. This mirrors loom_cdp.py's own self-guard. A worker that merely QUOTES a PO handoff
+  // is excluded too, and that is the safe direction: it becomes an un-targetable candidate rather
+  // than a spawn/retire/delete/inject target, and a declaration or /loom binding still names it.
+  if (markers.some((r) => isOwnerRole(r))) return { role: null, purity: 1, source: null };
+
   const distinctMarkers = new Set(markers);
   if (distinctMarkers.size === 1) {                       // clean single sign-off -> authoritative-ish
     const role = markers[0];

@@ -124,20 +124,101 @@ export function boardRoles(repo: string): string[] {
  * as the developer — which is how a hand-tag came to write `{"role":"gitadeveloper"}` at 17:36.
  * The ≥3 heuristic is sound for a big team and useless for a small one; the board is not a heuristic.
  */
-export function boardOwnerFrames(repo: string): Set<string> {
-  const out = new Set<string>();
-  let data: any;
-  try { data = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8")); }
-  catch { return out; }
-  const src = (data && data.roles && typeof data.roles === "object" && !Array.isArray(data.roles))
-    ? data.roles : data;
-  if (!src || typeof src !== "object") return out;
-  for (const [k, v] of Object.entries<any>(src)) {
-    if (!isOwnerRole(k)) continue;
-    const w = v && typeof v === "object" ? v.webviewId : null;
-    if (typeof w === "string" && w) out.add(w);
+/**
+ * A frame the BUS declares to be a given role's, from either of the two places a bus records that:
+ *   * a board entry carrying a `webviewId`;
+ *   * an id file `~/.claude/loom/<repo>/<role>.id` — line 1 the webviewId, line 2 an optional guard
+ *     string that must appear in that frame's text. That convention is the bus's own (ReciEats'
+ *     README-ids.md documents it, funisland uses the line-1 form); the extension had no idea it
+ *     existed, so ReciEats' orchestrator — recorded in `productowner.id` and writing status every few
+ *     minutes — attributed to no project and was offered to NOBODY in the sidebar.
+ *
+ * THE GUARD IS ONLY MEANINGFUL ON A QUIET TAB, and that is the bus's own finding: the transcript is
+ * virtualized, so on a working session the `LOOMROLE=` sign-off scrolls out of the rendered DOM and a
+ * guard check false-refuses a correct id (funisland's curriculum, 2026-09-09). So a guard MISMATCH
+ * rejects an idle frame and is inconclusive — therefore trusted — on a busy one.
+ */
+export interface DeclaredFrame { webviewId: string; role: string; source: "board" | "idfile"; guard: string | null; }
+
+export function busDeclaredFrames(repo: string): DeclaredFrame[] {
+  const out: DeclaredFrame[] = [];
+  const seen = new Set<string>();
+  const add = (webviewId: string, role: string, source: "board" | "idfile", guard: string | null) => {
+    const key = `${webviewId}|${role}`;
+    if (!webviewId || !role || seen.has(key)) return;
+    seen.add(key);
+    out.push({ webviewId, role, source, guard });
+  };
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8"));
+    const src = (d && d.roles && typeof d.roles === "object" && !Array.isArray(d.roles)) ? d.roles : d;
+    if (src && typeof src === "object") {
+      for (const [k, v] of Object.entries<any>(src)) {
+        const w = v && typeof v === "object" ? v.webviewId : null;
+        if (typeof w === "string" && w) add(w, k, "board", null);
+      }
+    }
+  } catch { /* no board */ }
+  let names: string[] = [];
+  try { names = fs.readdirSync(path.join(LOOM_ROOT, repo)); } catch { return out; }
+  for (const n of names) {
+    if (!n.endsWith(".id")) continue;
+    const role = n.slice(0, -3);
+    let lines: string[];
+    try { lines = fs.readFileSync(path.join(LOOM_ROOT, repo, n), "utf8").split(/\r?\n/); } catch { continue; }
+    const wid = (lines[0] || "").trim();
+    if (!/^[0-9a-f-]{8,}$/i.test(wid)) continue;      // line 1 must be a webviewId, not a session id
+    add(wid, role, "idfile", (lines[1] || "").trim() || null);
   }
   return out;
+}
+
+/**
+ * Buses OTHER than `repo` that also declare `webviewId`. A declaration is authoritative about which
+ * ROLE a frame holds, but it cannot settle WHICH PROJECT when two buses name the same frame — and
+ * they do: measured 2026-09-09, `Gaming/developer.id` and `ReciEats/developer.id` carry the same
+ * webviewId, as do both `productowner.id` files, because the ReciEats bus was copied from Gaming's
+ * (its README-ids.md is still titled "Addressing the Gaming loom sessions"). Honouring both made one
+ * ReciEats session appear as Gaming's developer and offered ReciEats' orchestrator in Gaming's sidebar.
+ */
+export function rivalDeclarers(repo: string, webviewId: string): string[] {
+  const out: string[] = [];
+  for (const r of busRepos()) {
+    if (r === repo) continue;
+    if (busDeclaredFrames(r).some((d) => d.webviewId === webviewId)) out.push(r);
+  }
+  return out;
+}
+
+/**
+ * Which claimant of a contested declaration actually owns the frame, decided by the freshest
+ * `<role>/status.json`: a session writes its own status to its own bus, so that file is the session's
+ * own testimony about where it lives, and it keeps being written long after an id file was copied.
+ * Measured 2026-09-09 — the same two frames, and the mailboxes were not close:
+ *   Gaming/productowner/status.json 2026-07-11   ReciEats/productowner/status.json 23:28 that night
+ *   Gaming/developer/status.json    22:53        ReciEats/developer/status.json    23:22
+ */
+export function freshestClaimant(repo: string, role: string, webviewId: string): string | null {
+  let best: string | null = null, bestAt = -1;
+  for (const r of [repo, ...rivalDeclarers(repo, webviewId)]) {
+    const d = busDeclaredFrames(r).find((x) => x.webviewId === webviewId);
+    if (!d) continue;
+    let at = -1;
+    try { at = fs.statSync(path.join(LOOM_ROOT, r, d.role, "status.json")).mtimeMs; } catch { /* none */ }
+    if (at > bestAt) { bestAt = at; best = r; }
+  }
+  return bestAt < 0 ? null : best;
+}
+
+/** Does a declared frame's guard hold? Inconclusive (=> trusted) when the tab is busy — see above. */
+export function declarationHolds(d: DeclaredFrame, text: string, busy: boolean): boolean {
+  if (!d.guard) return true;
+  if (text.includes(d.guard)) return true;
+  return busy;                                        // virtualized scrollback, not a wrong id
+}
+
+export function boardOwnerFrames(repo: string): Set<string> {
+  return new Set(busDeclaredFrames(repo).filter((d) => isOwnerRole(d.role)).map((d) => d.webviewId));
 }
 
 /** {role: repo} from every repo bus's board.json — the authoritative per-project roster. */

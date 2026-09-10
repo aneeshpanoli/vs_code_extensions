@@ -5,8 +5,9 @@
 
 import { readFrames, Frame } from "./cdp";
 import { classify, detectOwner, attributeRepo } from "./roles";
-import { canonicalRole } from "./naming";
-import { Agent, roleToRepo, boardRoles, boardOwnerFrames, writeTargetmaps, loadBindings, busRepos } from "./registry";
+import { canonicalRole, isOwnerRole } from "./naming";
+import { Agent, roleToRepo, boardRoles, busDeclaredFrames, declarationHolds, rivalDeclarers,
+         freshestClaimant, writeTargetmaps, loadBindings, busRepos } from "./registry";
 import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
 import { detectLimit, LimitInfo } from "./limits";
 import { detectModel, ModelInfo } from "./models";
@@ -109,7 +110,27 @@ export class Tracker {
     const allRepos = busRepos();          // for attributing an orchestrator frame to ONE project
     // Frames the BOARD declares to be the orchestrator's. Authoritative: it beats content detection,
     // which cannot identify a PO whose team is too small for the ≥3-quoted-roles self-tell.
-    const ownerFrames = this.repoFilter ? boardOwnerFrames(this.repoFilter) : new Set<string>();
+    // Frames the BUS declares — board webviewIds AND `<role>.id` files, the convention the projects
+    // themselves use (ReciEats/README-ids.md). A declaration beats content in both directions: it is
+    // how an orchestrator is found at all, and how a worker's own tab keeps its role when a bystander
+    // merely prints its worktree paths.
+    const declared = this.repoFilter ? busDeclaredFrames(this.repoFilter) : [];
+    const declaredBy = new Map<string, typeof declared[number]>();
+    for (const d of declared) {
+      if (declaredBy.has(d.webviewId)) continue;
+      if (this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {
+        // Contested: a bus forked from another keeps its predecessor's id files. Attribution decides;
+        // but an orchestrator works on `main` and names few project paths, so attribution is silent
+        // for exactly the frame that matters most — the freshest role mailbox decides those.
+        const owned = attributeRepo(
+          (frames.find((f) => f.webviewId === d.webviewId) || { text: "" }).text || "", allRepos).repo;
+        if (owned !== this.repoFilter &&
+            (owned !== null || freshestClaimant(this.repoFilter, d.role, d.webviewId) !== this.repoFilter)) continue;
+      }
+      declaredBy.set(d.webviewId, d);
+    }
+    const ownerFrames = new Set(Array.from(declaredBy.values())
+      .filter((d) => isOwnerRole(d.role)).map((d) => d.webviewId));
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
     const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string; signed: boolean }>();
     const now0 = Date.now();
@@ -117,6 +138,19 @@ export class Tracker {
       if (!f.webviewId) continue;
       // 0) THE BOARD WINS. A frame the board names as the orchestrator's is the orchestrator, even
       //    when its text reads exactly like a worker's (it quotes their sign-offs).
+      const decl = declaredBy.get(f.webviewId);
+      if (decl && !declarationHolds(decl, f.text, isBusy(f.text))) {
+        // A STALE declared id: its guard string is absent from an idle tab. Trust nothing from the
+        // declaration; fall through to content.
+      } else if (decl && !isOwnerRole(decl.role) && this.repoFilter) {
+        // Declared a WORKER: authoritative, like a /loom binding, above any content guess.
+        const role = canonicalRole(this.repoFilter, decl.role);
+        const prev = best.get(role);
+        if (!prev || prev.priority < 2)
+          best.set(role, { webviewId: f.webviewId, priority: 2, len: f.text.length,
+                           repo: this.repoFilter, text: f.text, signed: true });
+        continue;
+      }
       if (ownerFrames.has(f.webviewId)) {
         this.owners.set(f.webviewId, {
           lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,

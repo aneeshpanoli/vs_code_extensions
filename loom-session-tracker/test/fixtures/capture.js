@@ -107,7 +107,7 @@ function behaviour(text, repos) {
   // a world: `boardRoles()` comes back empty and every frame classifies as null. Snapshot the roster,
   // the aliases and the board-declared orchestrator frames alongside the panels.
   const { roleAliases, ownerRoleFor } = require(path.join(OUT, "naming.js"));
-  const { boardOwnerFrames } = require(path.join(OUT, "registry.js"));
+  const { boardOwnerFrames, busDeclaredFrames } = require(path.join(OUT, "registry.js"));
   const bus = {};
   for (const r of repos) {
     bus[r] = {
@@ -115,6 +115,15 @@ function behaviour(text, repos) {
       aliases: Object.fromEntries(roleAliases(r)),
       ownerRole: ownerRoleFor(r),
       ownerFrames: [...boardOwnerFrames(r)],
+      // The `<role>.id` files, which the buses use to address frames and which this extension did not
+      // read until 2026-09-09. Capturing only what the code already understood is how the previous
+      // fixture set encoded its blind spot: ReciEats' orchestrator was invisible AND unfixturable.
+      declared: busDeclaredFrames(r),
+      // Written by the session itself, so it is the evidence for which bus owns a contested frame.
+      mailboxWritten: Object.fromEntries(boardRoles(r).map((role) => {
+        try { return [role, fs.statSync(path.join(require("os").homedir(), ".claude", "loom", r, role, "status.json")).mtimeMs]; }
+        catch { return [role, null]; }
+      })),
     };
   }
   const manifest = { capturedAt: new Date().toISOString(), buses: repos, bus, frames: [] };

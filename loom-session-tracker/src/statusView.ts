@@ -93,7 +93,10 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
     return this.tracker.ownerView()
       // In a project window, only candidates attributed to THAT project — the CDP read is
       // editor-wide, so everything else belongs to someone else's window.
-      .filter((o) => (repo ? o.repo === repo : true))
+      // A candidate the bus DECLARED belongs to that project even when its text mentions no paths at
+      // all — ReciEats' orchestrator (113ae63b) attributed to nothing and was offered to no window,
+      // while `productowner.id` had named it the whole time.
+      .filter((o) => (repo ? (o.repo === repo || o.declared) : true))
       // When the board DECLARES this project's orchestrator frame, that is the only candidate worth a
       // click — offering weak content-attributed sessions beside it is how a diagnostic session got
       // starred twice on 2026-09-09. Declared first, then strong, then weak.
