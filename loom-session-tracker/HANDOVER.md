@@ -15,7 +15,7 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 | Source (git) | `/home/aneesh/vs_code_extensions/loom-session-tracker` — `main`, pushed to `github.com:aneeshpanoli/vs_code_extensions` |
 | Deployed copy | `~/.vscode-oss/extensions/local.loom-session-tracker-0.14.0/` — installed with `../deploy.sh loom-session-tracker`, registered in `extensions.json`, needs a window reload |
 | The bus it watches | `~/.claude/loom/<project>/` — `board.json`, per-role `status.json`/`inbox.md`/`outbox.md`, plus the state files this extension writes |
-| The injector | `~/.claude/loom/loom_cdp.py` — **not in git**, backed up in place as `loom_cdp.py.bak-<epoch>` |
+| The injector | `~/.claude/loom/loom_cdp.py` — **not in git**, backed up in place as `loom_cdp.py.bak-<epoch>`. Changed 2026-09-09: `--repo` (project-scoped `_role_repo`/`find_role`/`_load_targetmap`, refuses ambiguous bare names), owner aliases read from `naming.json`, `KNOWN_ROLES` derived from the buses instead of a literal, `/loom` binding requires a leading command not a substring |
 | The pattern's playbook | `~/.claude/loom/ORCHESTRATION-PLAYBOOK.md` — **not in git**; §13 (target by webviewId) and §14 (the memory cycle) matter most here |
 | Live projects | `Gaming`, `gaming` (stale, lowercase), `funisland`, `livegita`, `shwab_docker` |
 
@@ -159,6 +159,7 @@ taken down every window three times. Kill by PID or by a unique `--user-data-dir
   is a per-project decision to take when that project's sessions are idle. livegita's own path:
   `gitadeveloper/` -> `developer/` (session must stop writing to the old dir first), `po/` ->
   `product-owner/` (then `naming.json` `owner` can go), drop the empty `productowner/`.
+- **livegita migration is STAGED, not run:** `~/.claude/loom/livegita/migrate-to-four-roles.sh` refuses unless developer/gitadeveloper/po are idle (verified: exits 3 while the developer works LG-047), backs up the bus, folds `gitadeveloper/`→`developer/`, renames `po/`→`product-owner/`, drops empty `productowner/`, rewrites board/bindings/targetmap/orchestrator/naming/state. After it runs, re-bind the developer with `/loom developer --repo livegita` so it signs its real name.
 - **`loom_cdp.py` `--repo` is optional at the CLI.** The extension always passes it; a hand-typed
   `inject --role developer` with no `--repo` is refused as ambiguous. That is the intended failure.
 
