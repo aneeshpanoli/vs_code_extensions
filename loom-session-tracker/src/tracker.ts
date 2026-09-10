@@ -4,7 +4,7 @@
 // targetmaps degrade gracefully instead of going blank on a transient CDP hiccup.
 
 import { readFrames, Frame } from "./cdp";
-import { classify, discussesLoom, detectOwner, attributeRepo } from "./roles";
+import { classify, detectOwner, attributeRepo } from "./roles";
 import { canonicalRole } from "./naming";
 import { Agent, roleToRepo, boardRoles, boardOwnerFrames, writeTargetmaps, loadBindings, busRepos } from "./registry";
 import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
@@ -111,7 +111,7 @@ export class Tracker {
     // which cannot identify a PO whose team is too small for the ≥3-quoted-roles self-tell.
     const ownerFrames = this.repoFilter ? boardOwnerFrames(this.repoFilter) : new Set<string>();
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
-    const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string }>();
+    const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string; signed: boolean }>();
     const now0 = Date.now();
     for (const f of frames) {
       if (!f.webviewId) continue;
@@ -131,19 +131,18 @@ export class Tracker {
       // (path): 1.2 vs purity <= 1. Measured 2026-09-09, a 325 KB diagnostic frame that had printed
       // the board classified as `developer` by path and beat the real, signing developer on length.
       let priority = c.source === "marker" ? 1.2 : c.purity;
-      const authRoleEarly = authoritative.get(f.webviewId);
-      if (role && !authRoleEarly) {
-        // A frame that DISCUSSES the Loom machinery is not a worker — it is a diagnostic session or
-        // the orchestrator, both of which print other roles' paths and sign-offs. Same rule as
-        // loom_cdp.py's SELF_RE; an authoritative /loom binding overrides it, as it does there.
-        if (discussesLoom(f.text)) { role = null; priority = 0; }
-        // A worker of THIS project must not read as another project's session. My window is scoped
-        // to one bus; a frame whose dominant paths belong to a different bus (a Gaming-attributed
-        // frame classifying as livegita's `developer` because both rosters have one) is not mine.
-        else if (this.repoFilter) {
-          const owned = attributeRepo(f.text, allRepos).repo;
-          if (owned && owned !== this.repoFilter) { role = null; priority = 0; }
-        }
+      // A worker of THIS project must not read as another project's session. The window is scoped
+      // to one bus; a frame whose dominant paths belong to a DIFFERENT bus (a Gaming-attributed frame
+      // classifying as livegita's `developer` because both rosters carry the name) is not mine. This
+      // is the read-side half of project-scoped role names. (A frame that mentions no bus at all is
+      // left alone: a fresh session right after /clear has nothing to attribute yet.)
+      // NOT a rule: "a frame that discusses the Loom machinery is not a worker". Tried 2026-09-09,
+      // measured against the live developer, and removed — its bootstrap runs `ls ~/.claude/loom`, so
+      // every real worker's own panel names loom_cdp.py and bindings.json. Residual: a marker-less
+      // stranger can still be path-classified as a worker when the real one is absent from the read.
+      if (role && this.repoFilter && !authoritative.get(f.webviewId)) {
+        const owned = attributeRepo(f.text, allRepos).repo;
+        if (owned && owned !== this.repoFilter) { role = null; priority = 0; }
       }
       // 2) GAP-FILLER: only when content is SILENT (marker scrolled out AND no dominant path) do we fall back to
       //    the authoritative /loom binding. It never OVERRIDES live content — a stale binding can't mislabel a
@@ -174,7 +173,8 @@ export class Tracker {
       if (!repo) continue;
       const prev = best.get(role);
       if (!prev || priority > prev.priority || (priority === prev.priority && f.text.length > prev.len))
-        best.set(role, { webviewId: f.webviewId, priority, len: f.text.length, repo, text: f.text });
+        best.set(role, { webviewId: f.webviewId, priority, len: f.text.length, repo, text: f.text,
+                         signed: priority >= 1.2 });   // marker (1.2) or authoritative binding (1.5)
     }
 
     const now = Date.now();
@@ -182,6 +182,14 @@ export class Tracker {
     this.models = new Map();
     for (const [role, b] of best) {
       this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now });
+      // INJECTION GATE. Limit-resume and model-policy nudges are TYPED INTO the agent's composer, and
+      // they are dispatched off these two maps. A path-only agent (no sign-off, no /loom binding) is
+      // shown in the sidebar and watched, but never nudged: measured 2026-09-09, every path-only hit
+      // across 31 live frames was a diagnostic session that had merely PRINTED worktree paths — and
+      // it received the developer's usage-limit resume. Path evidence is real (two genuine workers
+      // whose markers had scrolled off resolved by it), so it stays for detection; it just cannot be
+      // the sole basis for typing into a session.
+      if (!b.signed) continue;
       this.limits.set(role, detectLimit(b.text, now));
       this.models.set(role, detectModel(b.text));
     }

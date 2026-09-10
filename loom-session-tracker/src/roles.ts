@@ -67,17 +67,6 @@ export function classify(text: string, validRoles: Set<string>, repo?: string | 
 }
 
 /**
- * Does this frame DISCUSS the Loom machinery? Mirrors loom_cdp.py's SELF_RE, which exists because the
- * orchestrator's tab (and, it turns out, any diagnostic session about the tracker) quotes targetmaps,
- * bindings, role markers and the injector by name — a real worker doing app work never does. Such a
- * frame is never content-classified as a worker: it is exactly the kind of session that prints other
- * roles' worktree paths and sign-offs without being any of them. An AUTHORITATIVE /loom binding still
- * wins (a bound worker may read a handoff that mentions the tooling — observed 2026-07-11).
- */
-const LOOM_SELF_RE = /loom_cdp|targetmap\.json|bindings\.json|orchestrator\.json|loom-session-tracker|live-check\.js|\[loom-(?:notify|stall|resume)\]|webview_id_hint|find_role|record_binding/i;
-export function discussesLoom(text: string): boolean { return LOOM_SELF_RE.test(text || ""); }
-
-/**
  * Is this frame the ORCHESTRATOR/PO session? classify() deliberately returns null for it (so it can
  * never be a retire/delete target), which also made it invisible in the sidebar — and therefore
  * impossible to tag. This detector exists ONLY to surface it as a tag candidate. Mirrors

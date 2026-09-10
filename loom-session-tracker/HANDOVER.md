@@ -151,6 +151,19 @@ taken down every window three times. Kill by PID or by a unique `--user-data-dir
 
 ---
 
+## 0.17.x — the read-side half of project-scoped names (2026-09-09, late)
+
+After the IDE restart, livegita's window classified Gaming's restored developer tab (`132f0ce0`, 86%
+Gaming paths, marker scrolled off) as livegita's `developer` by path — both rosters carry the name —
+and typed livegita's `[loom-resume]` into it. That is the 2026-09-08 LG-001 misroute, reproduced.
+Three things now hold: a signing marker (1.2) outranks path evidence (≤1); a frame whose dominant
+paths belong to another bus is never this window's worker; and limit/model nudges are dispatched
+only for SIGNED or BOUND agents — a path-only agent is shown and watched but never typed into.
+Tried and removed the same night: a SELF_RE-style "discusses Loom internals ⇒ not a worker" rule.
+Every real worker runs `ls ~/.claude/loom` at bootstrap, so it excluded the genuine developer.
+Residual, documented in tracker.ts: a session that PRINTS another role's sign-off on its own line
+(test fixtures, grep output) reads as signed. Don't print `LOOMROLE=` lines in diagnostic sessions.
+
 ## Open threads
 
 - **MIGRATION TO THE FOUR ROLES is undecided in scope.** The vocabulary (product-owner / developer /
