@@ -11,7 +11,17 @@
 
 import { isOwnerRole, canonicalRole } from "./naming";
 
-export interface Classification { role: string | null; purity: number; }
+export interface Classification {
+  role: string | null;
+  purity: number;
+  /** Which signal identified the role. A `marker` is the session signing its OWN name; a `path` is
+   *  merely text that mentions a worktree — and any session that DISPLAYS a board or a diff mentions
+   *  worktrees. Measured 2026-09-09: a 325 KB diagnostic session that had printed livegita's board a
+   *  few times classified as `developer` by path with purity 1, tied the real developer (69 KB, signs
+   *  `LOOMROLE=gitadeveloper`, also purity 1) and WON the role on length. The tracker then sent that
+   *  stranger the developer's usage-limit resume. Purity cannot separate these; the source can. */
+  source: "marker" | "path" | null;
+}
 
 const LOOMROLE_LINE_RE = /^[\s>*`|\-]*LOOMROLE[\s=:]+([a-z][a-z0-9\-]+)\s*$/gim;
 const WORKTREE_RE = /worktrees[\/\\]([a-z][a-z0-9\-]+)/gi;
@@ -36,7 +46,7 @@ export function classify(text: string, validRoles: Set<string>, repo?: string | 
   const distinctMarkers = new Set(markers);
   if (distinctMarkers.size === 1) {                       // clean single sign-off -> authoritative-ish
     const role = markers[0];
-    if (!isOwnerRole(role)) return { role, purity: 1 };
+    if (!isOwnerRole(role)) return { role, purity: 1, source: "marker" };
   }
   // (distinctMarkers.size 0 or >=2 -> fall through to worktree paths; do NOT return null here)
 
@@ -47,14 +57,25 @@ export function classify(text: string, validRoles: Set<string>, repo?: string | 
     const r = alias(m[1].toLowerCase());
     if (validRoles.has(r)) score.set(r, (score.get(r) || 0) + 1);
   }
-  if (score.size === 0) return { role: null, purity: 0 };
+  if (score.size === 0) return { role: null, purity: 0, source: null };
   let total = 0, dom = "", domN = 0;
   for (const [r, n] of score) { total += n; if (n > domN) { dom = r; domN = n; } }
   const purity = domN / total;
-  if (isOwnerRole(dom)) return { role: null, purity };
-  if (purity >= PURITY_MIN || score.size === 1) return { role: dom, purity };
-  return { role: null, purity };                          // ambiguous on BOTH signals -> orchestrator/viewer
+  if (isOwnerRole(dom)) return { role: null, purity, source: null };
+  if (purity >= PURITY_MIN || score.size === 1) return { role: dom, purity, source: "path" };
+  return { role: null, purity, source: null };            // ambiguous on BOTH signals -> orchestrator/viewer
 }
+
+/**
+ * Does this frame DISCUSS the Loom machinery? Mirrors loom_cdp.py's SELF_RE, which exists because the
+ * orchestrator's tab (and, it turns out, any diagnostic session about the tracker) quotes targetmaps,
+ * bindings, role markers and the injector by name — a real worker doing app work never does. Such a
+ * frame is never content-classified as a worker: it is exactly the kind of session that prints other
+ * roles' worktree paths and sign-offs without being any of them. An AUTHORITATIVE /loom binding still
+ * wins (a bound worker may read a handoff that mentions the tooling — observed 2026-07-11).
+ */
+const LOOM_SELF_RE = /loom_cdp|targetmap\.json|bindings\.json|orchestrator\.json|loom-session-tracker|live-check\.js|\[loom-(?:notify|stall|resume)\]|webview_id_hint|find_role|record_binding/i;
+export function discussesLoom(text: string): boolean { return LOOM_SELF_RE.test(text || ""); }
 
 /**
  * Is this frame the ORCHESTRATOR/PO session? classify() deliberately returns null for it (so it can

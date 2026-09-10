@@ -304,3 +304,54 @@ suite("naming: a declared frame outranks a misclicked tag, and hides weak candid
   ok(offered.includes(PO), "the declared frame is offered");
   ok(!offered.includes(DIAG), "the weak candidate is NOT offered beside a declared one — nothing to misclick");
 });
+
+// ── a stranger that prints the board is not the developer ───────────────────────────────────────
+
+suite("tracker: a signing worker outranks a longer frame that only mentions its worktree", async () => {
+  // Measured 2026-09-09 22:07: livegita's real developer (69 KB, signs LOOMROLE=gitadeveloper) lost the
+  // `developer` role to a 325 KB diagnostic session that had printed board.json a few times — same
+  // purity (1), longer text. That stranger then received the developer's usage-limit resume.
+  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
+  const repo = makeRepo({ developer: {}, po: {} }, "lg-stranger");
+  const DEV = "b3190fe4-dev", ME = "132f0ce0-me";
+  const frames = [
+    { webviewId: DEV, type: "iframe", targetUrl: "u", text: "editing worktrees/developer/a.mjs" + marker("developer") },
+    { webviewId: ME,  type: "iframe", targetUrl: "u",
+      text: ("board says worktree /home/aneesh/Containers/x/.claude/worktrees/developer ").repeat(40) + "z".repeat(300000) },
+  ];
+  const real = cdp.readFrames; cdp.readFrames = async () => frames;
+  try { await new Tracker(repo).tick().then(() => {}); } finally { cdp.readFrames = real; }
+  const t = new Tracker(repo); cdp.readFrames = async () => frames;
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  const dev = t.view().find((a) => a.role === "developer");
+  ok(dev, "developer is tracked");
+  eq(dev.webviewId, DEV, "and it is the frame that SIGNS, not the longer one that only mentions paths");
+});
+
+suite("tracker: a frame that discusses the Loom machinery is never a worker", async () => {
+  // Mirrors loom_cdp.py's SELF_RE. A diagnostic session (or the orchestrator) quotes targetmaps,
+  // bindings and role markers by name; no worker doing app work does.
+  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
+  const repo = makeRepo({ developer: {} }, "lg-selfguard");
+  const frames = [{ webviewId: "w-diag", type: "iframe", targetUrl: "u",
+    text: "cat ~/.claude/loom/x/targetmap.json ... worktrees/developer/a worktrees/developer/b" + marker("developer") }];
+  const t = new Tracker(repo); const real = cdp.readFrames; cdp.readFrames = async () => frames;
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  eq(t.view().length, 0, "not tracked as any role, even with a marker present");
+});
+
+suite("tracker: a frame attributed to ANOTHER project is not this window's worker", async () => {
+  // Both Gaming and livegita have a `developer`. A frame whose dominant paths are Gaming's must not
+  // be livegita's developer just because the name matches — that is the cross-project collision.
+  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
+  const gaming = makeRepo({ developer: {} }, "Gaming-attr");
+  const lg = makeRepo({ developer: {} }, "livegita-attr");
+  const frames = [{ webviewId: "w-g", type: "iframe", targetUrl: "u",
+    text: `working in Containers/${gaming}/src ` .repeat(10) + "worktrees/developer/a.ts" }];
+  const t = new Tracker(lg); const real = cdp.readFrames; cdp.readFrames = async () => frames;
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  eq(t.view().length, 0, "the Gaming-attributed frame is not livegita's developer");
+  const tg = new Tracker(gaming); cdp.readFrames = async () => frames;
+  try { await tg.tick(); } finally { cdp.readFrames = real; }
+  eq(tg.view().map((a) => a.role), ["developer"], "but it IS Gaming's");
+});

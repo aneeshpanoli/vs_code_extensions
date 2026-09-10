@@ -4,7 +4,7 @@
 // targetmaps degrade gracefully instead of going blank on a transient CDP hiccup.
 
 import { readFrames, Frame } from "./cdp";
-import { classify, detectOwner, attributeRepo } from "./roles";
+import { classify, discussesLoom, detectOwner, attributeRepo } from "./roles";
 import { canonicalRole } from "./naming";
 import { Agent, roleToRepo, boardRoles, boardOwnerFrames, writeTargetmaps, loadBindings, busRepos } from "./registry";
 import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
@@ -127,7 +127,24 @@ export class Tracker {
       // 1) CONTENT-DETECT first (reverse-engineering) — the live, current-reality signal.
       const c = classify(f.text, validRoles, this.repoFilter);
       let role: string | null = c.role;
-      let priority = c.purity;
+      // A session SIGNING its own role (marker) outranks a session that merely MENTIONS a worktree
+      // (path): 1.2 vs purity <= 1. Measured 2026-09-09, a 325 KB diagnostic frame that had printed
+      // the board classified as `developer` by path and beat the real, signing developer on length.
+      let priority = c.source === "marker" ? 1.2 : c.purity;
+      const authRoleEarly = authoritative.get(f.webviewId);
+      if (role && !authRoleEarly) {
+        // A frame that DISCUSSES the Loom machinery is not a worker — it is a diagnostic session or
+        // the orchestrator, both of which print other roles' paths and sign-offs. Same rule as
+        // loom_cdp.py's SELF_RE; an authoritative /loom binding overrides it, as it does there.
+        if (discussesLoom(f.text)) { role = null; priority = 0; }
+        // A worker of THIS project must not read as another project's session. My window is scoped
+        // to one bus; a frame whose dominant paths belong to a different bus (a Gaming-attributed
+        // frame classifying as livegita's `developer` because both rosters have one) is not mine.
+        else if (this.repoFilter) {
+          const owned = attributeRepo(f.text, allRepos).repo;
+          if (owned && owned !== this.repoFilter) { role = null; priority = 0; }
+        }
+      }
       // 2) GAP-FILLER: only when content is SILENT (marker scrolled out AND no dominant path) do we fall back to
       //    the authoritative /loom binding. It never OVERRIDES live content — a stale binding can't mislabel a
       //    frame the classifier can actually read.
