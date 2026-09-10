@@ -28,7 +28,7 @@ const { busRepos, boardRoles, boardOwnerFrames, busDeclaredFrames, rivalDeclarer
   require(path.join(OUT, "registry.js"));
 const fsx = require("fs");
 const { isOwnerRole, ownerRoleFor, roleAliases, OWNER_ALIASES, ROLE_VOCABULARY,
-        inVocabulary } = require(path.join(OUT, "naming.js"));
+        inVocabulary, baseRole } = require(path.join(OUT, "naming.js"));
 const { getOrchestrator } = require(path.join(OUT, "orchestrator.js"));
 const { isBusy } = require(path.join(OUT, "sessions.js"));
 const { boardSessionId, transcriptFor, readTranscriptContext } = require(path.join(OUT, "context.js"));
@@ -246,6 +246,35 @@ const info = (n, d) => record("INFO", n, d);
   } catch {
     warn("running version", "no ~/.claude/loom/running-versions.json yet — every window predates the " +
       "version stamp (0.22.0); reload them and it will appear");
+  }
+
+  // ── 1e3. no bus's cache claims another bus's ORCHESTRATOR as a worker ─────────────────────
+  // targetmap.json is a cache of the tracker's guess; a declaration is the session's own statement.
+  // When a stale window guesses wrong the cache poisons everything downstream, because loom_cdp reads
+  // it as an authoritative hint. Measured 2026-09-10: funisland/targetmap.json mapped 7614c6be ->
+  // "scriptwriter", and 7614c6be is tfg_ua's PRODUCT OWNER — the model policy typed
+  // `/model claude-opus-5` into the orchestrator eight times before anyone noticed.
+  const orchFrames = new Map();                     // webviewId -> "repo/role"
+  for (const repo of repos) {
+    for (const d of busDeclaredFrames(repo)) if (isOwnerRole(d.role)) orchFrames.set(d.webviewId, `${repo}/${d.role}`);
+    const t = getOrchestrator(repo);
+    if (t && t.webviewId) orchFrames.set(t.webviewId, `${repo}/${t.role}`);
+  }
+  for (const repo of repos) {
+    for (const file of ["targetmap.json", "bindings.json"]) {
+      let m = {};
+      try { m = JSON.parse(fsx.readFileSync(path.join(require("os").homedir(), ".claude", "loom", repo, file), "utf8")); }
+      catch { continue; }
+      for (const [wid, role] of Object.entries(m)) {
+        const whose = orchFrames.get(wid);
+        if (whose && !isOwnerRole(role)) {
+          fail(`${repo}: ${file} POISONED`,
+            `it maps ${wid.slice(0, 8)} to the worker role "${role}", but that frame is ${whose}'s ` +
+            `orchestrator. Anything dispatching by role name will type into that PO. Delete the entry ` +
+            `and reload the ${repo} window — a stale build wrote it.`);
+        }
+      }
+    }
   }
 
   // ── 1f. one frame, one bus ────────────────────────────────────────────────────────────────
