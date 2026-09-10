@@ -83,8 +83,8 @@ MUTATIONS = [
 
  ("a declaration is honoured even when another bus makes the same one",
   "src/tracker.ts",
-  "      if (this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {",
-  "      if (false) {"),
+  "if (this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {",
+  "if (this.repoFilter && 0) {"),
 
  ("a contested declaration ignores which mailbox is still being written",
   "src/registry.ts",
@@ -94,7 +94,7 @@ MUTATIONS = [
  ("a declared WORKER frame loses its role to a bystander printing its paths",
   "src/tracker.ts",
   "} else if (decl && !isOwnerRole(decl.role) && this.repoFilter) {",
-  "} else if (false && this.repoFilter) {"),
+  "} else if (decl && !isOwnerRole(decl.role) && this.repoFilter && Boolean(0)) {"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
