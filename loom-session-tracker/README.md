@@ -177,6 +177,65 @@ live session, on a detached HEAD, or holding gitignored files git cannot give ba
 
 ---
 
+## Naming roles
+
+One canonical orchestrator id: **`product-owner`**. Nothing in the code compares a role name against a
+literal — everything asks `isOwnerRole()` in [`src/naming.ts`](src/naming.ts), which accepts every
+spelling in `OWNER_ALIASES`: `product-owner`, `productowner`, `product_owner`, `po`, `owner`,
+`orchestrator`, `pm`.
+
+This matters more than it looks. Before 2026-09-09 the owner set was hardcoded in four places
+(`roles.ts`, `coordinator.ts`, `orchestrator.ts`, and twice in `loom_cdp.py`) and `po` — livegita's
+actual board key and mailbox — was in none of them. Its orchestrator was therefore classified as an
+ordinary **worker**, which meant it was never offered as a tag candidate *and* was a legal
+spawn/retire/delete target: the boundary that exists to make the orchestrator undeletable had a hole
+in it for one project. `loom_cdp.py` now reads the same table from `~/.claude/loom/naming.json`, which
+this extension publishes on activation, so the two cannot drift.
+
+**Adding a spelling** is a one-line edit to `OWNER_ALIASES`. Do that rather than letting a bus invent
+a name nothing recognises — `./live.sh` fails loudly on an owner-looking role the contract rejects.
+
+### Per-project naming lives on the bus
+
+`~/.claude/loom/<repo>/naming.json` — no rebuild, no redeploy:
+
+```json
+{
+  "owner": "po",
+  "aliases": { "gitadeveloper": "developer" }
+}
+```
+
+- **`owner`** — which mailbox is this project's real orchestrator, when the bus has more than one.
+  livegita has both `po/` (42 KB inbox, queued tickets, tools) and an empty `productowner/` the PO
+  session created for itself; only the project can say which is real.
+- **`aliases`** — two names for one agent, collapsed. An alias must point at a role that already
+  exists on the bus, and resolution is one step only, so it can never loop.
+
+Alias direction is deliberate: **collapse into the name that has a worktree.** `gitadeveloper` folds
+into `developer` because `worktrees/developer` is a real path, so the surviving name resolves from
+*either* signal. The other direction would leave a role identifiable only by a `LOOMROLE=` marker that
+scrolls out of the panel — which is exactly why livegita's one developer read as two different agents
+depending on what was on screen.
+
+Mailbox directories are never renamed by any of this. Every `loom/<repo>/<role>/status.json` path
+keeps working, and `ownerRoleFor()` follows a bus that later renames itself to the canonical id.
+
+### Finding the orchestrator's tab
+
+The orchestrator quotes its workers' `LOOMROLE=` sign-offs, so content detection calls it a worker
+unless it quotes **three distinct** roles. A project with one or two workers can never reach three —
+livegita's PO quoted a single `LOOMROLE=gitadeveloper` and was read as the developer, then beat the
+real developer's frame for that role on text length (159 KB vs 57 KB). The sidebar was showing the
+orchestrator's tab *as* the developer, which is how a hand-tag came to write `{"role":"gitadeveloper"}`.
+
+So the **board is authoritative**: a board entry whose key is an owner name carries the PO's own
+`webviewId`, and `boardOwnerFrames()` treats that frame as the orchestrator regardless of what its
+text looks like. The `≥3 distinct roles` heuristic is a fallback for buses that declare nothing.
+
+The context cycle refuses outright to run against a tag that does not name an orchestrator — its
+endpoint is a `/clear`, and a worker-named tag is one tick away from wiping a working session.
+
 ## Commands
 
 | Command | What it does |

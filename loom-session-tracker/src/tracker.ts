@@ -5,7 +5,8 @@
 
 import { readFrames, Frame } from "./cdp";
 import { classify, detectOwner, attributeRepo } from "./roles";
-import { Agent, roleToRepo, boardRoles, writeTargetmaps, loadBindings, busRepos } from "./registry";
+import { canonicalRole } from "./naming";
+import { Agent, roleToRepo, boardRoles, boardOwnerFrames, writeTargetmaps, loadBindings, busRepos } from "./registry";
 import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
 import { detectLimit, LimitInfo } from "./limits";
 import { detectModel, ModelInfo } from "./models";
@@ -101,21 +102,35 @@ export class Tracker {
     // tracker NEVER writes, so a /loom self-binding is durable and can't be clobbered by our own detection cache.
     const authoritative = this.repoFilter ? loadBindings(this.repoFilter) : new Map<string, string>();
     const allRepos = busRepos();          // for attributing an orchestrator frame to ONE project
+    // Frames the BOARD declares to be the orchestrator's. Authoritative: it beats content detection,
+    // which cannot identify a PO whose team is too small for the ≥3-quoted-roles self-tell.
+    const ownerFrames = this.repoFilter ? boardOwnerFrames(this.repoFilter) : new Set<string>();
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
     const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string }>();
     const now0 = Date.now();
     for (const f of frames) {
       if (!f.webviewId) continue;
+      // 0) THE BOARD WINS. A frame the board names as the orchestrator's is the orchestrator, even
+      //    when its text reads exactly like a worker's (it quotes their sign-offs).
+      if (ownerFrames.has(f.webviewId)) {
+        this.owners.set(f.webviewId, {
+          lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
+          repo: this.repoFilter, chars: (f.text || "").length, strong: true,
+        });
+        continue;
+      }
       // 1) CONTENT-DETECT first (reverse-engineering) — the live, current-reality signal.
-      const c = classify(f.text, validRoles);
+      const c = classify(f.text, validRoles, this.repoFilter);
       let role: string | null = c.role;
       let priority = c.purity;
       // 2) GAP-FILLER: only when content is SILENT (marker scrolled out AND no dominant path) do we fall back to
       //    the authoritative /loom binding. It never OVERRIDES live content — a stale binding can't mislabel a
       //    frame the classifier can actually read.
       if (!role) {
+        // Alias the binding through the project's naming contract too, so a `/loom` self-binding
+        // and live content can never resolve the SAME frame to two different role names.
         const authRole = authoritative.get(f.webviewId);
-        if (authRole) { role = authRole; priority = 1.5; }
+        if (authRole) { role = canonicalRole(this.repoFilter, authRole); priority = 1.5; }
       }
       if (!role) {
         // Not a worker frame. If it looks like the orchestrator/PO, remember it as a tag candidate.

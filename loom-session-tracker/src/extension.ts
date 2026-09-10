@@ -12,6 +12,7 @@ import { Coordinator, MAX_ACTIVE_TOTAL } from "./coordinator";
 import { roleToRepo, boardRoles, busRepos } from "./registry";
 import { setLock } from "./locks";
 import { getOrchestrator, setOrchestrator, setOrchestratorFrame, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
+import { ownerRoleFor, publishNaming } from "./naming";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
@@ -29,6 +30,8 @@ export function activate(context: vscode.ExtensionContext) {
   try {
     const cfg = () => vscode.workspace.getConfiguration("loomSessionTracker");
     const repo = currentRepo();     // THIS window's project — the tracker shows/writes only this repo
+    // Publish the owner alias contract so loom_cdp.py reads the same set this extension enforces.
+    publishNaming();
     const tracker = new Tracker(repo);
     const coord = new Coordinator(tracker, repo);
     // THIS project's roster, read from ITS board — not from the global {role: repo} map, which is
@@ -445,9 +448,13 @@ export function activate(context: vscode.ExtensionContext) {
         const role = await roleFromArg(node, () => {
           // Orchestrator names FIRST (they're never in the board roster / tracked agents), then this
           // project's worker roles and any other detected sessions — so the PO is always taggable.
+          // The name THIS bus already uses for its owner mailbox goes first (livegita -> `po`),
+          // then the other accepted spellings, then the worker roles.
+          const mine = ownerRoleFor(target);
+          const owners = [mine, ...ORCHESTRATOR_CANDIDATES.filter((r) => r !== mine)];
           const others = Array.from(new Set([...boardRoles(target), ...tracker.view().map((a) => a.role)]))
-            .filter((r) => !ORCHESTRATOR_CANDIDATES.includes(r)).sort();
-          const roles = [...ORCHESTRATOR_CANDIDATES, ...others];
+            .filter((r) => !owners.includes(r)).sort();
+          const roles = [...owners, ...others];
           return vscode.window.showQuickPick(roles, { placeHolder: "Which role is the orchestrator (receives finish notifications)?" });
         });
         if (!role) return;

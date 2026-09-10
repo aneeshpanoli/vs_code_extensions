@@ -153,10 +153,26 @@ taken down every window three times. Kill by PID or by a unique `--user-data-dir
 
 ## Open threads
 
-- **The three stale tags** above — one click each, in the right window.
-- **`livegita` has no offerable candidate** when its orchestrator classifies as `developer`. If that
-  keeps happening, the classifier may need to prefer a role's *own* sign-off over dominant worktree
-  paths for sessions that also carry heavy bus-path attribution.
+- **The three stale tags** above — one click each, in the right window. (livegita's is now correct:
+  `po @ f13a5e27`, reading 60% off the panel.)
+- **`livegita/productowner/`** is an empty duplicate mailbox the PO session created for itself at
+  17:40 on 2026-09-09, with a board note saying "rings go to po/ — this dir is an alias". The bus's
+  `naming.json` pins `"owner": "po"`, so nothing is confused by it; retire the directory once that
+  session stops writing its status there.
+- **`livegita/gitadeveloper` vs `developer`** — aliased to one identity for CLASSIFICATION only; both
+  mailboxes are still watched, because the live session writes to `gitadeveloper/` and was mid-task.
+  Retire the directory when it is idle. NOTE the tension recorded in `loom_cdp.py`: `gitadeveloper` was
+  project-prefixed ON PURPOSE, because a bare `developer` collides across buses and that collision
+  misrouted LG-001 into the ReciEats PO tab on 2026-09-08. `loom_cdp.py`'s `KNOWN_ROLES` is a FLAT
+  global set, so the prefix still earns its keep there. Nothing was changed about what the session
+  signs, and bare `developer` was NOT added to `KNOWN_ROLES`.
+- ~~**`livegita` has no offerable candidate**~~ — SOLVED 2026-09-09, and the earlier diagnosis in this
+  document was wrong. It was not "dominated by `worktrees/developer` paths". Two separate faults:
+  livegita spells its orchestrator `po`, which was in none of the four hardcoded owner sets; and its PO
+  tab quotes its single developer's sign-off, which `detectOwner`'s `>=3 distinct roles` test can never
+  catch on a one-worker team, so the PO was classified AS the developer and beat the real developer's
+  frame on text length. Fixed by `src/naming.ts` (one owner contract, shared with `loom_cdp.py`) and
+  `registry.boardOwnerFrames()` (the board declares the PO's `webviewId`; it beats content detection).
 - **The cycle has never completed end to end on a real session.** Every stage is tested and the
   refusals are proven, but no orchestrator has yet banked, cleared and restored for real. The first
   one to watch is funisland at 88%.

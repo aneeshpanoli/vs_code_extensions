@@ -4,7 +4,7 @@
 
 import * as vscode from "vscode";
 import { Tracker, AgentView } from "./tracker";
-import { OWNER_ROLE_NAME } from "./roles";
+import { ownerRoleFor } from "./naming";
 import { isLocked } from "./locks";
 import { getOrchestrator } from "./orchestrator";
 
@@ -96,7 +96,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       .filter((o) => (repo ? o.repo === repo : true))
       .sort((a, b) => Number(b.strong) - Number(a.strong))
       .map((o) => ({
-        kind: "ownerCandidate", role: OWNER_ROLE_NAME, webviewId: o.webviewId, liveness: o.liveness,
+        kind: "ownerCandidate", role: ownerRoleFor(o.repo ?? repo ?? null), webviewId: o.webviewId, liveness: o.liveness,
         strong: o.strong, contextPct: o.contextPct,
       } as Node));
   }

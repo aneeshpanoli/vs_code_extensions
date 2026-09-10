@@ -6,12 +6,15 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import { OWNER_ALIASES } from "./naming";
+
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
 // The orchestrator/PO session is NOT a worker role — it never appears in a board.json roster and the
-// tracker excludes it from tracked agents. These canonical names must therefore always be offered as
-// tag candidates independently, and loom_cdp.py's detect_role recognizes them for injection.
-export const ORCHESTRATOR_CANDIDATES = ["product-owner", "productowner"];
+// tracker excludes it from tracked agents. These names must therefore always be offered as tag
+// candidates independently, and loom_cdp.py's detect_role recognizes them for injection.
+// Sourced from naming.ts so `po` (livegita) is offered too — it was missing from the hardcoded pair.
+export const ORCHESTRATOR_CANDIDATES: readonly string[] = OWNER_ALIASES;
 
 export interface OrchestratorTag {
   role: string;

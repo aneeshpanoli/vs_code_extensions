@@ -24,7 +24,8 @@ const path = require("path");
 const OUT = path.join(__dirname, "out");
 const { readFrames } = require(path.join(OUT, "cdp.js"));
 const { detectOwner, attributeRepo, classify } = require(path.join(OUT, "roles.js"));
-const { busRepos, boardRoles } = require(path.join(OUT, "registry.js"));
+const { busRepos, boardRoles, boardOwnerFrames } = require(path.join(OUT, "registry.js"));
+const { isOwnerRole, ownerRoleFor, roleAliases, OWNER_ALIASES } = require(path.join(OUT, "naming.js"));
 const { getOrchestrator } = require(path.join(OUT, "orchestrator.js"));
 const { isBusy } = require(path.join(OUT, "sessions.js"));
 const { boardSessionId, transcriptFor, readTranscriptContext } = require(path.join(OUT, "context.js"));
@@ -47,11 +48,20 @@ const fail = (n, d) => record("FAIL", n, d);
   pass("CDP read", `${frames.length} webview frame(s) across the editor`);
 
   // Classify every frame the way the tracker does.
+  // Frames each board DECLARES to be its orchestrator's — authoritative, and the only way to find a
+  // PO whose team is too small for the >=3-quoted-roles self-tell (see registry.boardOwnerFrames).
+  const declared = new Map();                       // webviewId -> repo
+  for (const r of repos) for (const w of boardOwnerFrames(r)) declared.set(w, r);
   const panels = frames.map((f) => {
+    const owned = declared.get(f.webviewId);
+    if (owned) {
+      return { wid: f.webviewId, repo: owned, role: null, strong: true,
+               pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text), declared: true };
+    }
     const repo = attributeRepo(f.text, repos).repo;
-    const role = repo ? classify(f.text, new Set(boardRoles(repo))).role : null;
+    const role = repo ? classify(f.text, new Set(boardRoles(repo)), repo).role : null;
     return { wid: f.webviewId, repo, role, strong: detectOwner(f.text),
-             pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text) };
+             pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text), declared: false };
   });
   const candidates = panels.filter((p) => !p.role && (p.strong || p.repo));
 
@@ -69,6 +79,61 @@ const fail = (n, d) => record("FAIL", n, d);
       shared.map(([w, rs]) => `${w.slice(0, 8)} is tagged by ${rs.join(", ")}`).join("; "));
   } else pass("one frame, one orchestrator", `${byFrame.size} tag(s), none shared`);
 
+  // ── 1b. THE NAMING CONTRACT holds on every real bus ───────────────────────────────────────
+  // The 2026-09-09 defect: livegita spells its orchestrator `po`, which was in NONE of the four
+  // hardcoded owner sets. Its PO was therefore never offerable as a candidate AND was a legal
+  // spawn/retire/delete target. This asserts against the ACTUAL board keys and mailbox directories,
+  // so a new project inventing a fifth spelling is reported here instead of failing silently.
+  for (const repo of repos) {
+    const roster = boardRoles(repo);
+    const owners = roster.filter((r) => isOwnerRole(r));
+    const ownerish = roster.filter((r) => !isOwnerRole(r) &&
+      /^(p\.?o|po[_-]?\w*|.*product.?owner.*|.*orchestrat.*|.*owner.*|pm)$/i.test(r));
+    if (ownerish.length) {
+      fail(`${repo}: owner naming`, `roster has owner-LOOKING role(s) the contract does not accept: ` +
+        `${ownerish.join(", ")} — add the spelling to OWNER_ALIASES in src/naming.ts, or rename the ` +
+        `bus directory. Until then it is a deletable worker.`);
+    } else if (owners.length > 1) {
+      warn(`${repo}: owner naming`, `${owners.length} owner spellings on one bus (${owners.join(", ")}) ` +
+        `— harmless, but only ${ownerRoleFor(repo)} is the one tagging will use`);
+    } else if (owners.length === 1) {
+      pass(`${repo}: owner naming`, `${owners[0]} recognised; tags write ${ownerRoleFor(repo)}`);
+    } else {
+      warn(`${repo}: owner naming`, `no orchestrator role on the bus at all — a tag here would create ` +
+        `${ownerRoleFor(repo)}/`);
+    }
+  }
+
+  // ── 1c. an orchestrator that EXISTS on the bus is actually tagged ─────────────────────────
+  // A real PO mailbox with no orchestrator.json is invisible: no ★ in the sidebar, no finish
+  // notifications, no context cycle. livegita was in exactly this state — a 42 KB inbox and three
+  // queued tickets under po/, and no tag.
+  for (const repo of repos) {
+    const owners = boardRoles(repo).filter((r) => isOwnerRole(r));
+    if (!owners.length) continue;
+    if (getOrchestrator(repo)) continue;
+    const mine = candidates.filter((c) => c.repo === repo);
+    warn(`${repo}: orchestrator untagged`,
+      `the bus has ${owners.join(", ")}/ but no orchestrator.json — ` +
+      (mine.length ? `click the ★ on ${mine.map((c) => c.wid.slice(0, 8)).join(" or ")}`
+                   : `and no session of this project is currently offerable, so its PO tab is not open`));
+  }
+
+  // ── 1d. per-project role aliases point at roles that exist ────────────────────────────────
+  // An alias must COLLAPSE INTO a real on-disk role; one pointing at a name that is not on the bus
+  // would silently erase a session's identity.
+  for (const repo of repos) {
+    const al = roleAliases(repo);
+    if (!al.size) continue;
+    const roster = new Set(boardRoles(repo));
+    const bad = [...al.entries()].filter(([, to]) => !roster.has(to));
+    if (bad.length) {
+      fail(`${repo}: role aliases`, bad.map(([f, t]) => `${f} -> ${t}, which is not a role of this bus`).join("; "));
+    } else {
+      pass(`${repo}: role aliases`, [...al.entries()].map(([f, t]) => `${f} -> ${t}`).join(", "));
+    }
+  }
+
   // ── 2. every tag resolves to a live, attributable frame ───────────────────────────────────
   for (const repo of repos) {
     const tag = getOrchestrator(repo);
@@ -83,6 +148,25 @@ const fail = (n, d) => record("FAIL", n, d);
     } else {
       warn(`${repo}: tag is stale`, `tagged ${String(tag.webviewId).slice(0, 8)}, and no session in ` +
         `this project is currently offerable as its orchestrator`);
+    }
+  }
+
+  // ── 2b. no tag names a WORKER role ────────────────────────────────────────────────────────
+  // Measured 2026-09-09: livegita/orchestrator.json read `{"role":"gitadeveloper"}`. Reported as a
+  // FAILURE, not a warning — the context cycle's endpoint is a `/clear`, and the only thing holding
+  // it was a null frame id that a tick refills. memory.ts now refuses this outright; this says so out
+  // loud, because the wrong TAG is still a state a person has to fix.
+  for (const repo of repos) {
+    const tag = getOrchestrator(repo);
+    if (!tag) continue;
+    if (isOwnerRole(tag.role)) {
+      pass(`${repo}: tag names the orchestrator`, `${tag.role}`);
+    } else {
+      fail(`${repo}: tag names a WORKER`, `orchestrator.json says role "${tag.role}", which is not an ` +
+        `orchestrator name (accepted: ${OWNER_ALIASES.join(", ")}). The cycle refuses to run, so ` +
+        `nothing will be cleared — but this project has no working orchestrator tag. Re-tag it: ` +
+        `untag from the ★ node, then star the real PO session (this bus's name for it is ` +
+        `${ownerRoleFor(repo)}).`);
     }
   }
 

@@ -22,6 +22,8 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+
+import { isOwnerRole } from "./naming";
 import { ContextReading, pct, transcriptFor, newestTranscriptIn, boardSessionId, readTranscriptContext,
          DEFAULT_WINDOW_TOKENS } from "./context";
 
@@ -198,6 +200,7 @@ export function decide(input: ContextInput): Step {
   }
   if (!input.webviewId) return keep("the orchestrator's frame is not identified — cannot inject safely");
 
+
   // A cycle is about ONE role and ONE file. Re-tag the orchestrator, or point `contextMemoryFile`
   // somewhere else, and the next tick would be judging a DIFFERENT file against the baseline taken
   // from the old one — an unrelated file that happens to be newer would read as "banked" and send a
@@ -212,6 +215,25 @@ export function decide(input: ContextInput): Step {
       next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
               aborts: (state.aborts ?? 0) + 1, lastNote: "target changed mid-cycle" },
     };
+  }
+
+  // Placed AFTER the mid-cycle abort on purpose: if a RUNNING cycle is re-tagged to a worker, the
+  // abort above is the better outcome — it releases the lease and records the abandonment, where this
+  // guard would merely hold. This catches the case the abort cannot: a cycle that never started
+  // because the tag was wrong from the beginning.
+  // THE TAG MUST NAME AN ORCHESTRATOR. This cycle's endpoint is a `/clear` — it destroys the
+  // target session's context — so it must never run against a WORKER, whatever the tag says.
+  // Measured live 2026-09-09: livegita's orchestrator.json read `{"role":"gitadeveloper"}`, tagged by
+  // hand at 17:36 because the real PO (named `po`, in no owner set) was never offered as a candidate,
+  // so the only livegita node available to star was the developer's. The cycle was held ONLY by that
+  // tag's `webviewId: null`, and a tick populates that field the moment the frame is identifiable —
+  // at which point this would have asked a developer mid-task to bank and clear itself.
+  // Accepted spellings live in naming.ts; a project whose orchestrator has a genuinely new name adds
+  // it there, which is a deliberate one-line act rather than a silent misfire.
+  if (!isOwnerRole(input.role)) {
+    return keep(`the tag names '${input.role}', which is not an orchestrator role — refusing to run ` +
+                `the context cycle against a worker session (add the spelling to OWNER_ALIASES in ` +
+                `src/naming.ts if it really is this project's orchestrator)`);
   }
   const unseen = !input.frameSeen && phase !== "clearing";
   if (unseen) return keep("the orchestrator's frame was not seen this tick — cannot tell if it is mid-turn");

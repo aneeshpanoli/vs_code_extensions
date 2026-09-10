@@ -7,6 +7,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import { isOwnerRole } from "./naming";
+
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
 export interface Agent {
@@ -107,6 +109,35 @@ export function boardRoles(repo: string): string[] {
     for (const [k, v] of Object.entries(data)) if (k && !NON_ROLE_KEYS.has(k) && isRoleEntry(v)) out.add(k);
   }
   return Array.from(out).sort();
+}
+
+/**
+ * The webviewIds this project's board declares to be its ORCHESTRATOR's, from every board entry whose
+ * key is an owner name (any spelling — see naming.ts).
+ *
+ * WHY THIS IS NEEDED, measured live 2026-09-09. Content detection CANNOT identify livegita's PO. The
+ * orchestrator quotes its workers' `LOOMROLE=` sign-offs, and `detectOwner()` only calls that a
+ * self-tell at THREE distinct roles — but livegita runs ONE worker, so its PO can never quote three.
+ * With a single quoted `LOOMROLE=gitadeveloper`, `classify()` read the PO's own tab as a clean
+ * single-marker sign-off and returned it as the DEVELOPER. Worse, it then beat the real developer's
+ * frame for that role on text length (159 KB vs 57 KB), so the tracker showed the orchestrator's tab
+ * as the developer — which is how a hand-tag came to write `{"role":"gitadeveloper"}` at 17:36.
+ * The ≥3 heuristic is sound for a big team and useless for a small one; the board is not a heuristic.
+ */
+export function boardOwnerFrames(repo: string): Set<string> {
+  const out = new Set<string>();
+  let data: any;
+  try { data = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8")); }
+  catch { return out; }
+  const src = (data && data.roles && typeof data.roles === "object" && !Array.isArray(data.roles))
+    ? data.roles : data;
+  if (!src || typeof src !== "object") return out;
+  for (const [k, v] of Object.entries<any>(src)) {
+    if (!isOwnerRole(k)) continue;
+    const w = v && typeof v === "object" ? v.webviewId : null;
+    if (typeof w === "string" && w) out.add(w);
+  }
+  return out;
 }
 
 /** {role: repo} from every repo bus's board.json — the authoritative per-project roster. */
