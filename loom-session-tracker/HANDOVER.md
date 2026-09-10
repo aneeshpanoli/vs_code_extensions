@@ -1,0 +1,178 @@
+# Handover — loom-session-tracker
+
+Written 2026-09-09 so a fresh context can pick this up without the conversation that produced it.
+Read this, then `README.md` (what the extension is and how to use it), then run `./live.sh`.
+
+If you are the orchestrator being restored by this extension's own memory cycle: this is the same
+idea, done by hand. The state below was true when it was written; **verify it, do not trust it.**
+
+---
+
+## Where everything is
+
+| | |
+|---|---|
+| Source (git) | `/home/aneesh/vs_code_extensions/loom-session-tracker` — `main`, pushed to `github.com:aneeshpanoli/vs_code_extensions` |
+| Deployed copy | `~/.vscode-oss/extensions/local.loom-session-tracker-0.14.0/` — installed with `../deploy.sh loom-session-tracker`, registered in `extensions.json`, needs a window reload |
+| The bus it watches | `~/.claude/loom/<project>/` — `board.json`, per-role `status.json`/`inbox.md`/`outbox.md`, plus the state files this extension writes |
+| The injector | `~/.claude/loom/loom_cdp.py` — **not in git**, backed up in place as `loom_cdp.py.bak-<epoch>` |
+| The pattern's playbook | `~/.claude/loom/ORCHESTRATION-PLAYBOOK.md` — **not in git**; §13 (target by webviewId) and §14 (the memory cycle) matter most here |
+| Live projects | `Gaming`, `gaming` (stale, lowercase), `funisland`, `livegita`, `shwab_docker` |
+
+Two of those live outside version control. If either is lost, the extension still runs but cannot
+inject anything.
+
+---
+
+## What this extension is
+
+The instrument panel for running many Claude Code sessions as a team: it reads every Claude panel in
+every editor window over CDP, works out which session is which Loom role, and acts on what it finds
+(finish notifications, stall alerts, usage-limit resumes, model policy, worktree hygiene, and the
+orchestrator context-memory cycle). `README.md` is the full description. The parent
+[`../README.md`](../README.md) keeps the engineering record — what was measured and why each
+decision went the way it did.
+
+---
+
+## State as of 2026-09-09
+
+**Version 0.14.0**, built, tested (349 checks, 22 files, 95.3% of lines), deployed and pushed.
+Working tree clean. Six commits this session, `18fb520..f058c2f`:
+
+| | |
+|---|---|
+| `115a631` 0.11.0 | Roster derivation by shape+mailbox; notifier baselines on working-like; orchestrator addressed by webviewId; the context-memory cycle |
+| `5731caf` 0.12.0 | The cycle could not fire (no transcript for `product-owner`) and would have fired at the wrong session (editor-wide frames) |
+| `ca43bc7` 0.13.0 | Weak candidates — the session that needs the cycle could not be tagged |
+| `958a1f7` 0.13.1 | `live-check.js` |
+| `61c1789` 0.14.0 | Edge cases + the two-window `/clear` race they found |
+| `f058c2f` | `README.md`, `live.sh` |
+
+### The live system, right now
+
+`./live.sh` reports **1 FAIL, 5 WARN**, and the failure is a real state to fix, not a bug:
+
+- `a8faad83` (shwab_docker's PO) is still tagged as the orchestrator of **Gaming and funisland**.
+  That frame died with the editor restart, so both tags read `frame not identified` and both cycles
+  correctly refuse to act.
+- **The pending action:** in the funisland window click the ★ on `f1cf0030` (**88% context** — it
+  will bank and clear on the next tick); in the Gaming window, on `c16de08c` (54%) or `dc1aff90`.
+  Frame ids change on every window reload — take them from `./live.sh`, never from this document.
+- `livegita` sometimes offers no candidate: its PO-ish session is dominated by `worktrees/developer`
+  paths, so it classifies as the `developer` worker and is excluded. Tag it from the QuickPick if it
+  really is the orchestrator.
+- 16 board `session_id`s point at no transcript. Bus drift, not an extension fault — but "Reopen
+  sessions" cannot restore those.
+
+---
+
+## What changed this session, and why
+
+Each of these came from measuring the live system, not from reasoning about it. That is the method
+to keep.
+
+**The roster was dropping real roles.** `boardRoles()` filtered a flat `board.json` with a denylist
+of metadata key names; funisland's board carries seven keys that were not on it, so its roster was 7
+phantoms plus 3 real roles and **dropped the 8 roles that own a mailbox**. Consequences: those
+sessions were undetectable; `funisland/simulation` had been "working" for 433h with no watchdog able
+to see it; and 7 of their worktrees read as orphaned, 6 of which passed every safeguard in
+`removeWorktree`. Roles are now board entries recognised by *shape* (`session_id`/`branch`/`status`/
+`bound_at`) unioned with every bus directory holding a mailbox.
+
+**Nothing could reach the orchestrator.** `loom_cdp.py`'s `find_role()` drops any frame that
+content-detects as `product-owner` — the self-woke guard — so `inject --role product-owner` can
+never land, and the finish notifier and stall alert had a delivery path that would always have
+failed. `loom_cdp.py` now takes `--webview-id` to address one named frame, verifying the frame's own
+URL carries that id (playbook §13, the check `safe_inject.py` makes). Every injection aimed at the
+orchestrator goes through `src/inject.ts` with the tag's recorded frame.
+
+**The context-memory cycle** (`src/memory.ts`, `src/context.ts`): past 50% the orchestrator is asked
+to write `~/.claude/loom/<repo>/<role>/memory.md`, then `/clear`, then a restore prompt that reads
+that file, the board and the docs and reconciles them. `/clear` is sent only after the file is
+verified newer-than-the-request and non-trivial, never mid-turn, never when the frame was not seen
+this tick, one window at a time (a lease on the bus), and pinned to the role and file it began with.
+
+**The percentage comes from the panel.** The compact button's `title` reads `NN% context used —
+click to compact`; the shipped webview renders it only past 50% used, dividing by
+`contextWindow - maxOutputTokens - 13000`. It lives in an attribute, invisible to `innerText`, so
+`cdp.ts` pulls it explicitly. Below that threshold the session's transcript is used
+(`input + cache_read + cache_creation` of the last main-thread turn, tail-only, sidechains skipped).
+Either source alone is enough — which matters because the tag usually names `product-owner`, a role
+no board lists, so there is often no transcript at all.
+
+**Frames are attributed to a project.** The CDP read is editor-wide, so "the only orchestrator frame"
+was being adopted by every window at once — one shwab_docker frame was tagged by three projects. A
+frame is now attributed by dominant `loom/<repo>/` path mentions, and an unattributable frame is
+adopted by nobody. Candidates come in two strengths: STRONG (says it is the orchestrator) can be
+adopted silently; WEAK (works on this project, is not one of its roles) is offered for a click only.
+
+**Two windows, one project.** Nine windows are open, and a worktree window resolves to its parent
+repo id, so two windows are routinely scoped to one project — and both were sending the save prompt
+and then both sending `/clear`, the second landing in the session the first had just restored.
+Hence the lease.
+
+---
+
+## The lesson worth keeping
+
+The suite is at ~95% of lines and **caught none of the four defects found this week.** It could not:
+every fixture was written from the same model of the world as the code, so where the model was wrong
+the tests agreed with it enthusiastically. Board fixtures always listed the role the test then
+tagged; every test supplied one window's frames; every test's orchestrator frame carried a
+`LOOMROLE=` sign-off that real ones do not have.
+
+Coverage says which lines ran. It cannot say which realities were considered. So:
+
+- `./live.sh` asserts invariants against the **running** editor and the real bus. Run it after any
+  change, and before believing anything works.
+- When a fixture encodes an assumption, go measure the real thing first. Every constant in this
+  codebase has its measurement in the comment beside it — keep that up.
+
+---
+
+## Verifying and working on it
+
+```bash
+cd /home/aneesh/vs_code_extensions/loom-session-tracker
+npx tsc -p .        # or: ELECTRON_RUN_AS_NODE=1 /usr/share/codium/codium node_modules/typescript/bin/tsc -p ./
+./test.sh           # 349 checks; ./test.sh <filter> to narrow
+./live.sh           # invariants against the live editor (read-only)
+rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
+cd .. && ./deploy.sh loom-session-tracker    # then reload the window
+```
+
+There is **no `node` on this machine** — everything runs under VSCodium's bundled one, which is what
+`test.sh` and `live.sh` do. Tests force `HOME` to a throwaway directory and can never touch the real
+bus.
+
+**Never `pkill -f "remote-debugging-port=..."`.** It matches the editor's own main process and has
+taken down every window three times. Kill by PID or by a unique `--user-data-dir`.
+
+---
+
+## Open threads
+
+- **The three stale tags** above — one click each, in the right window.
+- **`livegita` has no offerable candidate** when its orchestrator classifies as `developer`. If that
+  keeps happening, the classifier may need to prefer a role's *own* sign-off over dominant worktree
+  paths for sessions that also carry heavy bus-path attribution.
+- **The cycle has never completed end to end on a real session.** Every stage is tested and the
+  refusals are proven, but no orchestrator has yet banked, cleared and restored for real. The first
+  one to watch is funisland at 88%.
+- **`gaming` (lowercase) is a stale duplicate bus** of `Gaming`; the digest reports the role-name
+  collisions. Nobody has decided whether to retire it.
+- **16 board `session_id`s point at nothing** — worth a pass over the boards.
+- **Model policy and limit resume have no lease**, unlike the context cycle. They are idempotent
+  nudges rather than destructive, so two windows doing them twice is noise, not damage — but it is
+  the same class of bug if that ever changes.
+
+---
+
+## How the person running this works
+
+Act on well-evidenced decisions in the same turn rather than asking: build, test, commit on `main`
+in the repo's existing style, push, and deploy with `deploy.sh` — those are the endpoint of the
+work, not separate decisions. Confirm only for genuinely destructive or irreversible things
+(deleting data or worktrees, force-pushing, rewriting history, anything that leaves the machine).
+Commit messages here are long and explain what was measured and why; match that.
