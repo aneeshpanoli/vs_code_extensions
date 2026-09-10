@@ -17,12 +17,28 @@ import { isOwnerRole } from "./naming";
 // The owner test is naming.ts's `isOwnerRole`, NOT a literal set. Measured 2026-09-09: this file
 // carried its own `new Set(["product-owner","productowner"])`, so livegita's orchestrator — named
 // `po` — passed every refusal below and was a legal spawn/retire/delete target.
-// HARD CAP: at most this many ACTIVE sessions at once, INCLUDING the orchestrator. So orchestrator + (CAP-1)
-// agents. Matches ring.py CAP=2 (2 concurrently-rung agents). spawn() refuses past it.
-export const MAX_ACTIVE_TOTAL = 3;
+// HARD CAP: at most this many sessions OPEN at once, INCLUDING the orchestrator — so orchestrator +
+// (cap - 1) agents. spawn() refuses past it.
+//
+// Raised from 3 to 5 on 2026-09-10 to make room for numbered role instances (developer1/2/3).
+//
+// NOT the same limit as ring.py's `CAP`, and the difference matters: this one counts sessions that
+// are OPEN, while ring.py caps how many may be MID-TURN simultaneously (it staggers activations and
+// refuses to light up more at once). ring.py stays at 2 deliberately — concurrency is what costs
+// memory, and systemd-oomd killed the editor's whole cgroup twice on this machine when the agent
+// fleet ran hot. Five sessions may sit open; at most two of them work at the same time.
+export const MAX_ACTIVE_TOTAL = 5;
 
 export class Coordinator {
-  constructor(private tracker: Tracker, private repo: string | null) {}
+  /** `maxActive` overrides the cap (the `loomSessionTracker.maxActiveSessions` setting). */
+  constructor(private tracker: Tracker, private repo: string | null,
+              private maxActive: number = MAX_ACTIVE_TOTAL) {}
+
+  /** The cap in force for this window. */
+  cap(): number {
+    const n = Math.floor(Number(this.maxActive));
+    return Number.isFinite(n) && n >= 2 ? n : MAX_ACTIVE_TOTAL;   // never below orchestrator + 1
+  }
 
   /** Roles of THIS project that are NOT currently live — candidates to spawn. */
   spawnableRoles(rosterRoles: string[]): string[] {
@@ -46,12 +62,12 @@ export class Coordinator {
   async spawn(role: string): Promise<string> {
     if (isOwnerRole(role)) throw new Error(`refuse: '${role}' is an orchestrator role, not a spawnable agent`);
     const total = this.activeTotal();
-    if (total >= MAX_ACTIVE_TOTAL) {
-      throw new Error(`REFUSED: cap reached — max ${MAX_ACTIVE_TOTAL} active sessions ` +
-        `(orchestrator + ${MAX_ACTIVE_TOTAL - 1} agents). ${total} active now. Retire an agent first.`);
+    if (total >= this.cap()) {
+      throw new Error(`REFUSED: cap reached — max ${this.cap()} active sessions ` +
+        `(orchestrator + ${this.cap() - 1} agents). ${total} active now. Retire an agent first.`);
     }
     await vscode.commands.executeCommand("claude-vscode.editor.open");
-    return `opened a new session (${total + 1}/${MAX_ACTIVE_TOTAL} active) — bind it by running:  /loom ${role}`;
+    return `opened a new session (${total + 1}/${this.cap()} active) — bind it by running:  /loom ${role}`;
   }
 
   /**

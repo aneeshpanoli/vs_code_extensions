@@ -108,16 +108,20 @@ suite("command spawn: opens a session and tells you how to bind it", async () =>
 });
 
 suite("command spawn: refuses past the active-session cap, and opens nothing", async () => {
-  // The cap is orchestrator + 2 agents; with 2 live agents a third is refused.
-  const repo = makeRepo({ roles: { a1: {}, a2: {}, a3: {} } }, "cmdF");
+  // Built FROM the cap, so raising it does not require editing this test — it needed editing when
+  // the cap went 3 -> 5 on 2026-09-10, and a test that must be hand-adjusted to stay green is a test
+  // that will one day be adjusted into agreeing with a bug.
+  const { MAX_ACTIVE_TOTAL } = load("coordinator.js");
+  const nAgents = MAX_ACTIVE_TOTAL - 1;                       // the orchestrator is the +1
+  const roles = {};
+  for (let i = 1; i <= nAgents + 1; i++) roles["a" + i] = {};   // one more role than fits
+  const repo = makeRepo({ roles }, "cmdF");
   openProject(repo);
   setOrchestrator(repo, "product-owner", "wid-po");
-  const off = await activate([
-    frame("wid-a1-1", "w" + marker("a1") + footer()),
-    frame("wid-a2-2", "w" + marker("a2") + footer()),
-  ]);
+  const off = await activate(Array.from({ length: nAgents }, (_, i) =>
+    frame(`wid-a${i + 1}-${i + 1}`, "w" + marker("a" + (i + 1)) + footer())));
   try {
-    vscode._quickPick = "a3";
+    vscode._quickPick = "a" + (nAgents + 1);
     await run("spawn");
     match(errors(), /REFUSED: cap reached/, "refused with the reason");
     eq(vscode._executed.filter((e) => e.id === "claude-vscode.editor.open").length, 0, "nothing opened");

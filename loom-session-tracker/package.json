@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -344,6 +344,12 @@
           "type": "boolean",
           "default": true,
           "description": "After a window reload, reopen the role sessions that were live before it (from their freshest transcripts) and wake the orchestrator once it is back. The only case in which Loom opens tabs on its own."
+        },
+        "loomSessionTracker.maxActiveSessions": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 2,
+          "description": "Sessions that may be OPEN at once in a project, including the orchestrator \u2014 so orchestrator + (n-1) agents. spawn() refuses past it. This is NOT ring.py's CAP, which limits how many sessions may be mid-turn simultaneously; concurrency is the memory cost, so raise that one separately and deliberately."
         }
       }
     }

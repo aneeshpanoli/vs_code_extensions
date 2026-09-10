@@ -43,7 +43,8 @@ export function activate(context: vscode.ExtensionContext) {
     // Publish the owner alias contract so loom_cdp.py reads the same set this extension enforces.
     publishNaming();
     const tracker = new Tracker(repo);
-    const coord = new Coordinator(tracker, repo);
+    const maxActive = () => Number(cfg().get("maxActiveSessions", MAX_ACTIVE_TOTAL)) || MAX_ACTIVE_TOTAL;
+    const coord = new Coordinator(tracker, repo, maxActive());
     // THIS project's roster, read from ITS board — not from the global {role: repo} map, which is
     // last-writer-wins across buses. Measured: `alpha`/`prototyping`/`art`/`developer` are each
     // claimed by two projects, so a shared role name silently emptied this window's spawn list.
@@ -337,9 +338,9 @@ export function activate(context: vscode.ExtensionContext) {
           const sc = tracker.sessionCount();
           const warnAt = Math.max(1, Number(cfg().get("sessionWarnThreshold", 5)) || 5);
           const busy = !!sc && sc.sessions > warnAt;
-          status.text = `$(broadcast) Loom: ${total}/${MAX_ACTIVE_TOTAL}` +
+          status.text = `$(broadcast) Loom: ${total}/${coord.cap()}` +
             (sc ? ` \u00b7 ${sc.sessions} open` : "");
-          status.tooltip = `Active in ${repo || "this window"}: ${total}/${MAX_ACTIVE_TOTAL} ` +
+          status.tooltip = `Active in ${repo || "this window"}: ${total}/${coord.cap()} ` +
             `(orchestrator + ${r.liveRoles.length} agent(s))\n` +
             `Agents: ${r.liveRoles.join(", ") || "none"}` +
             (sc ? `\n\nEDITOR-WIDE: ${sc.sessions} Claude conversation(s) open across ${sc.windows} window(s)` +
@@ -357,7 +358,7 @@ export function activate(context: vscode.ExtensionContext) {
             })() +
             (contextNote ? `\n\nOrchestrator: ${contextNote}` : "") +
             (r.changedRepos.length ? `\nmap updated: ${r.changedRepos.join(", ")}` : "");
-          status.backgroundColor = (total >= MAX_ACTIVE_TOTAL || busy)
+          status.backgroundColor = (total >= coord.cap() || busy)
             ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
         } else {
           status.text = `$(warning) Loom: CDP?`;
