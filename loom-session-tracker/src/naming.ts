@@ -66,6 +66,31 @@ export const OWNER_ALIASES: readonly string[] = [
 
 const OWNER_SET = new Set<string>(OWNER_ALIASES);
 
+/**
+ * THE ROLE VOCABULARY — the four roles a Loom project is meant to have, decided 2026-09-09.
+ *
+ * Role names are PROJECT-SCOPED: the bus directory namespaces them, so every project uses these same
+ * four and nothing needs a project prefix. That is only safe because role resolution is now scoped —
+ * `loom_cdp.py` takes `--repo` and refuses an ambiguous bare name rather than scanning every board and
+ * taking the first hit (which is what wrote a livegita binding onto Gaming's bus on 2026-09-08 and
+ * forced the `gitadeveloper` prefix). One project per editor window, so the window always knows.
+ *
+ * This is a TARGET, not an enforcement. Existing buses carry richer rosters — funisland runs 13
+ * genuinely distinct agents (curriculum, gamification, art, music, …) — and nothing here renames a
+ * mailbox or refuses a role that is not on the list. `./live.sh` reports the divergence so a migration
+ * is a visible decision rather than a silent drift.
+ */
+export const ROLE_VOCABULARY: readonly string[] = [
+  OWNER_CANONICAL, "developer", "designer", "monetization",
+];
+
+/** Is this role one of the four? Reporting only — never a gate. */
+export function inVocabulary(role: string | null | undefined): boolean {
+  if (!role) return false;
+  const r = role.trim().toLowerCase();
+  return isOwnerRole(r) || ROLE_VOCABULARY.includes(r);
+}
+
 /** Is this role name the orchestrator, under ANY of its spellings? The only owner test in the codebase. */
 export function isOwnerRole(role: string | null | undefined): boolean {
   return !!role && OWNER_SET.has(role.trim().toLowerCase());

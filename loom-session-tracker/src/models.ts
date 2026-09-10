@@ -142,7 +142,10 @@ export class ModelPolicy {
 
   /** Switch a worker back to the default model by injecting `/model <id>` into its composer. */
   enforce(v: ModelViolation, targetModel: string, done?: (ok: boolean, note: string) => void): void {
-    execFile("python3", [LOOM_CDP, "inject", "--role", v.role, "--message", `/model ${targetModel}`, "--submit"],
+    // --repo: role names are PROJECT-SCOPED. Without it a `/model` nudge for a bare name two buses
+    // share (`developer`: Gaming + livegita) can resolve to the OTHER project's frame. See inject.ts.
+    execFile("python3", [LOOM_CDP, "inject", "--role", v.role, "--message", `/model ${targetModel}`,
+                         "--submit", ...(v.repo ? ["--repo", v.repo] : [])],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
         const ok = !err;

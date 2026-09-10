@@ -33,6 +33,8 @@ export interface OwnerView {
   /** Which project this orchestrator frame is about, by dominant path mentions. null = can't tell.
    *  The CDP read is editor-wide, so without this every window adopts the same frame. */
   repo: string | null;
+  /** The board names this frame as the orchestrator's. Beats a stale tag and content detection. */
+  declared: boolean;
   /** True when the frame identifies itself as the orchestrator (a `LOOMROLE=product-owner` sign-off,
    *  or three distinct roles quoted). Only a strong candidate is ever adopted without a click. */
   strong: boolean;
@@ -55,6 +57,9 @@ export class Tracker {
   private owners = new Map<string, {
     lastSeen: number; busy: boolean; contextPct: number | null; repo: string | null; chars: number;
     strong: boolean;
+    /** The BOARD names this frame as the orchestrator's (registry.boardOwnerFrames). Authoritative:
+     *  beats a stale tag and beats content detection. A click cannot override the board. */
+    declared: boolean;
   }>();
   private lastOk = 0;
   private models = new Map<string, ModelInfo | null>();   // role -> model shown in its footer
@@ -115,7 +120,7 @@ export class Tracker {
       if (ownerFrames.has(f.webviewId)) {
         this.owners.set(f.webviewId, {
           lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
-          repo: this.repoFilter, chars: (f.text || "").length, strong: true,
+          repo: this.repoFilter, chars: (f.text || "").length, strong: true, declared: true,
         });
         continue;
       }
@@ -141,7 +146,7 @@ export class Tracker {
         if (strong || owned) {
           this.owners.set(f.webviewId, {
             lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
-            repo: owned, chars: (f.text || "").length, strong,
+            repo: owned, chars: (f.text || "").length, strong, declared: false,
           });
         }
         continue;
@@ -208,7 +213,7 @@ export class Tracker {
     return Array.from(this.owners.entries())
       .map(([webviewId, o]) => ({
         webviewId, lastSeen: o.lastSeen, busy: o.busy, contextPct: o.contextPct,
-        repo: o.repo, chars: o.chars, strong: o.strong,
+        repo: o.repo, chars: o.chars, strong: o.strong, declared: o.declared,
         liveness: this.livenessOf(o.lastSeen),
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);

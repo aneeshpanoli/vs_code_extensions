@@ -142,7 +142,7 @@ export class Notifier {
       `[loom-notify] ${ev.role} ${verb}${ev.task ? ` on ${ev.task}` : ""}` +
       `${ev.lastLine ? ` — "${ev.lastLine}"` : ""}. ` +
       `Read ~/.claude/loom/${ev.repo}/${ev.role}/outbox.md and act on it.`;
-    injectTo({ role: orch.role, webviewId: orch.webviewId }, msg, "notify-debug.json", done);
+    injectTo({ role: orch.role, webviewId: orch.webviewId, repo: ev.repo }, msg, "notify-debug.json", done);
   }
 
 }

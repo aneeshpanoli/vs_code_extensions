@@ -288,6 +288,7 @@ export class HealthWatcher {
     const msg = `[loom-stall] ${ev.role} has been "${ev.status}" with no status update for ` +
       `${ev.staleHours.toFixed(1)}h. Check whether it is stuck, blocked, or finished without saying so.`;
     const tag = getOrchestrator(ev.repo);
-    injectTo({ role: orchestratorRole, webviewId: tag ? tag.webviewId : null }, msg, "stall-debug.json", done);
+    injectTo({ role: orchestratorRole, webviewId: tag ? tag.webviewId : null, repo: ev.repo },
+             msg, "stall-debug.json", done);
   }
 }

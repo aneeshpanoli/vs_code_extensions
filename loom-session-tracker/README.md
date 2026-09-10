@@ -221,6 +221,42 @@ depending on what was on screen.
 Mailbox directories are never renamed by any of this. Every `loom/<repo>/<role>/status.json` path
 keeps working, and `ownerRoleFor()` follows a bus that later renames itself to the canonical id.
 
+### Role names are project-scoped, and there are four of them
+
+The bus directory namespaces role names, so every project uses the **same** vocabulary and nothing
+needs a project prefix:
+
+| role | job |
+|---|---|
+| `product-owner` | orchestrates; banks, never edits |
+| `developer` | builds |
+| `designer` | design |
+| `monetization` | revenue |
+
+That is only safe because resolution is scoped. `loom_cdp.py`'s `_role_repo()` used to resolve a bare
+name by scanning every board and taking the first hit — `sorted()` puts `Gaming` before `livegita`, so
+`/loom developer` in livegita wrote its binding onto **Gaming's** bus. That was the 2026-09-08 LG-001
+misroute, and the only reason livegita's developer was ever renamed `gitadeveloper`. Two such
+collisions were live on 2026-09-09: `developer` (Gaming + livegita) and `productowner` (Gaming +
+shwab_docker).
+
+Now every role operation takes `--repo`. The extension passes it on every path that targets a role
+(finish notifier, stall alert, context cycle, model policy, limit resume) — one project per editor
+window, so the window always knows. Without `--repo`, an ambiguous bare name is **refused** with the
+list of buses that carry it, instead of guessed. The targetmap is scoped the same way, so a `/model`
+nudge aimed at livegita's developer cannot land in Gaming's.
+
+The vocabulary is a **target, not a gate**: nothing renames a mailbox or refuses an off-list role.
+`./live.sh` reports each bus's distance from it (`INFO`), so a migration is a visible decision.
+funisland runs 13 genuinely distinct agents; collapsing that is not a cleanup.
+
+### The board outranks the tag
+
+The sidebar once offered a *diagnostic* session as livegita's only orchestrator candidate — twice in
+one evening it got starred, and the finish notifier typed a developer's loop-back into it. When a
+board declares the PO's frame, that frame is the only candidate shown, and it is the frame the cycle
+uses even if the tag points elsewhere; a misclick cannot override the board.
+
 ### Finding the orchestrator's tab
 
 The orchestrator quotes its workers' `LOOMROLE=` sign-offs, so content detection calls it a worker

@@ -37,7 +37,7 @@ decision went the way it did.
 
 ## State as of 2026-09-09
 
-**Version 0.14.0**, built, tested (349 checks, 22 files, 95.3% of lines), deployed and pushed.
+**Version 0.16.0** (0.15.0 = the naming contract + board-declared PO frame; 0.16.0 = project-scoped role resolution, the four-role vocabulary, declared-outranks-tag). 366 checks, 23 files. Deployed; the window must be RELOADED to run it.
 Working tree clean. Six commits this session, `18fb520..f058c2f`:
 
 | | |
@@ -152,6 +152,15 @@ taken down every window three times. Kill by PID or by a unique `--user-data-dir
 ---
 
 ## Open threads
+
+- **MIGRATION TO THE FOUR ROLES is undecided in scope.** The vocabulary (product-owner / developer /
+  designer / monetization) is declared and reported by `./live.sh`, but only livegita is near it (3/4).
+  funisland 1/13, Gaming 2/6, shwab_docker 1/7 — real, distinct, live agents. Renaming live mailboxes
+  is a per-project decision to take when that project's sessions are idle. livegita's own path:
+  `gitadeveloper/` -> `developer/` (session must stop writing to the old dir first), `po/` ->
+  `product-owner/` (then `naming.json` `owner` can go), drop the empty `productowner/`.
+- **`loom_cdp.py` `--repo` is optional at the CLI.** The extension always passes it; a hand-typed
+  `inject --role developer` with no `--repo` is refused as ambiguous. That is the intended failure.
 
 - **The three stale tags** above — one click each, in the right window. (livegita's is now correct:
   `po @ f13a5e27`, reading 60% off the panel.)

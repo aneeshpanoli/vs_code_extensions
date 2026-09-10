@@ -144,8 +144,16 @@ export function activate(context: vscode.ExtensionContext) {
       // The tagged frame if it is still here, else adopt only a STRONG candidate and only when it is
       // the only one: a weak candidate (attributed but not self-identified) is a person's click, not
       // something to start typing `/clear` into on our own.
+      // THE BOARD OUTRANKS THE TAG. Measured 2026-09-09: livegita's tag was pointed by hand at a
+      // diagnostic session (5426095b) twice in one evening, because that was the only candidate the
+      // sidebar offered; the finish notifier then typed a developer's loop-back into it. The board
+      // entry for `po` had carried the real frame (f13a5e27) the whole time. So when the board names
+      // exactly one frame for this project, that is the orchestrator — a stale or misclicked tag is
+      // re-pointed at it, not honoured.
+      const declared = mine.filter((o) => o.declared);
       const strong = mine.filter((o) => o.strong);
-      const known = mine.find((o) => o.webviewId === orch.webviewId) ||
+      const known = (declared.length === 1 ? declared[0] : undefined) ||
+                    mine.find((o) => o.webviewId === orch.webviewId) ||
                     (strong.length === 1 ? strong[0] : undefined);
       if (known && known.webviewId !== orch.webviewId) setOrchestratorFrame(repo, known.webviewId);
       const state = loadState(repo);
@@ -177,7 +185,7 @@ export function activate(context: vscode.ExtensionContext) {
       debugLog({ contextMemory: { step: step.kind, note: step.note, phase: step.next.phase, reading } });
       if (step.kind === "none") return step;
       if (step.kind === "abort") { vscode.window.showWarningMessage(`Loom: ${step.note}`); return step; }
-      const target = { role: orch.role, webviewId: known ? known.webviewId : null };
+      const target = { role: orch.role, webviewId: known ? known.webviewId : null, repo };
       const label = step.kind === "save" ? `Loom: ${step.note}`
         : step.kind === "clear" ? `Loom: ${orch.role} — ${step.note} (its context is being reset)`
         : `Loom: ${step.note}`;

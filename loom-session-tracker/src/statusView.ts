@@ -13,7 +13,7 @@ type Node =
   | { kind: "agent"; agent: AgentView }
   | { kind: "orchestrator"; repo: string; role: string; frameOk: boolean }
   // A detected-but-untagged PO session: shown so the orchestrator is visible and one click taggable.
-  | { kind: "ownerCandidate"; role: string; webviewId: string; liveness: string; strong: boolean;
+  | { kind: "ownerCandidate"; role: string; webviewId: string; liveness: string; strong: boolean; declared: boolean;
       contextPct: number | null };
 
 export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
@@ -32,9 +32,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       const it = new vscode.TreeItem(node.role, vscode.TreeItemCollapsibleState.None);
       it.description = `${node.liveness === "live" ? "●" : "○"} ` +
         `${node.contextPct !== null ? `${node.contextPct}% context · ` : ""}` +
-        `${node.strong ? "untagged" : "possible orchestrator"} — click ★ to tag`;
+        `${node.declared ? "declared by the board" : node.strong ? "untagged" : "possible orchestrator"} — click ★ to tag`;
       it.iconPath = new vscode.ThemeIcon("star-empty", new vscode.ThemeColor("charts.orange"));
-      it.tooltip = `${node.strong ? "Orchestrator session detected" : "Session working on this project, and not one of its roles"} ` +
+      it.tooltip = `${node.declared ? "This project's board names this frame as its orchestrator" : node.strong ? "Orchestrator session detected" : "Session working on this project, and not one of its roles"} ` +
         `(${node.webviewId.slice(0, 8)}) but NOT tagged.\n` +
         `Tag it so workers finishing automatically notify it` +
         `${node.contextPct !== null ? `, and so its context is banked before it fills (${node.contextPct}% used)` : ""}.`;
@@ -94,10 +94,14 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       // In a project window, only candidates attributed to THAT project — the CDP read is
       // editor-wide, so everything else belongs to someone else's window.
       .filter((o) => (repo ? o.repo === repo : true))
-      .sort((a, b) => Number(b.strong) - Number(a.strong))
+      // When the board DECLARES this project's orchestrator frame, that is the only candidate worth a
+      // click — offering weak content-attributed sessions beside it is how a diagnostic session got
+      // starred twice on 2026-09-09. Declared first, then strong, then weak.
+      .filter((o, _, all) => o.declared || !all.some((x) => x.declared && x.repo === o.repo))
+      .sort((a, b) => Number(b.declared) - Number(a.declared) || Number(b.strong) - Number(a.strong))
       .map((o) => ({
         kind: "ownerCandidate", role: ownerRoleFor(o.repo ?? repo ?? null), webviewId: o.webviewId, liveness: o.liveness,
-        strong: o.strong, contextPct: o.contextPct,
+        strong: o.strong, declared: o.declared, contextPct: o.contextPct,
       } as Node));
   }
 

@@ -264,3 +264,43 @@ suite("naming: a board-declared owner frame is the orchestrator, not the worker 
   ok(t.ownerView().find((o) => o.webviewId === PO).strong,
     "declared by the board, so it is a STRONG candidate — adoptable without a guess");
 });
+
+// ── the board outranks the tag ───────────────────────────────────────────────────────────────────
+
+suite("naming: a declared frame outranks a misclicked tag, and hides weak candidates", async () => {
+  // Measured 2026-09-09, twice in one evening: livegita's tag was pointed by hand at a diagnostic
+  // session (5426095b) because it was the only candidate the sidebar offered, and the finish
+  // notifier then typed a developer's loop-back into it. The board's `po` entry carried the real
+  // frame the whole time. So: the board's frame is the only candidate shown when it exists, and it
+  // is the frame the cycle uses even when the tag says otherwise.
+  const { Tracker } = load("tracker.js");
+  const { SessionTreeProvider } = load("statusView.js");
+  const { setOrchestrator } = load("orchestrator.js");
+  const cdp = load("cdp.js");
+  const repo = makeRepo({}, "livegita-declared-vs-tag");
+  const PO = "f13a5e27-po", DIAG = "5426095b-diag";
+  writeJson(busPath(repo, "board.json"), { po: { role: "orchestrator", webviewId: PO } });
+  fs.mkdirSync(busPath(repo, "po"), { recursive: true });
+  fs.writeFileSync(busPath(repo, "po", "inbox.md"), "x");
+  setOrchestrator(repo, "po", DIAG);                      // the misclick
+
+  const t = new Tracker(repo);
+  const busPathMention = `~/.claude/loom/${repo}/po/inbox.md `.repeat(6);   // attributes to repo
+  const frames = [
+    { webviewId: PO, type: "iframe", targetUrl: "u", text: "orchestrating " + busPathMention },
+    { webviewId: DIAG, type: "iframe", targetUrl: "u", text: "debugging the tracker " + busPathMention },
+  ];
+  const real = cdp.readFrames; cdp.readFrames = async () => frames;
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+
+  const owners = t.ownerView();
+  const po = owners.find((o) => o.webviewId === PO), diag = owners.find((o) => o.webviewId === DIAG);
+  ok(po && po.declared, "the board's frame is a DECLARED owner candidate");
+  ok(diag && !diag.declared && !diag.strong, "the diagnostic session is only a weak candidate");
+
+  const view = new SessionTreeProvider(t, repo);
+  const offered = view.getChildren().flatMap((n) => (n.kind === "ownerCandidate" ? [n] : view.getChildren(n)))
+    .filter((n) => n && n.kind === "ownerCandidate").map((n) => n.webviewId);
+  ok(offered.includes(PO), "the declared frame is offered");
+  ok(!offered.includes(DIAG), "the weak candidate is NOT offered beside a declared one — nothing to misclick");
+});

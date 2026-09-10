@@ -25,7 +25,8 @@ const OUT = path.join(__dirname, "out");
 const { readFrames } = require(path.join(OUT, "cdp.js"));
 const { detectOwner, attributeRepo, classify } = require(path.join(OUT, "roles.js"));
 const { busRepos, boardRoles, boardOwnerFrames } = require(path.join(OUT, "registry.js"));
-const { isOwnerRole, ownerRoleFor, roleAliases, OWNER_ALIASES } = require(path.join(OUT, "naming.js"));
+const { isOwnerRole, ownerRoleFor, roleAliases, OWNER_ALIASES, ROLE_VOCABULARY,
+        inVocabulary } = require(path.join(OUT, "naming.js"));
 const { getOrchestrator } = require(path.join(OUT, "orchestrator.js"));
 const { isBusy } = require(path.join(OUT, "sessions.js"));
 const { boardSessionId, transcriptFor, readTranscriptContext } = require(path.join(OUT, "context.js"));
@@ -37,6 +38,7 @@ const record = (level, name, detail) => results.push({ level, name, detail });
 const pass = (n, d) => record("PASS", n, d);
 const warn = (n, d) => record("WARN", n, d);
 const fail = (n, d) => record("FAIL", n, d);
+const info = (n, d) => record("INFO", n, d);
 
 (async () => {
   const repos = busRepos();
@@ -149,6 +151,19 @@ const fail = (n, d) => record("FAIL", n, d);
       warn(`${repo}: tag is stale`, `tagged ${String(tag.webviewId).slice(0, 8)}, and no session in ` +
         `this project is currently offerable as its orchestrator`);
     }
+  }
+
+  // ── 1e. how far each bus is from the four-role vocabulary ─────────────────────────────────
+  // Reporting only. The vocabulary (product-owner / developer / designer / monetization) is the
+  // target shape; these are the roles that are not on it yet. INFO, never a failure — funisland's 13
+  // agents are real, and a migration of a live bus is a decision, not a cleanup.
+  for (const repo of repos) {
+    const roster = boardRoles(repo);
+    if (!roster.length) continue;
+    const off = roster.filter((r) => !inVocabulary(r));
+    if (!off.length) pass(`${repo}: role vocabulary`, `all ${roster.length} role(s) on the standard four`);
+    else info(`${repo}: role vocabulary`, `${roster.length - off.length}/${roster.length} on the four; ` +
+      `off-vocabulary: ${off.join(", ")}`);
   }
 
   // ── 2b. no tag names a WORKER role ────────────────────────────────────────────────────────

@@ -154,7 +154,9 @@ export class LimitWatcher {
 
   /** Wake the session back up by injecting a prompt into its composer. Fire-and-forget. */
   resume(ev: ResumeEvent, message: string, done?: (ok: boolean, note: string) => void): void {
-    execFile("python3", [LOOM_CDP, "inject", "--role", ev.role, "--message", message, "--submit"],
+    // --repo: see inject.ts — a bare role name shared by two buses must not resolve cross-project.
+    execFile("python3", [LOOM_CDP, "inject", "--role", ev.role, "--message", message, "--submit",
+                         ...(ev.repo ? ["--repo", ev.repo] : [])],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
         const ok = !err;
