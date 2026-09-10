@@ -147,7 +147,12 @@ export class LimitWatcher {
         st.roles[role] = {
           since: prev ? prev.since : nowIso,
           kind: info.kind, etaText: info.etaText,
-          notBefore: (prev && prev.notBefore) ? prev.notBefore : info.notBefore, clearTicks: 0,
+          // ...but take the EARLIEST plausible deadline: a clock form ("resets 9:50pm") is exact, and
+          // a record written by a pre-0.18 build carries a slid deadline. Measured 2026-09-09 22:35:
+          // livegita's developer showed "resets 9:50pm" while its record said 23:03.
+          notBefore: (prev && prev.notBefore && info.notBefore) ? Math.min(prev.notBefore, info.notBefore)
+                   : (prev && prev.notBefore) ? prev.notBefore : info.notBefore,
+          clearTicks: 0,
         };
       }
     }

@@ -33,3 +33,17 @@ suite("limits: notBefore does not slide, and a passed deadline clears a stale ba
   for (let i = 0; i < CLEAR_TICKS_REQUIRED; i++) events = w.scan(new Map([["curriculum", info]]), new Set(["curriculum"]));
   eq(events.map((e) => e.role), ["curriculum"], "resume fires despite the stale banner");
 });
+
+suite("limits: a fresh exact clock pulls an older, slid deadline earlier", () => {
+  // A record written by a pre-0.18 build carries now+32m re-parsed every tick. When the banner is
+  // then read as "resets 9:50pm" (exact), the earlier of the two must win.
+  const repo = makeRepo({ developer: {} }, "limits-min");
+  const w = new LimitWatcher(repo);
+  const t0 = new Date("2026-09-09T21:00:00").getTime();
+  w.scan(new Map([["developer", detectLimit("You've hit your session limit · resets in 2h", t0)]]), new Set(["developer"]));
+  const slid = w.limitedRoles().developer.notBefore;
+  w.scan(new Map([["developer", detectLimit("You've hit your session limit · resets 9:50pm (America/Los_Angeles)", t0 + 60_000)]]), new Set(["developer"]));
+  const exact = w.limitedRoles().developer.notBefore;
+  ok(exact < slid, `exact clock (${new Date(exact).toLocaleTimeString()}) must replace the later slid deadline (${new Date(slid).toLocaleTimeString()})`);
+  eq(new Date(exact).getMinutes(), 50, "9:50pm kept");
+});
