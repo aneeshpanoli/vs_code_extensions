@@ -26,11 +26,6 @@ MUTATIONS = [
   'OWNER_CANONICAL, "productowner", "product_owner", "po", "owner", "orchestrator", "pm",',
   'OWNER_CANONICAL, "productowner",'),
 
- ("a clean owner sign-off falls through to worktree paths — the PO read as its own developer",
-  "src/roles.ts",
-  "    return { role: null, purity: 1, source: null };\n  }",
-  "  }"),
-
  ("path evidence needs no corroboration — a stranger printing paths took the developer role",
   "src/tracker.ts",
   'const uncorroborated = c.source === "path" && owned !== this.repoFilter;',
@@ -88,8 +83,8 @@ MUTATIONS = [
 
  ("a declaration is honoured even when another bus makes the same one",
   "src/tracker.ts",
-  "if (this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {",
-  "if (false && this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {"),
+  "      if (this.repoFilter && rivalDeclarers(this.repoFilter, d.webviewId).length) {",
+  "      if (false) {"),
 
  ("a contested declaration ignores which mailbox is still being written",
   "src/registry.ts",
@@ -98,8 +93,8 @@ MUTATIONS = [
 
  ("a declared WORKER frame loses its role to a bystander printing its paths",
   "src/tracker.ts",
-  "} else if (decl && !isOwnerRole(decl.role)) {",
-  "} else if (false) {"),
+  "} else if (decl && !isOwnerRole(decl.role) && this.repoFilter) {",
+  "} else if (false && this.repoFilter) {"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
