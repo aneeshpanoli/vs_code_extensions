@@ -140,6 +140,17 @@ second is what makes the cycle work for an orchestrator tagged as
 `product-owner`, which no board lists and which therefore has no transcript at
 all.
 
+**One driver per project.** Nine editor windows are open here, the CDP read is
+editor-wide, and a worktree window resolves to its *parent* repo id — so two
+windows are routinely scoped to the same project, and both were deciding every
+step off the same state: both sent the save prompt, and both sent `/clear`, the
+second landing in the session the first had just restored. A cycle now carries a
+lease (`owner`, `ownerAt`) on the bus: whoever claims it drives it, others stand
+down, and the claim expires after 15 minutes so a closed window cannot strand a
+project. A cycle is also pinned to the role and file it started with — re-tag the
+orchestrator mid-cycle, or repoint `contextMemoryFile`, and it is abandoned
+rather than judged against a file it never asked for.
+
 `/clear` is irreversible from inside the session, so it is sent only when the
 memory file exists, is newer than the moment it was asked for, and is more than a
 stub — and never while the session is mid-turn. If the file never appears the
@@ -191,8 +202,8 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 308 checks across 21 files, zero dependencies, run under VSCodium's bundled node since this
-machine has no npm. Measured coverage: **95.2% of lines**, every module included
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 349 checks across 22 files, zero dependencies, run under VSCodium's bundled node since this
+machine has no npm. Measured coverage: **95.3% of lines**, every module included
 — `rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3
 ../tools/coverage.py /tmp/cov out` prints the per-module table (a line counts as
 covered unless every non-whitespace byte on it is inside a zero-count V8 range;

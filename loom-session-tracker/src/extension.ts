@@ -116,6 +116,9 @@ export function activate(context: vscode.ExtensionContext) {
     // reads the memory back and reconciles it with the docs. Every rule lives in memory.decide();
     // this function is the I/O around it.
     let contextNote = "";
+    // Identifies this window for the duration of its life. Two windows are routinely scoped to the
+    // same project (a worktree window resolves to its parent repo id), and only one may drive a cycle.
+    const windowId = `${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
     const contextConfig = (): MemoryConfig => ({
       enabled: cfg().get<boolean>("contextMemory", true) === true,
       thresholdPct: Math.min(95, Math.max(10, Number(cfg().get("contextThresholdPct", 50)) || 50)),
@@ -151,7 +154,7 @@ export function activate(context: vscode.ExtensionContext) {
       const step = decide({
         repo, role: orch.role,
         webviewId: known ? known.webviewId : null,
-        reading, busy: known ? known.busy : false, frameSeen: !!known,
+        reading, busy: known ? known.busy : false, frameSeen: !!known, windowId,
         panelPct: known ? known.contextPct : null,
         panelChars: known ? known.chars : null,
         memoryFile, memoryMtime: mem.mtime, memorySize: mem.size, now: Date.now(),

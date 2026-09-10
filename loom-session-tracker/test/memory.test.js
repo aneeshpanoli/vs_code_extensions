@@ -23,6 +23,7 @@ function input(over = {}) {
   return {
     repo: "demo", role: "po", webviewId: "wid-po",
     reading: reading(600_000), busy: false, frameSeen: true, panelPct: null, panelChars: 150000,
+    windowId: "win-A",
     memoryFile: "/tmp/demo/po/memory.md", memoryMtime: null, memorySize: 0,
     now: NOW, cfg: { ...DEFAULT_CONFIG }, state: { phase: "watch" },
     ...over,
@@ -330,4 +331,97 @@ suite("memory: an unseen panel during clearing is not mistaken for an empty one"
     reading: null, panelPct: null, panelChars: null, frameSeen: false,
   }));
   eq(s.kind, "none", "unknown is not proof");
+});
+
+// ── two windows, one project ────────────────────────────────────────────────
+// Measured 2026-09-09: nine windows open, the CDP read is editor-wide, and a worktree window
+// resolves to its PARENT repo id — so two windows are routinely scoped to the same project. Before
+// the lease, both decided every step off the same state: both sent the save prompt, and both sent
+// `/clear`, the second landing in the session the first had just restored.
+const { LEASE_MS } = load("memory.js");
+
+suite("memory: only one window may start a cycle", () => {
+  const first = decide(input({ windowId: "win-A", panelPct: 80 }));
+  eq(first.kind, "save", "the first window claims it");
+  eq(first.next.owner, "win-A", "and is recorded as the driver");
+  const second = decide(input({ windowId: "win-B", panelPct: 80, state: first.next }));
+  eq(second.kind, "none", "the second window stands down");
+  match(second.note, /another window is running this cycle/, "and says why");
+});
+
+suite("memory: the second window does NOT also send /clear", () => {
+  // The one that actually destroys something: a duplicate /clear lands in the freshly restored session.
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0,
+                   owner: "win-A", ownerAt: NOW - MIN };
+  const mine = decide(input({ windowId: "win-A", state: saving, memoryMtime: NOW, memorySize: 5000 }));
+  eq(mine.kind, "clear", "the owner clears");
+  const theirs = decide(input({ windowId: "win-B", state: saving, memoryMtime: NOW, memorySize: 5000 }));
+  eq(theirs.kind, "none", "the other window does not");
+});
+
+suite("memory: a window that goes away does not strand the project", () => {
+  const stale = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0,
+                  owner: "win-gone", ownerAt: NOW - LEASE_MS - 1 };
+  const s = decide(input({ windowId: "win-B", state: stale, memoryMtime: NOW, memorySize: 5000 }));
+  eq(s.kind, "clear", "the lease has expired, so another window may take over");
+  eq(s.next.owner, "win-B", "and it takes ownership as it acts");
+});
+
+suite("memory: the owner keeps its claim alive while it waits", () => {
+  const held = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+                 owner: "win-A", ownerAt: NOW - LEASE_MS + 1000 };   // past half-life
+  const s = decide(input({ windowId: "win-A", state: held }));       // still waiting for the file
+  eq(s.kind, "none", "nothing to do yet");
+  eq(s.next.ownerAt, NOW, "but the lease is refreshed so it is not overtaken mid-wait");
+});
+
+suite("memory: a finished cycle releases the claim", () => {
+  const clearing = { phase: "clearing", phaseAt: NOW - MIN, owner: "win-A", ownerAt: NOW - 1000 };
+  const s = decide(input({ windowId: "win-A", state: clearing, reading: null,
+                           panelPct: null, panelChars: 170 }));
+  eq(s.kind, "restore", "cycle completes");
+  eq(s.next.owner, undefined, "and the next cycle is anyone's to claim");
+});
+
+suite("memory: an aborted cycle releases the claim too", () => {
+  const s = decide(input({ windowId: "win-A", state: {
+    phase: "saving", phaseAt: NOW - 11 * MIN, memoryBaseline: 0, owner: "win-A", ownerAt: NOW - 1000 } }));
+  eq(s.kind, "abort", "gives up");
+  eq(s.next.owner, undefined, "claim released, so a retry is not blocked by a dead lease");
+});
+
+suite("memory: state written before leases existed is adoptable", () => {
+  // 0.13.x wrote no owner at all; an in-flight cycle must not deadlock on upgrade.
+  const legacy = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0 };
+  const s = decide(input({ windowId: "win-B", state: legacy, memoryMtime: NOW, memorySize: 5000 }));
+  eq(s.kind, "clear", "an unowned cycle is claimable");
+  eq(s.next.owner, "win-B", "and gets an owner from here on");
+});
+
+suite("memory: re-tagging mid-cycle abandons it rather than clearing on the wrong file", () => {
+  // The baseline was taken from po/memory.md. If the tag moves to another role, its memory.md may
+  // already exist and be newer — which would read as "banked" and send /clear to the new session.
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+                   role: "po", memoryFile: "/m/po/memory.md", owner: "win-A", ownerAt: NOW };
+  const s = decide(input({ windowId: "win-A", state: saving, role: "other",
+                           memoryFile: "/m/other/memory.md", memoryMtime: NOW, memorySize: 9000 }));
+  eq(s.kind, "abort", "abandoned");
+  match(s.note, /Nothing cleared/, "and explicit that nothing was destroyed");
+  eq(s.next.phase, "watch", "back to watching");
+  eq(s.next.owner, undefined, "claim released so the new target can start cleanly");
+});
+
+suite("memory: pointing contextMemoryFile somewhere else mid-cycle does the same", () => {
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+                   role: "po", memoryFile: "/m/po/memory.md" };
+  const s = decide(input({ state: saving, memoryFile: "/elsewhere/memory.md",
+                           memoryMtime: NOW, memorySize: 9000 }));
+  eq(s.kind, "abort", "the file it is judging must be the file it asked for");
+});
+
+suite("memory: an unchanged target proceeds normally", () => {
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+                   role: "po", memoryFile: "/tmp/demo/po/memory.md" };   // == the input's file
+  eq(decide(input({ state: saving, memoryMtime: 2000, memorySize: 4096 })).kind, "clear",
+    "same role, same file -> the cycle continues");
 });

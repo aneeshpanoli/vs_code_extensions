@@ -29,6 +29,11 @@ const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
 /** A memory doc smaller than this is not a handoff — treat it as "not written yet". */
 export const MIN_MEMORY_BYTES = 200;
+/** How long one window's claim on a cycle stands before another may take it over. Longer than the
+ *  save and clear timeouts combined, so a live owner is never overtaken mid-cycle; short enough that
+ *  a window closed mid-cycle does not strand the project. */
+export const LEASE_MS = 15 * 60_000;
+
 /** A panel holding less than this has been cleared. Measured: a cleared tab renders ~170 characters;
  *  a live orchestrator conversation ran 145,680. Two orders of magnitude of daylight. */
 export const CLEARED_PANEL_CHARS = 4000;
@@ -37,8 +42,11 @@ export type Phase = "watch" | "saving" | "clearing";
 
 export interface ContextState {
   phase: Phase;
-  /** The orchestrator role this cycle is about. */
+  /** The orchestrator role this cycle is about, and the file it was told to write. Both are pinned
+   *  at the start: if either changes mid-cycle the cycle is abandoned rather than judged against a
+   *  file it never asked for. */
   role?: string;
+  memoryFile?: string;
   /** Transcript identity being watched. After a clear this becomes the NEW session id. */
   sessionId?: string;
   /** Directory holding that transcript — where the post-clear session will appear. */
@@ -53,6 +61,14 @@ export interface ContextState {
   triggerFromPanel?: boolean;
   cycles?: number;
   aborts?: number;
+  /** Which window is running this cycle. Measured 2026-09-09: nine editor windows were open, the CDP
+   *  read is editor-wide, and a worktree window resolves to its PARENT repo id — so two windows are
+   *  routinely scoped to the same project, and both were deciding the same step off the same state.
+   *  Both would send the save prompt, and then both would send `/clear` — the second landing in the
+   *  session the first had just restored. The bus is the only place they can agree, so the claim
+   *  lives here. */
+  owner?: string;
+  ownerAt?: number;
   /** End of the last cycle (epoch ms) — the cooldown runs from here. */
   lastCycleAt?: number;
   lastNote?: string;
@@ -89,6 +105,9 @@ export interface ContextInput {
   panelPct: number | null;
   /** Is the session mid-turn? Never type into a working composer. */
   busy: boolean;
+  /** Identifies THIS window, stable for its lifetime. Two windows on one project must not both drive
+   *  a cycle; whichever claims it first owns it until it finishes or its lease goes stale. */
+  windowId: string;
   /** How much text the panel is showing, or null when the frame was not seen. A cleared panel holds
    *  a couple of hundred characters (playbook §13: "a cleared tab is ~170 characters"), which is how
    *  a /clear is confirmed when no transcript identifies the session. */
@@ -155,12 +174,45 @@ const MIN_TO_MS = 60_000;
  * to persist. Every refusal is deliberate; none of them is a fallthrough.
  */
 export function decide(input: ContextInput): Step {
-  const { state, cfg, now } = input;
+  const { cfg, now } = input;
+  const phase: Phase = input.state.phase || "watch";
+
+  // ── who is driving ────────────────────────────────────────────────────────────────────────
+  // A cycle belongs to ONE window from the moment it starts. Another window may take it over only
+  // once the lease goes stale, which means the owner is gone (closed, or its extension host died).
+  const heldByOther = !!input.state.owner && input.state.owner !== input.windowId &&
+    now - (input.state.ownerAt ?? 0) < LEASE_MS;
+  // The owner keeps its claim alive as it goes, at half-life so the file is not rewritten every tick.
+  const owning = input.state.owner === input.windowId;
+  const state: ContextState = (owning && now - (input.state.ownerAt ?? 0) > LEASE_MS / 2)
+    ? { ...input.state, ownerAt: now } : input.state;
+  const claim = { owner: input.windowId, ownerAt: now };
+  const release = { owner: undefined, ownerAt: undefined };
+
   const keep = (note: string, next: ContextState = state): Step => ({ kind: "none", note, next });
-  const phase: Phase = state.phase || "watch";
 
   if (!cfg.enabled) return keep("context memory is off");
+  if (heldByOther) {
+    return keep(`another window is running this cycle (phase ${phase}) — one driver per project`,
+                input.state);
+  }
   if (!input.webviewId) return keep("the orchestrator's frame is not identified — cannot inject safely");
+
+  // A cycle is about ONE role and ONE file. Re-tag the orchestrator, or point `contextMemoryFile`
+  // somewhere else, and the next tick would be judging a DIFFERENT file against the baseline taken
+  // from the old one — an unrelated file that happens to be newer would read as "banked" and send a
+  // /clear. Retagging is not hypothetical: three tags were re-pointed by hand on 2026-09-09.
+  if (phase !== "watch" &&
+      ((state.role && state.role !== input.role) ||
+       (state.memoryFile && state.memoryFile !== input.memoryFile))) {
+    return {
+      kind: "abort",
+      note: `the cycle was for ${state.role} → ${state.memoryFile}, and it is now ${input.role} → ` +
+        `${input.memoryFile} — abandoned rather than judged against the wrong file. Nothing cleared.`,
+      next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
+              aborts: (state.aborts ?? 0) + 1, lastNote: "target changed mid-cycle" },
+    };
+  }
   const unseen = !input.frameSeen && phase !== "clearing";
   if (unseen) return keep("the orchestrator's frame was not seen this tick — cannot tell if it is mid-turn");
 
@@ -174,7 +226,7 @@ export function decide(input: ContextInput): Step {
         kind: "clear",
         message: CLEAR_MESSAGE,
         note: `memory banked (${input.memorySize} bytes) — clearing`,
-        next: { ...state, phase: "clearing", phaseAt: now,
+        next: { ...state, ...claim, phase: "clearing", phaseAt: now,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
                 lastNote: "cleared after a verified save" },
       };
@@ -184,7 +236,7 @@ export function decide(input: ContextInput): Step {
         kind: "abort",
         note: `${input.role} did not write ${input.memoryFile} within ${cfg.saveTimeoutMinutes}m — ` +
           `NOT clearing. Its context is still ${pct(input.reading?.fraction ?? 0)}% full.`,
-        next: { ...state, phase: "watch", phaseAt: now, lastCycleAt: now,
+        next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
                 aborts: (state.aborts ?? 0) + 1, lastNote: "save timed out; clear refused" },
       };
     }
@@ -205,7 +257,7 @@ export function decide(input: ContextInput): Step {
         message: restoreMessage(input.memoryFile, input.repo, input.role),
         note: `cleared (${fresh ? "new session id" : "panel emptied"}) — ` +
           `restoring ${input.role} from ${path.basename(input.memoryFile)}`,
-        next: { ...state, phase: "watch", phaseAt: now, lastCycleAt: now,
+        next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
                 memoryBaseline: undefined,
                 cycles: (state.cycles ?? 0) + 1, lastNote: "cycle complete" },
@@ -216,7 +268,7 @@ export function decide(input: ContextInput): Step {
         kind: "abort",
         note: `no fresh session appeared after /clear within ${cfg.clearTimeoutMinutes}m — ` +
           `check ${input.role} by hand; its memory doc is written and safe.`,
-        next: { ...state, phase: "watch", phaseAt: now, lastCycleAt: now,
+        next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
                 aborts: (state.aborts ?? 0) + 1, lastNote: "clear not observed" },
       };
     }
@@ -248,7 +300,7 @@ export function decide(input: ContextInput): Step {
       `${input.reading ? ` (${input.reading.tokens.toLocaleString()} tokens)` : ""}` +
       ` — asking ${input.role} to bank its memory`,
     next: {
-      ...state, phase: "saving", phaseAt: now, role: input.role,
+      ...state, ...claim, phase: "saving", phaseAt: now, role: input.role, memoryFile: input.memoryFile,
       sessionId: input.reading ? input.reading.sessionId : undefined,
       transcriptDir: input.reading ? path.dirname(input.reading.file) : undefined,
       memoryBaseline: input.memoryMtime ?? 0,

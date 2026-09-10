@@ -548,3 +548,26 @@ suite("command tagOrchestrator: a click on a candidate records that exact frame"
     eq(tag.role, "product-owner", "tagged under the canonical name");
   } finally { off(); }
 });
+
+suite("tick: a second window on the same project does not double-inject", async () => {
+  // Two windows, one repo (routine: a worktree window resolves to its parent repo id). The first
+  // claims the cycle on the bus; the second must find it claimed and stand down.
+  const repo = makeRepo({ roles: { alpha: {} } }, "cmdRace");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  const frames = [poFrame("wid-po", repo, { contextPct: 82 })];
+  const offA = await activate(frames);
+  await settle(80);
+  const st = readJson(busPath(repo, "context-state.json"));
+  eq(st.phase, "saving", "window A started the cycle");
+  ok(st.owner, "and claimed it: " + st.owner);
+  fs.rmSync(path.join(LOOM, "context-debug.json"), { force: true });
+  offA();
+  // A SECOND extension host over the same bus, same project, same frames.
+  const offB = await activate(frames);
+  try {
+    await settle(80);
+    eq(readJson(busPath(repo, "context-state.json")).owner, st.owner, "the claim did not change hands");
+    eq(readJson(path.join(LOOM, "context-debug.json")), null, "and window B injected nothing");
+  } finally { offB(); }
+});
