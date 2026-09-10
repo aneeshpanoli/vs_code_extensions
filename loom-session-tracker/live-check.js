@@ -212,6 +212,33 @@ const info = (n, d) => record("INFO", n, d);
     }
   }
 
+  // ── 1e2. every window is RUNNING the version that is deployed ─────────────────────────────
+  // A window keeps the code it loaded at its last reload, so "deployed" and "running" drift and a
+  // symptom looks like a bug that was already fixed. Measured 2026-09-10 00:27: 0.21.1 registered
+  // while a window still wrote a targetmap only a pre-0.19.2 build produces, and the fix looked
+  // broken for an hour. Reported as a FAILURE because everything else here describes a world that
+  // window is not living in.
+  try {
+    const pkgV = JSON.parse(fsx.readFileSync(path.join(__dirname, "package.json"), "utf8")).version;
+    const stamp = JSON.parse(fsx.readFileSync(
+      path.join(require("os").homedir(), ".claude", "loom", "running-versions.json"), "utf8"));
+    const behind = Object.entries(stamp).filter(([, v]) => v && v.version !== pkgV);
+    const fresh = Object.entries(stamp).filter(([, v]) => v && Date.now() - Date.parse(v.at) < 10 * 60000);
+    if (!fresh.length) {
+      warn("running version", `no window has ticked in the last 10 minutes — cannot tell what is running`);
+    } else if (behind.length) {
+      fail("windows are running an OLD build",
+        behind.map(([r, v]) => `${r} is on ${v.version}`).join("; ") +
+        ` — deployed is ${pkgV}. Reload those windows (Developer: Reload Window); until then they ` +
+        `behave like the build they loaded, whatever this file says.`);
+    } else {
+      pass("running version", `${fresh.length} window(s) on ${pkgV}`);
+    }
+  } catch {
+    warn("running version", "no ~/.claude/loom/running-versions.json yet — every window predates the " +
+      "version stamp (0.22.0); reload them and it will appear");
+  }
+
   // ── 1f. one frame, one bus ────────────────────────────────────────────────────────────────
   // Two buses declaring the same frame is drift, and it made one ReciEats session appear as Gaming's
   // developer: `Gaming/*.id` and `ReciEats/*.id` carry the same webviewIds because the ReciEats bus

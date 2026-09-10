@@ -29,7 +29,14 @@ import { DEFAULT_WINDOW_TOKENS, pct } from "./context";
 
 let timer: NodeJS.Timeout | undefined;
 
+/** This build's version, read from the extension's own package.json — the only honest source. */
+let VERSION = "unknown";
+
 export function activate(context: vscode.ExtensionContext) {
+  try {
+    VERSION = String(JSON.parse(fs.readFileSync(
+      path.join(context.extensionPath, "package.json"), "utf8")).version || "unknown");
+  } catch { /* keep "unknown" */ }
   try {
     const cfg = () => vscode.workspace.getConfiguration("loomSessionTracker");
     const repo = currentRepo();     // THIS window's project — the tracker shows/writes only this repo
@@ -304,7 +311,20 @@ export function activate(context: vscode.ExtensionContext) {
         tracker.setFilter(showAll ? null : repo);
         tree.setRepo(showAll ? null : repo);
         const r = await tracker.tick();
-        debugLog({ ok: r.ok, error: r.error, liveRoles: r.liveRoles, agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
+        // STAMP THE RUNNING VERSION. Each editor window keeps the code it loaded at its last
+        // reload, so "deployed" and "running" drift silently and every symptom looks like a bug that
+        // was already fixed. Measured 2026-09-10 00:27: 0.21.1 was registered while a window was
+        // still writing a targetmap only a pre-0.19.2 build produces. Now the bus says which build
+        // each window is actually running, and `./live.sh` reports a window that is behind.
+        debugLog({ version: VERSION, repo, ok: r.ok, error: r.error, liveRoles: r.liveRoles,
+                   agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
+        try {
+          const stamp = path.join(os.homedir(), ".claude", "loom", "running-versions.json");
+          let all: any = {};
+          try { all = JSON.parse(fs.readFileSync(stamp, "utf8")) || {}; } catch { /* first */ }
+          all[repo || "(no project)"] = { version: VERSION, at: new Date().toISOString() };
+          fs.writeFileSync(stamp, JSON.stringify(all, null, 2));
+        } catch { /* a version stamp must never break a tick */ }
         runNotifier();
         runLimitWatcher();
         runModelPolicy();
