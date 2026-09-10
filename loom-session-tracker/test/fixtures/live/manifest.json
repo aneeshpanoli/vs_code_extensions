@@ -1,0 +1,325 @@
+{
+  "capturedAt": "2026-09-10T06:22:11.591Z",
+  "buses": [
+    "Gaming",
+    "ReciEats",
+    "funisland",
+    "gaming",
+    "livegita",
+    "shwab_docker"
+  ],
+  "bus": {
+    "Gaming": {
+      "roles": [
+        "developer",
+        "lowpoly",
+        "productowner",
+        "prototyping",
+        "research",
+        "treeoflife"
+      ],
+      "aliases": {},
+      "ownerRole": "productowner",
+      "ownerFrames": []
+    },
+    "ReciEats": {
+      "roles": [
+        "developer",
+        "productowner"
+      ],
+      "aliases": {},
+      "ownerRole": "productowner",
+      "ownerFrames": []
+    },
+    "funisland": {
+      "roles": [
+        "art",
+        "character",
+        "content",
+        "curriculum",
+        "gamification",
+        "learningactivity",
+        "metagame",
+        "music",
+        "playtest",
+        "product-owner",
+        "scriptwriter",
+        "simulation",
+        "testgamification"
+      ],
+      "aliases": {},
+      "ownerRole": "product-owner",
+      "ownerFrames": []
+    },
+    "gaming": {
+      "roles": [
+        "art",
+        "artist",
+        "gamedesign",
+        "gameplay",
+        "leveldesign",
+        "mobileengineer",
+        "productmanager",
+        "prototyping",
+        "qa",
+        "soundengineer",
+        "uiux"
+      ],
+      "aliases": {},
+      "ownerRole": "product-owner",
+      "ownerFrames": []
+    },
+    "livegita": {
+      "roles": [
+        "developer",
+        "gitadeveloper",
+        "po",
+        "productowner"
+      ],
+      "aliases": {
+        "gitadeveloper": "developer"
+      },
+      "ownerRole": "po",
+      "ownerFrames": [
+        "a57ba8a7-75ae-4a50-acce-ff432df785e5"
+      ]
+    },
+    "shwab_docker": {
+      "roles": [
+        "productowner",
+        "quant",
+        "rhdeveloper",
+        "robinhoodmcp",
+        "siteintegrity",
+        "softwareengineer",
+        "trader"
+      ],
+      "aliases": {},
+      "ownerRole": "productowner",
+      "ownerFrames": []
+    }
+  },
+  "frames": [
+    {
+      "id": "79c00a21",
+      "webviewId": "79c00a21-a8f0-4cef-acc7-8838ac45b9db",
+      "contextPct": 68,
+      "measured": {
+        "repo": "funisland",
+        "role": "gamification",
+        "source": "marker",
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 413899
+      }
+    },
+    {
+      "id": "5cb38933",
+      "webviewId": "5cb38933-df1a-4980-90cc-4debb7875ea6",
+      "contextPct": null,
+      "measured": {
+        "repo": "funisland",
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 321408
+      }
+    },
+    {
+      "id": "29da98c5",
+      "webviewId": "29da98c5-272a-4b12-9be4-5a7f20c3ab2d",
+      "contextPct": null,
+      "measured": {
+        "repo": "Gaming",
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 124162
+      }
+    },
+    {
+      "id": "a7e3cb3d",
+      "webviewId": "a7e3cb3d-36fa-43b8-8b54-21e98948e87b",
+      "contextPct": null,
+      "measured": {
+        "repo": null,
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 369522
+      }
+    },
+    {
+      "id": "26510c7b",
+      "webviewId": "26510c7b-012d-4625-88fe-bd5ec75ac3af",
+      "contextPct": null,
+      "measured": {
+        "repo": null,
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 280027
+      }
+    },
+    {
+      "id": "45962fe2",
+      "webviewId": "45962fe2-42a9-459e-ae9f-3e3d52299774",
+      "contextPct": null,
+      "measured": {
+        "repo": "livegita",
+        "role": "developer",
+        "source": "marker",
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 327870
+      }
+    },
+    {
+      "id": "a57ba8a7",
+      "webviewId": "a57ba8a7-75ae-4a50-acce-ff432df785e5",
+      "contextPct": null,
+      "measured": {
+        "repo": "livegita",
+        "role": null,
+        "source": null,
+        "owner": true,
+        "busy": false,
+        "model": "Fable 5.1",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 77706
+      }
+    },
+    {
+      "id": "494244ff",
+      "webviewId": "494244ff-1d35-42c5-a6a9-74790e599a75",
+      "contextPct": null,
+      "measured": {
+        "repo": "shwab_docker",
+        "role": null,
+        "source": null,
+        "owner": true,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 145680
+      }
+    },
+    {
+      "id": "972792b0",
+      "webviewId": "972792b0-df16-4ba4-9bce-4989573dd054",
+      "contextPct": null,
+      "measured": {
+        "repo": "shwab_docker",
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 184630
+      }
+    },
+    {
+      "id": "3c22c91c",
+      "webviewId": "3c22c91c-e410-4ad0-aa26-0f9721711fba",
+      "contextPct": null,
+      "measured": {
+        "repo": null,
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": true,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 496018
+      }
+    },
+    {
+      "id": "849774ff",
+      "webviewId": "849774ff-fa5c-47fb-b835-9f03591b9962",
+      "contextPct": null,
+      "measured": {
+        "repo": "ReciEats",
+        "role": "developer",
+        "source": "marker",
+        "owner": false,
+        "busy": true,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 469152
+      }
+    },
+    {
+      "id": "113ae63b",
+      "webviewId": "113ae63b-c975-4b20-adb8-98aaec0f3e68",
+      "contextPct": null,
+      "measured": {
+        "repo": null,
+        "role": null,
+        "source": null,
+        "owner": true,
+        "busy": true,
+        "model": "Fable 5.1",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 102686
+      }
+    },
+    {
+      "id": "eac0b48c",
+      "webviewId": "eac0b48c-1df2-4628-8dfc-91deb5c82444",
+      "contextPct": 57,
+      "measured": {
+        "repo": "Gaming",
+        "role": null,
+        "source": null,
+        "owner": false,
+        "busy": false,
+        "model": "Opus 5",
+        "effort": "Medium",
+        "limited": false,
+        "kind": null,
+        "len": 172869
+      }
+    }
+  ]
+}

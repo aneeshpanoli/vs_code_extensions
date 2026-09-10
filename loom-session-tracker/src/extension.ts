@@ -20,6 +20,7 @@ import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, ReopenCandidate } from "./reopen";
 import { isOwnerRole } from "./naming";
+import { eligibleTargets, resolveOrchestrator } from "./dispatch";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
@@ -86,8 +87,9 @@ export function activate(context: vscode.ExtensionContext) {
       // tracker.busyRoles). Busy roles are withheld from this tick entirely: not a violation, not an
       // attempt, no backoff growth — they are judged on the first idle tick instead.
       const busy = tracker.busyRoles;
-      const live = new Set(tracker.view().filter((a) => a.liveness === "live" && !busy.has(a.role)).map((a) => a.role));
-      const idleModels = new Map(Array.from(tracker.modelState()).filter(([r]) => !busy.has(r)));
+      // `/model` is a COMMAND: only an idle composer executes it. See dispatch.ts.
+      const live = new Set(eligibleTargets(tracker.view(), busy, "command", repo).map((t) => t.role));
+      const idleModels = new Map(Array.from(tracker.modelState()).filter(([r]) => live.has(r)));
       for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium)) {
         // Toast the first attempt; retries stay quiet in the status bar so a stuck session
         // cannot spam notifications every backoff window.
@@ -108,7 +110,8 @@ export function activate(context: vscode.ExtensionContext) {
     // UI's coarse "resets in 2h" estimate.
     const runLimitWatcher = () => {
       if (cfg().get("autoResumeAfterLimit", true) !== true) return;
-      const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
+      // A resume is a MESSAGE: queuing behind the current turn is correct. See dispatch.ts.
+      const live = new Set(eligibleTargets(tracker.view(), tracker.busyRoles, "message", repo).map((t) => t.role));
       for (const ev of limitWatcher.scan(tracker.limitState(), live)) {
         const msg = String(cfg().get("resumeMessage", "") || DEFAULT_RESUME);
         vscode.window.showInformationMessage(

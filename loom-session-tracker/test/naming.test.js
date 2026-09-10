@@ -384,3 +384,29 @@ suite("tracker: path evidence needs the project to agree; a sign-off does not", 
   try { await t2.tick(); } finally { cdp.readFrames = real; }
   eq(t2.view().map((a) => a.role), ["developer"], "but it IS that project's developer");
 });
+
+suite("tracker: within ONE project, the frame that signs beats the longer frame that only mentions", () => {
+  // The corroboration rule rejects a stranger from ANOTHER project, so it never exercises the tie
+  // that source-ranking exists for: two frames both attributed to THIS project, one signing its role,
+  // one merely printing that role's worktree — a PO reviewing a diff, a second session reading a
+  // handoff. Before ranking, both scored purity 1 and the LONGER text won, which is how a 159 KB
+  // panel took the role from the 57 KB one that actually signs it (measured 2026-09-09).
+  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
+  const repo = makeRepo({ developer: {} }, "same-project-tie");
+  const home = `Containers/${repo}/src `;
+  const signer = home.repeat(10) + "edited a.ts" + marker("developer");
+  const mentioner = home.repeat(10) + "worktrees/developer/a.ts worktrees/developer/b.ts ".repeat(5) +
+                    "z".repeat(200000);                      // far longer, no sign-off
+  return (async () => {
+    const t = new Tracker(repo); const real = cdp.readFrames;
+    cdp.readFrames = async () => [
+      { webviewId: "w-mentioner", type: "iframe", targetUrl: "u", text: mentioner },
+      { webviewId: "w-signer", type: "iframe", targetUrl: "u", text: signer },
+    ];
+    try { await t.tick(); } finally { cdp.readFrames = real; }
+    const dev = t.view().find((a) => a.role === "developer");
+    ok(dev, "developer is tracked");
+    eq(dev.webviewId, "w-signer",
+      "the SIGNING frame owns the role, though the other is 200 KB longer and same-project");
+  })();
+});

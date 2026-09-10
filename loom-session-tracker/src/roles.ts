@@ -47,6 +47,13 @@ export function classify(text: string, validRoles: Set<string>, repo?: string | 
   if (distinctMarkers.size === 1) {                       // clean single sign-off -> authoritative-ish
     const role = markers[0];
     if (!isOwnerRole(role)) return { role, purity: 1, source: "marker" };
+    // A clean OWNER sign-off is self-identification and ends the question: this session says it is
+    // the orchestrator, so it is never a worker. It used to fall through to worktree paths, and an
+    // orchestrator inevitably mentions its workers' worktrees — measured 2026-09-09 on livegita's
+    // real PO (a57ba8a7): one `LOOMROLE=productowner` marker, eleven `worktrees/developer` mentions,
+    // classified `developer`. Only boardOwnerFrames() stood between that and the PO being treated as
+    // a worker — a spawn/retire/delete target, and a `/model` and resume recipient.
+    return { role: null, purity: 1, source: null };
   }
   // (distinctMarkers.size 0 or >=2 -> fall through to worktree paths; do NOT return null here)
 

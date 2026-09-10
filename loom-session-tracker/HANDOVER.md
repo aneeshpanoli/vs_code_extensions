@@ -114,6 +114,28 @@ Hence the lease.
 
 ---
 
+## 0.20.0 — proper tests (2026-09-09, user direction)
+
+The suite went 349 -> 388 passing across the night described above while the live system misrouted six
+ways. Three things now exist so that cannot repeat quietly:
+- `test/fixtures/live/` — REAL panels captured from the running editor, redacted of prose but exact in
+  every token classification reads, and in length. `capture.js` refuses to write a fixture that behaves
+  differently from the frame it came from, and snapshots the buses (roster + aliases) as well, since the
+  tests run with HOME sandboxed and frames alone are half a world. It caught two of its own bugs on the
+  first run: filled `·` separators broke the model footer, and a trailing-slash-only path pattern erased
+  `worktrees/developer`.
+- `test/mutation.py` — reintroduces all 12 defects of that night and requires the suite to fail on each.
+  Run it after any change to classification, dispatch or limits. It found a real gap immediately: the
+  source-ranking rule (a sign-off outranks path evidence) had NO test that failed without it, because
+  the corroboration rule masked it in every existing scenario.
+- `src/dispatch.ts` — the "who gets typed into" decision, extracted from a closure inside `activate()`
+  so it can be asserted directly, with COMMAND (needs an idle composer) and MESSAGE (may queue) as
+  distinct purposes.
+Capturing the fixtures also exposed a live defect nothing else had: livegita's real PO (a57ba8a7) signs
+`LOOMROLE=productowner` and mentions `worktrees/developer` eleven times, and `classify()` returned
+`developer` — a clean OWNER sign-off fell through to path evidence. Only `boardOwnerFrames()` stood
+between that and the orchestrator being treated as a worker.
+
 ## The lesson worth keeping
 
 The suite is at ~95% of lines and **caught none of the four defects found this week.** It could not:

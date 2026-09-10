@@ -358,6 +358,36 @@ would do right now, per project. It is read-only: it never injects, writes or cl
 
 ---
 
+## Testing
+
+Three layers, because the first two were not enough. On 2026-09-09 this suite went from 349 to 388
+passing across a night in which the live system misrouted six different ways — every fixture had been
+written from the code's own model of the world, so where that model was wrong the tests agreed with it.
+
+```bash
+./test.sh                 # unit + fixture suites
+python3 test/mutation.py  # reintroduce each known defect; the suite MUST fail on every one
+./live.sh                 # invariants against the running editor and the real bus
+```
+
+**Captured fixtures** (`test/fixtures/live/`) are real panels from the running editor, snapshotted by
+`test/fixtures/capture.js`. It redacts the user's prose but preserves every token classification reads —
+sign-off lines, worktree and project paths, the model footer, limit banners, the busy chip — at their
+real positions and repetition counts, so purity ratios and frame lengths (which decide ties) survive
+exactly. Capture **refuses to write a fixture whose behaviour differs from the frame it came from**, and
+snapshots the buses too, since a roster and its aliases are half the input. Re-run it when the world
+changes; state the ground truth in the test by hand, from evidence outside the code.
+
+**Mutation testing** is what keeps the suite honest. `test/mutation.py` restores each defect that was
+actually live that night — `po` missing from the owner set, a clean owner sign-off falling through to
+worktree paths, path evidence needing no corroboration, commands typed into busy composers, a limit
+banner that never expires — and fails if the suite still passes. A green suite means nothing; a suite
+that breaks when reality does means something.
+
+**Dispatch** (`src/dispatch.ts`) exists so the decision that caused the harm — *who gets typed into* —
+can be asserted directly. It used to live in a closure inside `activate()`, reachable only by driving
+the whole extension, and had no test of its own.
+
 ## Development
 
 ```bash
