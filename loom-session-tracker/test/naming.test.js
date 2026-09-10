@@ -344,3 +344,43 @@ suite("tracker: a frame attributed to ANOTHER project is not this window's worke
   eq(tg.view().map((a) => a.role), ["developer"], "but it IS Gaming's");
 });
 
+
+suite("tracker: path evidence needs the project to agree; a sign-off does not", async () => {
+  // Measured 2026-09-09 23:11: a diagnostic session mentioning five buses at 0.77 purity attributed
+  // to NOBODY, and took Gaming's `developer` by path — 38 /model injections went into it.
+  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
+  const gaming = makeRepo({ developer: {} }, "Gaming-corrob");
+  const other = makeRepo({ developer: {} }, "Other-corrob");
+  const real = cdp.readFrames;
+  // (a) unattributable stranger that merely PRINTS the paths -> not a worker anywhere
+  const stranger = `mentions Containers/${gaming}/a Containers/${other}/b loom/${other}/c `.repeat(6) +
+                   "worktrees/developer/x worktrees/developer/y";
+  let t = new Tracker(gaming);
+  cdp.readFrames = async () => [{ webviewId: "w-strange", type: "iframe", targetUrl: "u", text: stranger }];
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  eq(t.view().length, 0, "an unattributable frame does not take a role by path alone");
+  // (b) a real worker in ITS OWN worktree, marker scrolled off -> still found by path
+  t = new Tracker(gaming);
+  const worker = `editing Containers/${gaming}/src `.repeat(8) + "worktrees/developer/a.ts worktrees/developer/b.ts";
+  cdp.readFrames = async () => [{ webviewId: "w-real", type: "iframe", targetUrl: "u", text: worker }];
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  eq(t.view().map((a) => a.role), ["developer"], "path evidence still works when the project agrees");
+  // (c) a freshly-cleared worker names NO project; its signature alone is enough
+  t = new Tracker(gaming);
+  cdp.readFrames = async () => [{ webviewId: "w-fresh", type: "iframe", targetUrl: "u",
+    text: "just started, nothing checked out yet" + marker("developer") }];
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  eq(t.view().map((a) => a.webviewId), ["w-fresh"], "an unattributed sign-off is accepted as-is");
+  // (d) but a sign-off cannot claim a role in a window whose project the frame contradicts: a marker
+  //     names the ROLE, not the PROJECT, and `developer` exists on both boards.
+  t = new Tracker(gaming);
+  cdp.readFrames = async () => [{ webviewId: "w-elsewhere", type: "iframe", targetUrl: "u",
+    text: `working in Containers/${other}/src loom/${other}/x `.repeat(8) + marker("developer") }];
+  try { await t.tick(); } finally { cdp.readFrames = real; }
+  eq(t.view().length, 0, `a frame whose paths say ${other} is not ${gaming}'s developer`);
+  const t2 = new Tracker(other);
+  cdp.readFrames = async () => [{ webviewId: "w-elsewhere", type: "iframe", targetUrl: "u",
+    text: `working in Containers/${other}/src loom/${other}/x `.repeat(8) + marker("developer") }];
+  try { await t2.tick(); } finally { cdp.readFrames = real; }
+  eq(t2.view().map((a) => a.role), ["developer"], "but it IS that project's developer");
+});

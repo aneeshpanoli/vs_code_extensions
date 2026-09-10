@@ -180,6 +180,28 @@ restart, then wake the PO to continue the work." So `src/reopen.ts` + `extension
 - Outside the restart path, a persistent status item "Loom: reopen N" offers the rest on a click.
 Caveat inherited from Claude Code: a session hidden via the picker can never be resumed by id.
 
+## 0.19.1/0.19.2 — why the model policy never worked (2026-09-09, late)
+
+"Are you sure your model change command is working?" It was not, for two independent reasons, both
+measured on the live editor rather than reasoned about:
+
+1. **Busy composers swallow commands.** A `/model` typed while the target is mid-turn is queued as a
+   message and never executes. The real worker took 9 injections and produced 0 "Set model" lines.
+   `tracker.busyRoles` now withholds mid-turn roles from the policy entirely — no violation, no
+   attempt, no backoff growth — judged on the first idle tick instead.
+2. **The policy was aiming at the wrong session.** A diagnostic session that merely PRINTED
+   `worktrees/developer` paths took Gaming's `developer` by path and absorbed 38 `/model`
+   injections. Two holes let it: `attributeRepo` returned NULL for it (0.77, under the 0.8
+   threshold) and the 0.17.0 rule only rejected frames attributed to a DIFFERENT repo; and path
+   evidence ranked equal to a sign-off. Now: path evidence counts only when the frame's dominant
+   project paths agree with the window's project, and a frame attributed to another project is
+   never this window's worker whatever it signs (a marker names the ROLE, not the PROJECT — both
+   Gaming and ReciEats have a `developer`). An UNattributed sign-off is still trusted: that is a
+   fresh session right after `/clear`.
+
+Simulated after the change: Gaming claims nobody (its developer's session is not open), ReciEats
+claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic session is nobody's worker.
+
 ## Open threads
 
 - **MIGRATION TO THE FOUR ROLES is undecided in scope.** The vocabulary (product-owner / developer /

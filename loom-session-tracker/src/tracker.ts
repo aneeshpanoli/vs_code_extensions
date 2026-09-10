@@ -131,18 +131,32 @@ export class Tracker {
       // (path): 1.2 vs purity <= 1. Measured 2026-09-09, a 325 KB diagnostic frame that had printed
       // the board classified as `developer` by path and beat the real, signing developer on length.
       let priority = c.source === "marker" ? 1.2 : c.purity;
-      // A worker of THIS project must not read as another project's session. The window is scoped
-      // to one bus; a frame whose dominant paths belong to a DIFFERENT bus (a Gaming-attributed frame
-      // classifying as livegita's `developer` because both rosters carry the name) is not mine. This
-      // is the read-side half of project-scoped role names. (A frame that mentions no bus at all is
-      // left alone: a fresh session right after /clear has nothing to attribute yet.)
-      // NOT a rule: "a frame that discusses the Loom machinery is not a worker". Tried 2026-09-09,
-      // measured against the live developer, and removed — its bootstrap runs `ls ~/.claude/loom`, so
-      // every real worker's own panel names loom_cdp.py and bindings.json. Residual: a marker-less
-      // stranger can still be path-classified as a worker when the real one is absent from the read.
+      // PATH EVIDENCE NEEDS CORROBORATION; A SIGN-OFF DOES NOT.
+      // A marker is the session naming ITSELF — self-identification, and enough on its own. A
+      // worktree path is circumstantial: any session that greps a board, reads a handoff or prints
+      // `git worktree list` mentions another role's paths. So a path-only classification counts only
+      // when the frame's dominant project paths also say THIS project.
+      //
+      // Measured 2026-09-09 23:11, with both halves of the bug live in one window:
+      //   * this diagnostic session mentioned five buses at 0.77 purity, so attributeRepo returned
+      //     NULL (below the 0.8 threshold) — "unattributable", which the earlier rule let through —
+      //     and it took Gaming's `developer` by path. It had received 38 `/model` injections.
+      //   * the REAL worker signs `LOOMROLE=developer` but attributes to ReciEats, so the same rule
+      //     correctly kept it out of Gaming's window — leaving the stranger unopposed.
+      // Requiring corroboration for paths (and never for markers) resolves both: the stranger is not
+      // a worker anywhere, and a signing worker is still found wherever its roster carries the name.
+      // A marker names the ROLE, not the PROJECT: `LOOMROLE=developer` is true of Gaming's
+      // developer and of ReciEats', and both boards carry the name. So a frame whose dominant paths
+      // say ANOTHER project is never this window's worker, whatever it signs — while a frame that
+      // names no project at all (a fresh session right after /clear, its paths swamped by a
+      // `git worktree list`) is still trusted on its signature alone.
+      // Measured 2026-09-09 23:13: frame 849774ff signs `developer` and attributes to ReciEats at
+      // 0.87; before this it was adopted by Gaming's window AND ReciEats'.
       if (role && this.repoFilter && !authoritative.get(f.webviewId)) {
         const owned = attributeRepo(f.text, allRepos).repo;
-        if (owned && owned !== this.repoFilter) { role = null; priority = 0; }
+        const conflicts = owned !== null && owned !== this.repoFilter;
+        const uncorroborated = c.source === "path" && owned !== this.repoFilter;
+        if (conflicts || uncorroborated) { role = null; priority = 0; }
       }
       // 2) GAP-FILLER: only when content is SILENT (marker scrolled out AND no dominant path) do we fall back to
       //    the authoritative /loom binding. It never OVERRIDES live content — a stale binding can't mislabel a
