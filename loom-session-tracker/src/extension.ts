@@ -18,6 +18,8 @@ import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
+import { missingRoles, previouslyLive, ReopenCandidate } from "./reopen";
+import { isOwnerRole } from "./naming";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
@@ -209,6 +211,84 @@ export function activate(context: vscode.ExtensionContext) {
       }
     };
 
+    // ── sessions that came back empty after a reload: offered EVERY tick until none are missing ──
+    // Opening is always a click (never automatic — the 2026-07-12 rule). See reopen.ts.
+    const reopenStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
+    reopenStatus.command = "loomSessionTracker.reopenMissing";
+    context.subscriptions.push(reopenStatus);
+    let missingNow: ReopenCandidate[] = [];
+    const computeMissing = () => {
+      if (!repo) { missingNow = []; return; }
+      const live = new Set<string>(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
+      // an orchestrator frame present in this window counts every owner spelling as live
+      if (tracker.ownerView().some((o) => o.repo === repo && o.liveness === "live")) {
+        for (const r of boardRoles(repo)) if (isOwnerRole(r)) live.add(r);
+      }
+      missingNow = missingRoles(repo, live);
+      if (missingNow.length) {
+        reopenStatus.text = `$(history) Loom: reopen ${missingNow.length}`;
+        reopenStatus.tooltip = `Sessions that are not open in this window:\n` +
+          missingNow.map((m) => `  ${m.role}  ←  ${m.sessionId.slice(0, 8)} (${m.source}, ` +
+            `${new Date(m.mtime).toLocaleString()})`).join("\n") + `\nClick to reopen them (each with its memory).`;
+        reopenStatus.show();
+      } else reopenStatus.hide();
+    };
+    context.subscriptions.push(vscode.commands.registerCommand("loomSessionTracker.reopenMissing", async () => {
+      computeMissing();
+      if (!missingNow.length) { vscode.window.showInformationMessage("Loom: every role session is open."); return; }
+      const items = missingNow.map((m) => ({
+        label: m.role, description: `${m.sessionId.slice(0, 8)} · ${m.source}`,
+        detail: new Date(m.mtime).toLocaleString(), id: m.sessionId, picked: true,
+      }));
+      const picks = await vscode.window.showQuickPick(items, {
+        canPickMany: true, placeHolder: `Reopen ${items.length} session(s) with their memory — all are preselected`,
+      });
+      if (!picks || !picks.length) return;
+      let n = 0;
+      for (const p of picks) {
+        try { await vscode.commands.executeCommand("claude-vscode.editor.open", p.id, undefined, undefined); n++; }
+        catch (e: any) { vscode.window.showErrorMessage(`Loom: could not reopen ${p.label}: ${String(e.message || e)}`); }
+      }
+      vscode.window.setStatusBarMessage(`Loom: reopened ${n} session(s).`, 8000);
+    }));
+
+    // ── the RESTART path (user direction 2026-09-09: "remember their loom role, rebind them on
+    // restart, then wake the PO to continue the work"). Roles that were live before the reload are
+    // reopened from their freshest transcript WITHOUT a click — the one exception to the never-open-
+    // tabs-automatically rule — and once the orchestrator's frame is back, it is woken once.
+    const wasLive = repo ? previouslyLive(repo) : new Set<string>();
+    let restartReopenDone = false;
+    let wakePending = false;
+    const restartReopen = async () => {
+      if (restartReopenDone || !repo) return;
+      restartReopenDone = true;
+      if (!cfg().get<boolean>("autoReopenOnRestart", true)) return;
+      computeMissing();
+      const todo = missingNow.filter((m) => wasLive.has(m.role) || isOwnerRole(m.role));
+      if (!todo.length) return;
+      let n = 0;
+      for (const m of todo) {
+        try { await vscode.commands.executeCommand("claude-vscode.editor.open", m.sessionId, undefined, undefined); n++; }
+        catch (e: any) { debugLog({ restartReopenFailed: m.role, error: String(e && e.message || e) }); }
+      }
+      wakePending = n > 0;
+      vscode.window.setStatusBarMessage(`Loom: reopened ${n} session(s) after restart` +
+        (wakePending ? " — waking the orchestrator when it is back" : ""), 12000);
+      debugLog({ restartReopened: todo.map((m) => `${m.role}<-${m.sessionId.slice(0, 8)}`) });
+    };
+    const wakeOrchestrator = () => {
+      if (!wakePending || !repo) return;
+      const orch = getOrchestrator(repo);
+      const frame = orch && orch.webviewId
+        ? tracker.ownerView().find((o) => o.webviewId === orch.webviewId && o.liveness === "live") : null;
+      if (!orch || !frame) return;                     // not back yet; try next tick
+      wakePending = false;
+      injectTo({ role: orch.role, webviewId: orch.webviewId, repo },
+        "[loom-restart] The editor was restarted and your role sessions were reopened with their memory. " +
+        "Re-read your inbox, the board and each role's status.json, then continue the work where it stood.",
+        "restart-debug.json");
+    };
+
     const runTick = async () => {
       try {
         // One project, or all of them — the window can switch without reloading.
@@ -222,6 +302,7 @@ export function activate(context: vscode.ExtensionContext) {
         runModelPolicy();
         runHealth();
         runContextMemory();
+        try { computeMissing(); wakeOrchestrator(); } catch { /* a reopen offer must never break a tick */ }
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator
@@ -502,6 +583,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // First pass immediately, then the startup digest once the roster is known.
     runTick().then(() => showDigest(false)).catch(() => { /* never break activation */ });
+    // Restored tabs render slowly; measured, blank shells are still filling in during the first tick.
+    setTimeout(() => { restartReopen().catch(() => { /* never break activation */ }); }, 30_000);
     schedule();    // then on interval
   } catch (e) {
     // activation must never throw

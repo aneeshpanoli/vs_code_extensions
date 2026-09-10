@@ -164,6 +164,22 @@ Every real worker runs `ls ~/.claude/loom` at bootstrap, so it excluded the genu
 Residual, documented in tracker.ts: a session that PRINTS another role's sign-off on its own line
 (test fixtures, grep output) reads as signed. Don't print `LOOMROLE=` lines in diagnostic sessions.
 
+## 0.19.0 — the restart path (2026-09-09, user direction)
+
+After a window reload, Claude Code restores every Claude tab BLANK (measured: 12 of 25 frames were
+empty shells). The user's instruction, verbatim in spirit: "remember their loom role, rebind them on
+restart, then wake the PO to continue the work." So `src/reopen.ts` + `extension.ts`:
+- `previouslyLive(repo)` = roles in the bus's `targetmap.json` + `bindings.json`, read BEFORE the
+  first tick rewrites them — the record of who was open, not who the board has ever known.
+- 30 s after activation (restored shells are still rendering during the first tick), every such role
+  that is now missing is reopened from its FRESHEST transcript (board sid vs newest in the role's
+  worktree project dir — the board sid is sometimes stale), plus the orchestrator always.
+- Once the tag resolves to a live frame again, `[loom-restart]` is injected into it, once.
+- `loomSessionTracker.autoReopenOnRestart` (default true) turns this off. This is the ONE exception
+  to the 2026-07-12 rule that Loom never opens or closes Claude tabs on its own; it still never closes.
+- Outside the restart path, a persistent status item "Loom: reopen N" offers the rest on a click.
+Caveat inherited from Claude Code: a session hidden via the picker can never be resumed by id.
+
 ## Open threads
 
 - **MIGRATION TO THE FOUR ROLES is undecided in scope.** The vocabulary (product-owner / developer /
