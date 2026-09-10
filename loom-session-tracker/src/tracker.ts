@@ -182,14 +182,9 @@ export class Tracker {
     this.models = new Map();
     for (const [role, b] of best) {
       this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now });
-      // INJECTION GATE. Limit-resume and model-policy nudges are TYPED INTO the agent's composer, and
-      // they are dispatched off these two maps. A path-only agent (no sign-off, no /loom binding) is
-      // shown in the sidebar and watched, but never nudged: measured 2026-09-09, every path-only hit
-      // across 31 live frames was a diagnostic session that had merely PRINTED worktree paths — and
-      // it received the developer's usage-limit resume. Path evidence is real (two genuine workers
-      // whose markers had scrolled off resolved by it), so it stays for detection; it just cannot be
-      // the sole basis for typing into a session.
-      if (!b.signed) continue;
+      // No injection gate here (tried 0.17.1, removed the same night): resumes MUST reach a worker
+      // whose sign-off scrolled off — measured, that was every limited funisland role after the
+      // restart. Cross-project misroutes are stopped by the attribution rule above instead.
       this.limits.set(role, detectLimit(b.text, now));
       this.models.set(role, detectModel(b.text));
     }

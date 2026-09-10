@@ -344,22 +344,3 @@ suite("tracker: a frame attributed to ANOTHER project is not this window's worke
   eq(tg.view().map((a) => a.role), ["developer"], "but it IS Gaming's");
 });
 
-suite("tracker: a path-only agent is watched but never nudged (no limit/model state)", async () => {
-  // Measured 2026-09-09: a diagnostic frame that had printed board.json classified as `developer` by
-  // path, showed a 429, and was sent the developer's [loom-resume]. Detection by path stays — two real
-  // workers with scrolled-off markers depend on it — but typing into a session requires a signature.
-  const { Tracker } = load("tracker.js"); const cdp = load("cdp.js");
-  const repo = makeRepo({ developer: {} }, "lg-gate");
-  const limitText = "You've hit your session limit · resets in 2h";
-  const mk = (wid, text) => ({ webviewId: wid, type: "iframe", targetUrl: "u", text });
-  const real = cdp.readFrames;
-  // path-only: shows a limit, must NOT be nudgeable
-  let t = new Tracker(repo); cdp.readFrames = async () => [mk("w-path", "see worktrees/developer/a worktrees/developer/b " + limitText)];
-  try { await t.tick(); } finally { cdp.readFrames = real; }
-  eq(t.view().map((a) => a.role), ["developer"], "still tracked");
-  eq(t.limitState().get("developer") ?? null, null, "but carries NO limit state, so no resume is ever sent");
-  // signed: the same limit IS surfaced
-  t = new Tracker(repo); cdp.readFrames = async () => [mk("w-sign", "work " + limitText + marker("developer"))];
-  try { await t.tick(); } finally { cdp.readFrames = real; }
-  ok(t.limitState().get("developer"), "a signing agent's limit is surfaced");
-});

@@ -37,6 +37,12 @@ const APOS = "['‘’´]";
 const BLOCKED_RE = new RegExp("You" + APOS + "?ve hit your ([^\\n·]+?)\\s*(?:·|\\n|$)", "i");
 const GRACE_RE = /Usage limit reached\s*·\s*([^\n·]+)/i;
 const RESETS_RE = /resets\s+(?:in\s+)?(?:(\d+)\s*([mhd])|(soon))/i;
+// The banner switches to a CLOCK once the reset is under a few hours away: "session limit · resets
+// 9:50pm (America/Los_Angeles)". Measured 2026-09-09 22:18 on three limited frames — none parsed, so
+// notBefore was null and the watcher had nothing to expire against.
+const RESETS_AT_RE = /resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)\b/i;
+/** After notBefore, how long we still believe a banner that has not changed. */
+export const RESET_GRACE_MS = 3 * 60_000;
 
 export interface LimitInfo {
   /** True when the session is blocked or winding down — i.e. it cannot keep working. */
@@ -52,7 +58,14 @@ export interface LimitInfo {
 /** Parse the coarse "resets in 2h" text into a lower-bound timestamp. */
 export function parseEta(tail: string, now = Date.now()): { etaText: string | null; notBefore: number | null } {
   const m = RESETS_RE.exec(tail);
-  if (!m) return { etaText: null, notBefore: null };
+  if (!m) {
+    const c = RESETS_AT_RE.exec(tail);
+    if (!c) return { etaText: null, notBefore: null };
+    let h = parseInt(c[1], 10) % 12; if (c[3].toLowerCase() === "pm") h += 12;
+    const d = new Date(now); d.setHours(h, c[2] ? parseInt(c[2], 10) : 0, 0, 0);
+    if (d.getTime() < now - 12 * 3_600_000) d.setDate(d.getDate() + 1);   // clock is for tomorrow
+    return { etaText: `at ${c[1]}${c[2] ? ":" + c[2] : ""}${c[3].toLowerCase()}`, notBefore: d.getTime() };
+  }
   if (m[3]) return { etaText: "soon", notBefore: now + 60_000 };
   const n = parseInt(m[1], 10);
   const unit = m[2].toLowerCase();
@@ -120,23 +133,36 @@ export class LimitWatcher {
     const st = loadLimitState(this.repo);
     const events: ResumeEvent[] = [];
     const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
 
     for (const [role, info] of current) {
       if (info && info.limited) {
         const prev = st.roles[role];
+        // An expired record is being JUDGED below; re-recording it here would zero clearTicks every
+        // tick the stale banner is on screen, and the reset could never accumulate its clear ticks.
+        if (prev && prev.notBefore && nowMs > prev.notBefore + RESET_GRACE_MS) continue;
+        // Keep the FIRST sighting's notBefore. Re-parsing "resets in 2h" every tick yields now+2h
+        // every tick — a deadline that slides forward forever. Measured 2026-09-09: funisland's three
+        // roles limited at 19:49 with "in 2h" were still "limited" at 22:18 for exactly this reason.
         st.roles[role] = {
           since: prev ? prev.since : nowIso,
-          kind: info.kind, etaText: info.etaText, notBefore: info.notBefore, clearTicks: 0,
+          kind: info.kind, etaText: info.etaText,
+          notBefore: (prev && prev.notBefore) ? prev.notBefore : info.notBefore, clearTicks: 0,
         };
       }
     }
     for (const role of Object.keys(st.roles)) {
       const info = current.get(role);
-      const stillLimited = !!(info && info.limited);
+      const rec = st.roles[role];
+      // A blocked session renders NOTHING new, so its last visible line is the banner itself — the
+      // text says "limited" long after the reset. Once the parsed deadline has passed (plus grace),
+      // the banner is a stale transcript line, not a state. Measured 2026-09-09 22:19: every limited
+      // frame still showed "resets 9:50pm" half an hour after 9:50pm.
+      const expired = !!(rec.notBefore && nowMs > rec.notBefore + RESET_GRACE_MS);
+      const stillLimited = !!(info && info.limited) && !expired;
       if (stillLimited) continue;
       // Only judge a role we can actually see right now; an unseen role keeps waiting.
       if (!liveRoles.has(role)) continue;
-      const rec = st.roles[role];
       rec.clearTicks = (rec.clearTicks || 0) + 1;
       if (rec.clearTicks >= CLEAR_TICKS_REQUIRED) {
         events.push({ repo: this.repo, role, kind: rec.kind, blockedSince: rec.since });
