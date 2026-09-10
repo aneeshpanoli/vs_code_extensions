@@ -76,7 +76,7 @@ export class Tracker {
   setFilter(repo: string | null): void {
     if (repo === this.repoFilter) return;
     this.repoFilter = repo;
-    this.agents.clear(); this.owners.clear(); this.limits.clear(); this.models.clear();
+    this.agents.clear(); this.owners.clear(); this.limits.clear(); this.models.clear(); this.busyRoles.clear();
   }
   filter(): string | null { return this.repoFilter; }
 
@@ -187,6 +187,7 @@ export class Tracker {
       // restart. Cross-project misroutes are stopped by the attribution rule above instead.
       this.limits.set(role, detectLimit(b.text, now));
       this.models.set(role, detectModel(b.text));
+      if (isBusy(b.text)) this.busyRoles.add(role);
     }
     this.ageOut();
 
@@ -247,6 +248,11 @@ export class Tracker {
 
   /** Model each role is running, as of the last successful read. */
   modelState(): Map<string, ModelInfo | null> { return this.models; }
+  /** Roles whose frame is MID-TURN this tick. A slash command typed into a busy composer is queued as
+   *  a message and never executes: measured 2026-09-09 23:04, three `/model claude-opus-5` injections
+   *  into a worker running Bash, each reported "typed + submitted", none produced a "Set model" line,
+   *  footer unchanged. Anything that types a COMMAND must wait for idle. */
+  busyRoles = new Set<string>();
 
   status(): { lastOk: number; lastError: string } {
     return { lastOk: this.lastOk, lastError: this.lastError };

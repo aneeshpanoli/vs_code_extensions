@@ -82,8 +82,13 @@ export function activate(context: vscode.ExtensionContext) {
       const premium = (cfg().get("premiumModels", DEFAULT_PREMIUM) as string[]) || DEFAULT_PREMIUM;
       const target = String(cfg().get("workerModel", "claude-opus-5") || "claude-opus-5");
       const orch = repo ? getOrchestrator(repo) : null;
-      const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
-      for (const v of modelPolicy.check(tracker.modelState(), orch ? orch.role : null, live, premium)) {
+      // A `/model` typed into a BUSY composer is queued as a message and never runs (see
+      // tracker.busyRoles). Busy roles are withheld from this tick entirely: not a violation, not an
+      // attempt, no backoff growth — they are judged on the first idle tick instead.
+      const busy = tracker.busyRoles;
+      const live = new Set(tracker.view().filter((a) => a.liveness === "live" && !busy.has(a.role)).map((a) => a.role));
+      const idleModels = new Map(Array.from(tracker.modelState()).filter(([r]) => !busy.has(r)));
+      for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium)) {
         // Toast the first attempt; retries stay quiet in the status bar so a stuck session
         // cannot spam notifications every backoff window.
         const what = `${v.role} is on ${v.model} (orchestrator-only tier) — switching to ${target}`;
