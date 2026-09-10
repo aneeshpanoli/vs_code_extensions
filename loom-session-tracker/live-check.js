@@ -176,9 +176,18 @@ const info = (n, d) => record("INFO", n, d);
     const roster = boardRoles(repo);
     if (!roster.length) continue;
     const off = roster.filter((r) => !inVocabulary(r));
-    if (!off.length) pass(`${repo}: role vocabulary`, `all ${roster.length} role(s) on the standard four`);
-    else info(`${repo}: role vocabulary`, `${roster.length - off.length}/${roster.length} on the four; ` +
-      `off-vocabulary: ${off.join(", ")}`);
+    // Numbered instances (developer1, developer2, …) are several agents in ONE role, so report the
+    // function once with its instance count rather than as four separate off-vocabulary names.
+    const byBase = new Map();
+    for (const r of roster.filter((x) => inVocabulary(x))) {
+      const b = baseRole(r);
+      byBase.set(b, [...(byBase.get(b) || []), r]);
+    }
+    const shape = [...byBase.entries()]
+      .map(([b, rs]) => (rs.length > 1 ? `${b} ×${rs.length}` : b)).sort().join(", ");
+    if (!off.length) pass(`${repo}: role vocabulary`, `all ${roster.length} role(s) on the standard four — ${shape}`);
+    else info(`${repo}: role vocabulary`, `${roster.length - off.length}/${roster.length} on the four` +
+      (shape ? ` (${shape})` : "") + `; off-vocabulary: ${off.join(", ")}`);
   }
 
   // ── 1e. A PROJECT THAT HAS A LIVE ORCHESTRATOR MUST BE ABLE TO SHOW IT ────────────────────

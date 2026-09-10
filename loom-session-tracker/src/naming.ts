@@ -84,11 +84,31 @@ export const ROLE_VOCABULARY: readonly string[] = [
   OWNER_CANONICAL, "developer", "designer", "monetization",
 ];
 
-/** Is this role one of the four? Reporting only — never a gate. */
+/**
+ * NUMBERED INSTANCES. Several agents may hold the SAME role at once, and the convention (chosen
+ * 2026-09-10) is a trailing number: `developer1`, `developer2`, `developer3`. They are distinct
+ * IDENTITIES — a separate worktree, mailbox, id file and session each — and nothing here collapses
+ * them; only the vocabulary report treats them as instances of one function.
+ *
+ * `baseRole("developer2") === "developer"`. A role that is already in the vocabulary is returned
+ * unchanged, so a genuine name ending in a digit is never mangled.
+ *
+ * NOT stripped for identity, ever: `canonicalRole()` leaves them alone, because `worktrees/developer2`
+ * and `worktrees/developer1` are different working directories and merging the names would recreate
+ * the failure that made livegita's one developer read as two agents (see roleAliases).
+ */
+export function baseRole(role: string | null | undefined): string {
+  const r = (role || "").trim().toLowerCase();
+  if (!r || ROLE_VOCABULARY.includes(r)) return r;
+  const m = /^([a-z][a-z0-9-]*?)-?(\d+)$/.exec(r);
+  return m && m[1] ? m[1] : r;
+}
+
+/** Is this role one of the four, or a numbered instance of one? Reporting only — never a gate. */
 export function inVocabulary(role: string | null | undefined): boolean {
   if (!role) return false;
   const r = role.trim().toLowerCase();
-  return isOwnerRole(r) || ROLE_VOCABULARY.includes(r);
+  return isOwnerRole(r) || ROLE_VOCABULARY.includes(r) || ROLE_VOCABULARY.includes(baseRole(r));
 }
 
 /** Is this role name the orchestrator, under ANY of its spellings? The only owner test in the codebase. */

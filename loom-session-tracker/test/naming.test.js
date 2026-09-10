@@ -410,3 +410,38 @@ suite("tracker: within ONE project, the frame that signs beats the longer frame 
       "the SIGNING frame owns the role, though the other is 200 KB longer and same-project");
   })();
 });
+
+// ── numbered instances: several agents in the same role ─────────────────────────────────────────
+
+suite("naming: developer1/2/3 are instances of one role, and distinct identities", () => {
+  const { baseRole, inVocabulary, canonicalRole } = load("naming.js");
+  for (const [role, base] of [["developer1", "developer"], ["developer2", "developer"],
+                              ["developer-3", "developer"], ["designer2", "designer"]]) {
+    eq(baseRole(role), base, `${role} is an instance of ${base}`);
+    ok(inVocabulary(role), `${role} counts as on-vocabulary, so live.sh does not report it as drift`);
+  }
+  // A vocabulary name is never mangled, even ending in a digit-like suffix.
+  eq(baseRole("developer"), "developer", "the bare role is left alone");
+  eq(baseRole("product-owner"), "product-owner");
+  eq(baseRole("lowpoly"), "lowpoly", "a non-vocabulary name with no number is unchanged");
+  ok(!inVocabulary("lowpoly"), "and still reported as off-vocabulary");
+
+  // IDENTITY is never collapsed: each instance has its own worktree and mailbox.
+  const repo = makeRepo({ developer1: {}, developer2: {} }, "instances");
+  eq(canonicalRole(repo, "developer2"), "developer2",
+    "canonicalRole must NOT strip the number — worktrees/developer1 and /developer2 are different dirs");
+});
+
+suite("naming: instances never score each other, and an underscore form is invisible", () => {
+  const roster = new Set(["developer1", "developer2"]);
+  const mk = (r) => "\nLOOMROLE=" + r + "\n";
+  eq(classify("work" + mk("developer2"), roster, null).role, "developer2", "sign-off");
+  eq(classify("worktrees/developer2/a worktrees/developer2/b", roster, null).role, "developer2", "path");
+  // 6 mentions of one instance and 1 of the other: 0.857 purity, above the 0.8 floor.
+  eq(classify("worktrees/developer1/a ".repeat(6) + "worktrees/developer2/b", roster, null).role,
+    "developer1", "the dominant instance wins; there is no prefix leak between them");
+  // The trap: both regexes are [a-z][a-z0-9-]+, so an underscore makes a role invisible to BOTH signals.
+  const under = new Set(["developer_2"]);
+  eq(classify("x" + mk("developer_2"), under, null).role, null, "underscore names cannot be signed");
+  eq(classify("worktrees/developer_2/a", under, null).role, null, "nor detected by path");
+});
