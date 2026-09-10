@@ -96,6 +96,16 @@ MUTATIONS = [
   "} else if (decl && !isOwnerRole(decl.role) && this.repoFilter) {",
   "} else if (decl && !isOwnerRole(decl.role) && this.repoFilter && Boolean(0)) {"),
 
+ ("the model policy switches an owner-named role when the project is untagged",
+  "src/models.ts",
+  "      if (isOwnerRole(role)) continue;",
+  "      if (isOwnerRole(role) && Boolean(0)) continue;"),
+
+ ("the model policy types into the orchestrator's own frame",
+  "src/models.ts",
+  "      if (wid && orchestratorFrame && wid === orchestratorFrame) continue;",
+  "      if (wid && orchestratorFrame && wid === orchestratorFrame && Boolean(0)) continue;"),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",

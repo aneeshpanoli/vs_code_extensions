@@ -445,3 +445,63 @@ suite("naming: instances never score each other, and an underscore form is invis
   eq(classify("x" + mk("developer_2"), under, null).role, null, "underscore names cannot be signed");
   eq(classify("worktrees/developer_2/a", under, null).role, null, "nor detected by path");
 });
+
+// ── the model policy must never type into the orchestrator ───────────────────────────────────────
+
+suite("models: an owner-named role is never switched, tagged or not", () => {
+  // shwab_docker's `productowner` sat pending in model-policy.json because the policy ran 30 seconds
+  // before its orchestrator.json was written, and an UNTAGGED project exempts nothing.
+  const { ModelPolicy } = load("models.js");
+  const repo = makeRepo({ productowner: {}, po: {}, developer1: {} }, "models-owner");
+  const p = new ModelPolicy(repo);
+  const models = new Map([
+    ["productowner", { model: "Fable 5.1", effort: null }],
+    ["po", { model: "Fable 5.1", effort: null }],
+    ["developer1", { model: "Fable 5.1", effort: null }],
+  ]);
+  const live = new Set(["productowner", "po", "developer1"]);
+  const v = p.check(models, null, live);                       // null = this project is UNTAGGED
+  eq(v.map((x) => x.role), ["developer1"], "only the worker is switched; both owner spellings exempt");
+});
+
+suite("models: the orchestrator's FRAME is never switched, whatever role the content says", () => {
+  // The 2026-09-10 report: 16 `/model claude-opus-5` messages landed in tfg_ua's orchestrator, which
+  // replied "that is a CLI command, and I cannot switch models from inside the session". Four buses
+  // carry a `developer1`, so a by-name injection can content-resolve into the wrong tab entirely.
+  const { ModelPolicy } = load("models.js");
+  const repo = makeRepo({ developer1: {} }, "models-frame");
+  const p = new ModelPolicy(repo);
+  const models = new Map([["developer1", { model: "Fable 5.1", effort: null }]]);
+  const live = new Set(["developer1"]);
+  const PO = "wid-the-orchestrator";
+  // the tracker resolved `developer1` to the PO's own frame — the label is wrong
+  const bad = p.check(models, null, live, undefined, Date.now(), new Map([["developer1", PO]]), PO);
+  eq(bad.length, 0, "nothing is switched when the role's frame IS the orchestrator's");
+  // and the ordinary case still fires, carrying the frame so the injection is addressed, not guessed
+  const good = p.check(models, null, live, undefined, Date.now(), new Map([["developer1", "wid-dev"]]), PO);
+  eq(good.map((x) => x.role), ["developer1"]);
+  eq(good[0].webviewId, "wid-dev", "the violation carries the exact frame for --webview-id");
+});
+
+// ── role names with several words ───────────────────────────────────────────────────────────────
+
+suite("naming: a multi-word role name must be one token; underscores are invisible", () => {
+  const { baseRole, inVocabulary } = load("naming.js");
+  // "Social Worker 1" — the forms that work, and the one that silently does not.
+  const roster = new Set(["socialworker1", "social-worker-1"]);
+  const mk = (r) => "\nLOOMROLE=" + r + "\n";
+  for (const nm of ["socialworker1", "social-worker-1"]) {
+    eq(classify("x" + mk(nm), roster, null).role, nm, `${nm} resolves from its sign-off`);
+    eq(classify(`worktrees/${nm}/a`, roster, null).role, nm, `${nm} resolves from its worktree`);
+  }
+  eq(baseRole("socialworker1"), "socialworker", "the instance number is stripped for the vocabulary report");
+  eq(baseRole("social-worker-1"), "social-worker");
+  ok(!inVocabulary("socialworker1"), "and it is honestly reported as off the standard four");
+  // The trap, stated once more where a new role gets named: BOTH regexes are [a-z][a-z0-9-]+.
+  const under = new Set(["social_worker_1"]);
+  eq(classify("x" + mk("social_worker_1"), under, null).role, null, "an underscore name cannot be signed");
+  eq(classify("worktrees/social_worker_1/a", under, null).role, null, "nor found by its worktree");
+  // A capitalised sign-off still matches: the marker regex is case-insensitive and lowercases.
+  eq(classify("x" + mk("SocialWorker1"), new Set(["socialworker1"]), null).role, "socialworker1",
+    "case does not matter in the marker, but the ROSTER name must be lowercase");
+});

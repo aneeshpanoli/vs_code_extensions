@@ -98,7 +98,9 @@ export function activate(context: vscode.ExtensionContext) {
       // `/model` is a COMMAND: only an idle composer executes it. See dispatch.ts.
       const live = new Set(eligibleTargets(tracker.view(), busy, "command", repo).map((t) => t.role));
       const idleModels = new Map(Array.from(tracker.modelState()).filter(([r]) => live.has(r)));
-      for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium)) {
+      const frameOf = new Map(tracker.view().map((a) => [a.role, a.webviewId] as [string, string]));
+      for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium, Date.now(),
+                                        frameOf, orch ? orch.webviewId ?? null : null)) {
         // Toast the first attempt; retries stay quiet in the status bar so a stuck session
         // cannot spam notifications every backoff window.
         const what = `${v.role} is on ${v.model} (orchestrator-only tier) — switching to ${target}`;

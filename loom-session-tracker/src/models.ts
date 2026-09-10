@@ -17,6 +17,8 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+
+import { isOwnerRole } from "./naming";
 import { execFile } from "child_process";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
@@ -94,7 +96,13 @@ function saveState(repo: string, st: PolicyState): void {
   } catch { /* never throw from a tick */ }
 }
 
-export interface ModelViolation { repo: string; role: string; model: string; attempt: number; }
+export interface ModelViolation { repo: string; role: string; model: string; attempt: number;
+  /** The exact frame the tracker resolved for this role. `/model` is addressed to THIS, never to the
+   *  role name alone: measured 2026-09-10, four buses each carry a `developer1`, and a by-name
+   *  injection content-resolved into tfg_ua's ORCHESTRATOR — 16 `/model claude-opus-5` messages
+   *  landed in the PO's composer, which replied "that is a CLI command, and I cannot switch models
+   *  from inside the session". Addressing the frame removes the guesswork entirely. */
+  webviewId?: string | null; }
 
 export class ModelPolicy {
   constructor(private repo: string | null) {}
@@ -105,13 +113,22 @@ export class ModelPolicy {
    * stuck session is retried periodically instead of every tick — and never silently abandoned.
    */
   check(models: Map<string, ModelInfo | null>, orchestratorRole: string | null,
-        liveRoles: Set<string>, premium: string[] = DEFAULT_PREMIUM, now = Date.now()): ModelViolation[] {
+        liveRoles: Set<string>, premium: string[] = DEFAULT_PREMIUM, now = Date.now(),
+        frames: Map<string, string> = new Map(), orchestratorFrame: string | null = null): ModelViolation[] {
     if (!this.repo) return [];
     const st = loadState(this.repo);
     const out: ModelViolation[] = [];
     for (const [role, info] of models) {
       if (!info || !liveRoles.has(role)) continue;
       if (orchestratorRole && role === orchestratorRole) continue;      // the exempt session
+      // Exempt by NAME as well as by tag: shwab_docker's `productowner` was pending here because the
+      // policy ran 30s before its orchestrator.json was written, and an untagged project exempts
+      // nothing. An owner-named role is never a worker, tag or no tag.
+      if (isOwnerRole(role)) continue;
+      // Exempt by FRAME: if the frame the tracker resolved for this role IS the tagged orchestrator's,
+      // the role label is wrong and typing there would hit the PO. Never switch a model in that frame.
+      const wid = frames.get(role) ?? null;
+      if (wid && orchestratorFrame && wid === orchestratorFrame) continue;
       if (!isPremium(info.model, premium)) { delete st.pending[role]; continue; }   // actually compliant now
       const rec = st.pending[role];
       const sameModel = !!rec && rec.model.toLowerCase() === info.model.toLowerCase();
@@ -119,7 +136,7 @@ export class ModelPolicy {
       const attempts = (sameModel ? rec.attempts : 0) + 1;
       st.pending[role] = { model: info.model, attempts, nextAttempt: now + backoffFor(attempts),
                            lastAttemptAt: new Date(now).toISOString() };
-      out.push({ repo: this.repo, role, model: info.model, attempt: attempts });
+      out.push({ repo: this.repo, role, model: info.model, attempt: attempts, webviewId: wid });
     }
     saveState(this.repo, st);
     return out;
@@ -144,8 +161,11 @@ export class ModelPolicy {
   enforce(v: ModelViolation, targetModel: string, done?: (ok: boolean, note: string) => void): void {
     // --repo: role names are PROJECT-SCOPED. Without it a `/model` nudge for a bare name two buses
     // share (`developer`: Gaming + livegita) can resolve to the OTHER project's frame. See inject.ts.
+    // --webview-id addresses the EXACT frame; --repo scopes the fallback. Both, because a role name
+    // alone is ambiguous the moment two buses share it, and four of them now carry `developer1`.
     execFile("python3", [LOOM_CDP, "inject", "--role", v.role, "--message", `/model ${targetModel}`,
-                         "--submit", ...(v.repo ? ["--repo", v.repo] : [])],
+                         "--submit", ...(v.repo ? ["--repo", v.repo] : []),
+                         ...(v.webviewId ? ["--webview-id", v.webviewId] : [])],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
         const ok = !err;
