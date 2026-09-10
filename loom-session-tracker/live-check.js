@@ -1,0 +1,178 @@
+#!/usr/bin/env node
+// live-check.js — assert, against the RUNNING editor and the REAL bus, the things the unit tests
+// cannot: that the world still looks the way the code assumes it does.
+//
+// WHY THIS EXISTS. The suite is thorough (308 checks, 95% of lines) and it did not catch a single one
+// of the four defects found on 2026-09-08/09. It could not: every fixture in it was written from the
+// same model of the world as the code, so where the model was wrong the tests agreed with it.
+//   * board fixtures always listed the role the test then tagged — so "the tag names `product-owner`,
+//     which no board carries, so there is no transcript and the cycle can never fire" had no fixture;
+//   * every test supplied ONE window's frames — so "readFrames is editor-wide, and the only candidate
+//     belongs to another project" had no fixture;
+//   * every test's orchestrator frame carried a LOOMROLE=product-owner sign-off — so "real ones do
+//     not, and cannot be tagged at all" had no fixture.
+// Coverage says which lines ran. It cannot say which realities were considered. This file is the
+// other half: a small set of invariants checked against what is actually there, so the next drift
+// between assumption and reality is one command away instead of a bespoke script.
+//
+// READ-ONLY. It opens a CDP read and reads files. It never injects, never writes to the bus, never
+// closes anything. Safe to run against a live working editor at any time.
+//
+//   ./live-check.js            (or: ELECTRON_RUN_AS_NODE=1 codium live-check.js)
+
+const path = require("path");
+const OUT = path.join(__dirname, "out");
+const { readFrames } = require(path.join(OUT, "cdp.js"));
+const { detectOwner, attributeRepo, classify } = require(path.join(OUT, "roles.js"));
+const { busRepos, boardRoles } = require(path.join(OUT, "registry.js"));
+const { getOrchestrator } = require(path.join(OUT, "orchestrator.js"));
+const { isBusy } = require(path.join(OUT, "sessions.js"));
+const { boardSessionId, transcriptFor, readTranscriptContext } = require(path.join(OUT, "context.js"));
+const memory = require(path.join(OUT, "memory.js"));
+const { scanWorktrees } = require(path.join(OUT, "health.js"));
+
+const results = [];
+const record = (level, name, detail) => results.push({ level, name, detail });
+const pass = (n, d) => record("PASS", n, d);
+const warn = (n, d) => record("WARN", n, d);
+const fail = (n, d) => record("FAIL", n, d);
+
+(async () => {
+  const repos = busRepos();
+  const frames = (await readFrames()).filter((f) => f.webviewId);
+  if (!frames.length) {
+    fail("CDP read", "no frames — is the editor running with --remote-debugging-port?");
+    return report();
+  }
+  pass("CDP read", `${frames.length} webview frame(s) across the editor`);
+
+  // Classify every frame the way the tracker does.
+  const panels = frames.map((f) => {
+    const repo = attributeRepo(f.text, repos).repo;
+    const role = repo ? classify(f.text, new Set(boardRoles(repo))).role : null;
+    return { wid: f.webviewId, repo, role, strong: detectOwner(f.text),
+             pct: f.contextPct, chars: f.text.length, busy: isBusy(f.text) };
+  });
+  const candidates = panels.filter((p) => !p.role && (p.strong || p.repo));
+
+  // ── 1. one frame is at most one project's orchestrator ────────────────────────────────────
+  // The 2026-09-09 defect: ownerView() is editor-wide, so one shwab_docker frame was tagged as the
+  // orchestrator of Gaming, funisland AND livegita at once.
+  const byFrame = new Map();
+  for (const repo of repos) {
+    const tag = getOrchestrator(repo);
+    if (tag && tag.webviewId) byFrame.set(tag.webviewId, [...(byFrame.get(tag.webviewId) || []), repo]);
+  }
+  const shared = [...byFrame.entries()].filter(([, rs]) => rs.length > 1);
+  if (shared.length) {
+    fail("one frame, one orchestrator",
+      shared.map(([w, rs]) => `${w.slice(0, 8)} is tagged by ${rs.join(", ")}`).join("; "));
+  } else pass("one frame, one orchestrator", `${byFrame.size} tag(s), none shared`);
+
+  // ── 2. every tag resolves to a live, attributable frame ───────────────────────────────────
+  for (const repo of repos) {
+    const tag = getOrchestrator(repo);
+    if (!tag) continue;
+    const mine = candidates.filter((c) => c.repo === repo);
+    const hit = mine.find((c) => c.wid === tag.webviewId);
+    if (hit) pass(`${repo}: tag resolves`, `${tag.role} @ ${hit.wid.slice(0, 8)}`);
+    else if (mine.length) {
+      warn(`${repo}: tag is stale`,
+        `tagged ${String(tag.webviewId).slice(0, 8)}, which is not a frame of this project. ` +
+        `Click the ★ on ${mine.map((c) => c.wid.slice(0, 8)).join(" or ")} to re-point it.`);
+    } else {
+      warn(`${repo}: tag is stale`, `tagged ${String(tag.webviewId).slice(0, 8)}, and no session in ` +
+        `this project is currently offerable as its orchestrator`);
+    }
+  }
+
+  // ── 3. a tagged orchestrator has SOME way to read its context ─────────────────────────────
+  // The defect this exists for: `product-owner` is on no board, so boardSessionId is null, so with a
+  // transcript-only design the cycle sat inert forever.
+  for (const repo of repos) {
+    const tag = getOrchestrator(repo);
+    if (!tag) continue;
+    const sid = boardSessionId(repo, tag.role);
+    const file = sid ? transcriptFor(sid) : null;
+    const frame = candidates.find((c) => c.wid === tag.webviewId);
+    const panelPct = frame ? frame.pct : null;
+    if (file) pass(`${repo}: context source`, `transcript ${path.basename(file)}`);
+    else if (panelPct !== null) pass(`${repo}: context source`, `panel says ${panelPct}% used`);
+    else if (!frame) {
+      // Don't blame the compact button for a tag that resolves to no panel at all — say which it is.
+      const mine = candidates.filter((c) => c.repo === repo && c.pct !== null);
+      warn(`${repo}: context source`,
+        `role "${tag.role}" has no board session_id, and the tagged frame is not here to read a ` +
+        `percentage off` + (mine.length
+          ? ` — but ${mine.map((c) => `${c.wid.slice(0, 8)} is at ${c.pct}%`).join(", ")}, so re-pointing the tag is all it needs`
+          : ``));
+    } else warn(`${repo}: context source`,
+      `role "${tag.role}" has no board session_id and its panel shows no compact button ` +
+      `(the button only renders past 50% used) — the cycle holds until one of those appears`);
+  }
+
+  // ── 4. what the cycle would do RIGHT NOW, per project ─────────────────────────────────────
+  for (const repo of repos) {
+    const tag = getOrchestrator(repo);
+    if (!tag) continue;
+    const mine = candidates.filter((c) => c.repo === repo);
+    const strong = mine.filter((c) => c.strong);
+    const known = mine.find((c) => c.wid === tag.webviewId) || (strong.length === 1 ? strong[0] : undefined);
+    const state = memory.loadState(repo);
+    const memFile = memory.defaultMemoryFile(repo, tag.role);
+    const mem = memory.statMemory(memFile);
+    const step = memory.decide({
+      repo, role: tag.role, webviewId: known ? known.wid : null,
+      reading: memory.readOrchestratorContext(repo, tag.role, state),
+      busy: known ? known.busy : false, frameSeen: !!known,
+      panelPct: known ? known.pct : null, panelChars: known ? known.chars : null,
+      memoryFile: memFile, memoryMtime: mem.mtime, memorySize: mem.size,
+      now: Date.now(), cfg: memory.DEFAULT_CONFIG, state,
+    });
+    record(step.kind === "none" ? "PASS" : "INFO", `${repo}: next step`, `${step.kind} — ${step.note}`);
+  }
+
+  // ── 5. every board role with a session_id has a transcript ────────────────────────────────
+  let missing = [];
+  for (const repo of repos) {
+    for (const role of boardRoles(repo)) {
+      const sid = boardSessionId(repo, role);
+      if (sid && !transcriptFor(sid)) missing.push(`${repo}/${role}`);
+    }
+  }
+  if (missing.length) {
+    // Bus drift, not an extension fault: a board keeps a session_id long after that transcript is
+    // archived or deleted. It matters because it is the only thing "reopen this session" can use.
+    warn("board session_ids resolve", `${missing.length} point at no transcript (bus drift; ` +
+      `"Reopen sessions" cannot restore these): ${missing.slice(0, 6).join(", ")}` +
+      (missing.length > 6 ? `, +${missing.length - 6} more` : ""));
+  }
+  else pass("board session_ids resolve", "every recorded session_id has a transcript");
+
+  // ── 6. no rostered role's worktree reads as orphaned ──────────────────────────────────────
+  // The 2026-09-08 defect: a broken roster made 7 live roles' worktrees look removable.
+  for (const repo of repos) {
+    const root = path.join(process.env.HOME, "Containers", repo);
+    const found = scanWorktrees(repo, root, new Set());
+    if (!found.length) continue;
+    const roster = new Set(boardRoles(repo));
+    const wrong = found.filter((w) => w.orphaned && roster.has(w.role));
+    if (wrong.length) fail(`${repo}: worktree roster`, `${wrong.map((w) => w.role).join(", ")} on the board but flagged orphaned`);
+    else pass(`${repo}: worktree roster`, `${found.length} worktree(s), ${found.filter((w) => w.orphaned).length} orphaned, none rostered`);
+  }
+
+  // ── 7. what is offerable, for the record ──────────────────────────────────────────────────
+  for (const c of candidates) {
+    record("INFO", "candidate", `${c.wid.slice(0, 8)} repo=${c.repo || "unattributed"} ` +
+      `${c.strong ? "STRONG" : "weak"} ctx=${c.pct === null ? "-" : c.pct + "%"} chars=${c.chars}`);
+  }
+  report();
+})().catch((e) => { fail("live-check", String((e && e.stack) || e)); report(); });
+
+function report() {
+  const C = { PASS: "\x1b[32m", WARN: "\x1b[33m", FAIL: "\x1b[31m", INFO: "\x1b[36m" };
+  for (const r of results) console.log(`  ${C[r.level]}${r.level}\x1b[0m ${r.name}: ${r.detail}`);
+  const n = (l) => results.filter((r) => r.level === l).length;
+  console.log(`\n${n("PASS")} passed, ${n("WARN")} warning(s), ${n("FAIL")} failure(s)`);
+  process.exit(n("FAIL") ? 1 : 0);
+}

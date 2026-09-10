@@ -199,7 +199,21 @@ covered unless every non-whitespace byte on it is inside a zero-count V8 range;
 tsc's import prologue is excluded from the denominator). The CDP protocol is driven against a
 fake DevTools server (`test/fake-devtools.js`) — HTTP discovery plus a websocket
 that answers auto-attach and `Runtime.evaluate` — so the reader's nesting,
-two-pass and timeout behaviour is tested without a browser. Suite takes ~10s
+two-pass and timeout behaviour is tested without a browser.
+
+**`./live-check.js`** (or `npm run live`) is the other half, and exists because the
+suite caught none of the four defects found on 2026-09-08/09: every fixture in it
+was written from the same model of the world as the code, so where the model was
+wrong the tests agreed with it. Board fixtures always listed the role the test
+then tagged; every test supplied one window's frames; every test's orchestrator
+frame carried a `LOOMROLE=` sign-off. Coverage says which lines ran, not which
+realities were considered. So live-check asserts invariants against the RUNNING
+editor and the real bus: one frame is at most one project's orchestrator, every
+tag resolves to an attributable frame of its own project, a tagged orchestrator
+has some way to read its context, no rostered role's worktree reads as orphaned,
+every board `session_id` resolves to a transcript — and it prints what the memory
+cycle would do right now, per project. Read-only: it never injects, writes or
+closes anything, so it is safe against a working editor. Suite takes ~10s
 (one test deliberately waits out a polling interval). The runner forces `HOME` to a throwaway directory, so tests can
 never touch the real `~/.claude/loom` bus.
 
