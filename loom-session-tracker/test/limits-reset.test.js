@@ -39,11 +39,15 @@ suite("limits: a fresh exact clock pulls an older, slid deadline earlier", () =>
   // then read as "resets 9:50pm" (exact), the earlier of the two must win.
   const repo = makeRepo({ developer: {} }, "limits-min");
   const w = new LimitWatcher(repo);
-  const t0 = new Date("2026-09-09T21:00:00").getTime();
-  w.scan(new Map([["developer", detectLimit("You've hit your session limit · resets in 2h", t0)]]), new Set(["developer"]));
+  // Anchored to the REAL clock: scan() judges expiry against Date.now(), so a fixed 2026-09-09
+  // timestamp expired the moment the wall clock passed it and the record was (correctly) skipped.
+  const t0 = Date.now();
+  w.scan(new Map([["developer", detectLimit("You've hit your session limit · resets in 5h", t0)]]), new Set(["developer"]));
   const slid = w.limitedRoles().developer.notBefore;
-  w.scan(new Map([["developer", detectLimit("You've hit your session limit · resets 9:50pm (America/Los_Angeles)", t0 + 60_000)]]), new Set(["developer"]));
+  const soon = new Date(t0 + 2 * 3_600_000);                       // an exact clock 2h out, earlier than "in 5h"
+  const clock = `${((soon.getHours() + 11) % 12) + 1}:${String(soon.getMinutes()).padStart(2, "0")}${soon.getHours() >= 12 ? "pm" : "am"}`;
+  w.scan(new Map([["developer", detectLimit(`You've hit your session limit · resets ${clock} (America/Los_Angeles)`, t0 + 60_000)]]), new Set(["developer"]));
   const exact = w.limitedRoles().developer.notBefore;
   ok(exact < slid, `exact clock (${new Date(exact).toLocaleTimeString()}) must replace the later slid deadline (${new Date(slid).toLocaleTimeString()})`);
-  eq(new Date(exact).getMinutes(), 50, "9:50pm kept");
+  eq(new Date(exact).getMinutes(), soon.getMinutes(), "the exact clock's minute is kept");
 });
