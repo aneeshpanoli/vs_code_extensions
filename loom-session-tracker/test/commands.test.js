@@ -371,7 +371,7 @@ suite("tick: a cycle whose memory never arrives warns and clears nothing", async
   transcript("-rpt-c", "sid-rptC", 800000);
   // A save asked for long enough ago that the timeout has passed, and no memory.md was written.
   writeJson(busPath(repo, "context-state.json"),
-    { phase: "saving", phaseAt: Date.now() - 30 * 60_000, memoryBaseline: 0, sessionId: "sid-rptC" });
+    { phase: "saving", idleTicks: 9, phaseAt: Date.now() - 30 * 60_000, memoryBaseline: 0, sessionId: "sid-rptC" });
   fs.rmSync(path.join(LOOM, "context-debug.json"), { force: true });   // this file is shared
   const off = await activate([poFrame("wid-po", repo)]);
   try {

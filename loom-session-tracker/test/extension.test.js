@@ -291,6 +291,13 @@ suite("context memory: /clear follows only once the memory file is on disk", asy
     // Now the orchestrator writes it.
     writeJson(busPath(repo, "po", "memory.md"), {});      // just to make the directory
     fs.writeFileSync(busPath(repo, "po", "memory.md"), "# working memory\n" + "x".repeat(500));
+    // A banked file is not enough on its own: the orchestrator must also read IDLE on consecutive
+    // ticks, so a turn that merely paused between tool calls is not mistaken for a finished one.
+    await vscode.commands.executeCommand("loomSessionTracker.refresh");
+    await settle(60);
+    const mid = readJson(busPath(repo, "context-state.json"));
+    eq(mid.phase, "saving", "still saving after ONE idle reading — the run is not confirmed yet");
+    eq(mid.idleTicks, 1, "and it counts that reading");
     await vscode.commands.executeCommand("loomSessionTracker.refresh");
     await settle(60);
     eq(readJson(busPath(repo, "context-state.json")).phase, "clearing", "now it clears");

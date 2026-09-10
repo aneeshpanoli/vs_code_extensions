@@ -76,3 +76,17 @@ with tempfile.TemporaryDirectory() as home:
 print()
 if FAILS: print(f"\033[31m{len(FAILS)} failed\033[0m"); sys.exit(1)
 print("\033[32mall passed\033[0m")
+
+# ── the busy guard (added 2026-09-10) ───────────────────────────────────────────────────────────
+with tempfile.TemporaryDirectory() as home:
+    m = load(home)
+    print()
+    check("a working tab reads busy", m.frame_is_busy("running the suite\nClaude is working"), True)
+    check("the interrupt hint reads busy", m.frame_is_busy("x" * 3000 + "esc to interrupt"), True)
+    check("an idle tab does not", m.frame_is_busy("Ready for your input."), False)
+    # Only the TAIL is examined: a conversation that DISCUSSES the words is not mid-turn. This is the
+    # same rule as the extension's sessions.isBusy(), and the reason it is a tail check at all.
+    check("the words far above the composer do not",
+          m.frame_is_busy('we discussed "Claude is working" earlier ' + "x" * 2500), False)
+    check("empty text is not busy", m.frame_is_busy(""), False)
+    check("None is not busy", m.frame_is_busy(None), False)

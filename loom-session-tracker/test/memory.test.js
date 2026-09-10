@@ -114,7 +114,7 @@ suite("memory: a frame we cannot see this tick is not typed into", () => {
   eq(s.kind, "none", "no save");
   match(s.note, /not seen this tick/, "says why");
   const clearing = decide(input({
-    frameSeen: false, state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
+    frameSeen: false, state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000 },
     memoryMtime: 5000, memorySize: 4096,
   }));
   eq(clearing.kind, "none", "and no clear either");
@@ -136,7 +136,7 @@ suite("memory: disabled means disabled", () => {
 
 // ── saving -> clearing: the dangerous transition ────────────────────────────
 const saving = (over = {}) => input({
-  state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000, sessionId: "s-old",
+  state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000, sessionId: "s-old",
            transcriptDir: "/tmp/x" },
   ...over,
 });
@@ -168,7 +168,7 @@ suite("memory: a banked memory still waits for the turn to end before clearing",
 });
 
 suite("memory: if the memory is never written the cycle ABORTS and clears nothing", () => {
-  const s = decide(saving({ state: { phase: "saving", phaseAt: NOW - 11 * MIN, memoryBaseline: 1000 } }));
+  const s = decide(saving({ state: { phase: "saving", idleTicks: 9, phaseAt: NOW - 11 * MIN, memoryBaseline: 1000 } }));
   eq(s.kind, "abort", "aborts");
   eq(s.next.phase, "watch", "back to watching");
   eq(s.next.aborts, 1, "counted");
@@ -211,7 +211,7 @@ suite("memory: a clear that never lands aborts, and says the memory is safe", ()
 suite("memory: the cycle survives an IDE restart", () => {
   const repo = makeRepo({ po: {} });
   eq(loadState(repo).phase, "watch", "fresh bus starts watching");
-  saveState(repo, { phase: "saving", phaseAt: 123, memoryBaseline: 5 });
+  saveState(repo, { phase: "saving", idleTicks: 9, phaseAt: 123, memoryBaseline: 5 });
   eq(loadState(repo).phase, "saving", "read back after a 'restart'");
   eq(loadState(repo).memoryBaseline, 5, "with its baseline");
   ok(readJson(busPath(repo, "context-state.json")).updatedAt, "stamped");
@@ -351,7 +351,7 @@ suite("memory: only one window may start a cycle", () => {
 
 suite("memory: the second window does NOT also send /clear", () => {
   // The one that actually destroys something: a duplicate /clear lands in the freshly restored session.
-  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0,
+  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 0,
                    owner: "win-A", ownerAt: NOW - MIN };
   const mine = decide(input({ windowId: "win-A", state: saving, memoryMtime: NOW, memorySize: 5000 }));
   eq(mine.kind, "clear", "the owner clears");
@@ -360,7 +360,7 @@ suite("memory: the second window does NOT also send /clear", () => {
 });
 
 suite("memory: a window that goes away does not strand the project", () => {
-  const stale = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0,
+  const stale = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 0,
                   owner: "win-gone", ownerAt: NOW - LEASE_MS - 1 };
   const s = decide(input({ windowId: "win-B", state: stale, memoryMtime: NOW, memorySize: 5000 }));
   eq(s.kind, "clear", "the lease has expired, so another window may take over");
@@ -368,7 +368,7 @@ suite("memory: a window that goes away does not strand the project", () => {
 });
 
 suite("memory: the owner keeps its claim alive while it waits", () => {
-  const held = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const held = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
                  owner: "win-A", ownerAt: NOW - LEASE_MS + 1000 };   // past half-life
   const s = decide(input({ windowId: "win-A", state: held }));       // still waiting for the file
   eq(s.kind, "none", "nothing to do yet");
@@ -385,14 +385,14 @@ suite("memory: a finished cycle releases the claim", () => {
 
 suite("memory: an aborted cycle releases the claim too", () => {
   const s = decide(input({ windowId: "win-A", state: {
-    phase: "saving", phaseAt: NOW - 11 * MIN, memoryBaseline: 0, owner: "win-A", ownerAt: NOW - 1000 } }));
+    phase: "saving", idleTicks: 9, phaseAt: NOW - 11 * MIN, memoryBaseline: 0, owner: "win-A", ownerAt: NOW - 1000 } }));
   eq(s.kind, "abort", "gives up");
   eq(s.next.owner, undefined, "claim released, so a retry is not blocked by a dead lease");
 });
 
 suite("memory: state written before leases existed is adoptable", () => {
   // 0.13.x wrote no owner at all; an in-flight cycle must not deadlock on upgrade.
-  const legacy = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0 };
+  const legacy = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 0 };
   const s = decide(input({ windowId: "win-B", state: legacy, memoryMtime: NOW, memorySize: 5000 }));
   eq(s.kind, "clear", "an unowned cycle is claimable");
   eq(s.next.owner, "win-B", "and gets an owner from here on");
@@ -401,7 +401,7 @@ suite("memory: state written before leases existed is adoptable", () => {
 suite("memory: re-tagging mid-cycle abandons it rather than clearing on the wrong file", () => {
   // The baseline was taken from po/memory.md. If the tag moves to another role, its memory.md may
   // already exist and be newer — which would read as "banked" and send /clear to the new session.
-  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
                    role: "po", memoryFile: "/m/po/memory.md", owner: "win-A", ownerAt: NOW };
   const s = decide(input({ windowId: "win-A", state: saving, role: "other",
                            memoryFile: "/m/other/memory.md", memoryMtime: NOW, memorySize: 9000 }));
@@ -412,7 +412,7 @@ suite("memory: re-tagging mid-cycle abandons it rather than clearing on the wron
 });
 
 suite("memory: pointing contextMemoryFile somewhere else mid-cycle does the same", () => {
-  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
                    role: "po", memoryFile: "/m/po/memory.md" };
   const s = decide(input({ state: saving, memoryFile: "/elsewhere/memory.md",
                            memoryMtime: NOW, memorySize: 9000 }));
@@ -420,8 +420,51 @@ suite("memory: pointing contextMemoryFile somewhere else mid-cycle does the same
 });
 
 suite("memory: an unchanged target proceeds normally", () => {
-  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
                    role: "po", memoryFile: "/tmp/demo/po/memory.md" };   // == the input's file
   eq(decide(input({ state: saving, memoryMtime: 2000, memorySize: 4096 })).kind, "clear",
     "same role, same file -> the cycle continues");
+});
+
+// ── the orchestrator must be IDLE, and stay idle, before /clear ──────────────────────────────────
+
+suite("memory: /clear waits for consecutive idle readings, not one", async () => {
+  // User request 2026-09-10: "when sending clear to free context from the orchestrator, make sure it
+  // is idle in order to not disrupt the ongoing process." One idle reading is a single sample of a
+  // panel that updates several times a second — a turn pausing between tool calls reads idle.
+  const { IDLE_TICKS_REQUIRED } = load("memory.js");
+  const banked = { phase: "saving", memoryBaseline: NOW - MIN, role: "po",
+                   memoryFile: "/tmp/demo/po/memory.md", owner: "win-A", ownerAt: NOW };
+  const saved = { memoryMtime: NOW, memorySize: MIN_MEMORY_BYTES + 10 };
+
+  // busy -> never clears, and the idle run resets
+  let st = { ...banked, idleTicks: IDLE_TICKS_REQUIRED - 1 };
+  const busy = decide(input({ state: st, busy: true, ...saved }));
+  eq(busy.kind, "none", "a busy orchestrator is never cleared");
+  match(busy.note, /waiting for the turn to end/, "and says why");
+  eq(busy.next.idleTicks, 0, "one busy reading resets the run — it must be UNBROKEN");
+
+  // idle, but not yet long enough
+  st = { ...banked, idleTicks: 0 };
+  const first = decide(input({ state: st, busy: false, ...saved }));
+  eq(first.kind, "none", `one idle reading is not enough (need ${IDLE_TICKS_REQUIRED})`);
+  match(first.note, /idle for 1 of 2 checks/, "reports progress toward the confirmation");
+  eq(first.next.idleTicks, 1);
+
+  // idle again -> now it clears
+  const second = decide(input({ state: first.next, busy: false, ...saved }));
+  eq(second.kind, "clear", "consecutive idle readings allow the clear");
+  eq(second.message, CLEAR_MESSAGE);
+  eq(second.next.idleTicks, 0, "the counter resets once the clear is sent");
+});
+
+suite("memory: a frame that was not seen this tick can never be cleared", () => {
+  // busy is a GUESS when the frame was not in the read, and a /clear typed into a running turn
+  // interrupts it. The save step and the clear step both require a frame we can actually see.
+  const banked = { phase: "saving", memoryBaseline: NOW - MIN, role: "po",
+                   memoryFile: "/tmp/demo/po/memory.md", idleTicks: 99 };
+  const s = decide(input({ state: banked, frameSeen: false, busy: false,
+                           memoryMtime: NOW, memorySize: MIN_MEMORY_BYTES + 10 }));
+  eq(s.kind, "none", "no frame, no clear — however idle it looks");
+  match(s.note, /not seen this tick/, "and the reason names the real uncertainty");
 });

@@ -101,7 +101,7 @@ suite("edge: the threshold is inclusive", () => {
 
 suite("edge: a memory file exactly at the minimum size counts as banked", () => {
   const saving = (size) => decide(input({
-    state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
+    state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000 },
     memoryMtime: 2000, memorySize: size,
   }));
   eq(saving(MIN_MEMORY_BYTES).kind, "clear", "exactly the minimum is a handoff");
@@ -110,7 +110,7 @@ suite("edge: a memory file exactly at the minimum size counts as banked", () => 
 
 suite("edge: the memory file must be strictly newer than the request", () => {
   const at = (mtime) => decide(input({
-    state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
+    state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000 },
     memoryMtime: mtime, memorySize: 4096,
   }));
   eq(at(1000).kind, "none", "the same mtime is the OLD file, not a save");
@@ -127,14 +127,14 @@ suite("edge: the cleared-panel threshold is exclusive", () => {
 });
 
 suite("edge: timeouts fire strictly after the window, not at it", () => {
-  const at = (age) => decide(input({ state: { phase: "saving", phaseAt: NOW - age, memoryBaseline: 0 } }));
+  const at = (age) => decide(input({ state: { phase: "saving", idleTicks: 9, phaseAt: NOW - age, memoryBaseline: 0 } }));
   eq(at(10 * MIN).kind, "none", "exactly at the 10m timeout it is still waiting");
   eq(at(10 * MIN + 1).kind, "abort", "a millisecond later it gives up");
 });
 
 suite("edge: a clock that moves backwards does not fire a timeout", () => {
   // now < phaseAt happens on an NTP correction or a suspended laptop.
-  const s = decide(input({ state: { phase: "saving", phaseAt: NOW + 3600_000, memoryBaseline: 0 } }));
+  const s = decide(input({ state: { phase: "saving", idleTicks: 9, phaseAt: NOW + 3600_000, memoryBaseline: 0 } }));
   eq(s.kind, "none", "negative elapsed time is not a timeout");
 });
 

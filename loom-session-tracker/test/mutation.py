@@ -106,6 +106,16 @@ MUTATIONS = [
   "      if (wid && orchestratorFrame && wid === orchestratorFrame) continue;",
   "      if (wid && orchestratorFrame && wid === orchestratorFrame && Boolean(0)) continue;"),
 
+ ("/clear is sent on a single idle reading, not a confirmed run",
+  "src/memory.ts",
+  "      if (idleTicks < IDLE_TICKS_REQUIRED) {",
+  "      if (idleTicks < 1) {"),
+
+ ("a busy orchestrator does not reset the idle run",
+  "src/memory.ts",
+  "                    { ...state, idleTicks: 0 });",
+  "                    { ...state });"),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",

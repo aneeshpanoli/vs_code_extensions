@@ -30,6 +30,10 @@ import { ContextReading, pct, transcriptFor, newestTranscriptIn, boardSessionId,
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
 /** A memory doc smaller than this is not a handoff — treat it as "not written yet". */
+/** Consecutive idle readings required before `/clear`. Two, because one is a single sample of a
+ *  panel that changes several times a second and a turn pausing between tool calls reads idle. */
+export const IDLE_TICKS_REQUIRED = 2;
+
 export const MIN_MEMORY_BYTES = 200;
 /** How long one window's claim on a cycle stands before another may take it over. Longer than the
  *  save and clear timeouts combined, so a live owner is never overtaken mid-cycle; short enough that
@@ -43,6 +47,9 @@ export const CLEARED_PANEL_CHARS = 4000;
 export type Phase = "watch" | "saving" | "clearing";
 
 export interface ContextState {
+  /** Consecutive ticks the orchestrator has read idle while a save is banked. Reset by any busy
+   *  reading, so it counts an UNBROKEN run, not a total. */
+  idleTicks?: number;
   phase: Phase;
   /** The orchestrator role this cycle is about, and the file it was told to write. Both are pinned
    *  at the start: if either changes mid-cycle the cycle is abandoned rather than judged against a
@@ -243,12 +250,28 @@ export function decide(input: ContextInput): Step {
       input.memoryMtime > (state.memoryBaseline ?? 0) &&
       input.memorySize >= MIN_MEMORY_BYTES;
     if (wrote) {
-      if (input.busy) return keep("memory banked; waiting for the turn to end before clearing");
+      // IDLE, AND STILL IDLE. One idle reading is a single sample of a panel that updates several
+      // times a second: a turn that has just paused between tool calls reads idle, and a `/clear`
+      // typed there interrupts work that was still going. Require CONSECUTIVE idle ticks, so a
+      // momentary gap cannot be mistaken for the end of a turn (user request, 2026-09-10: make sure
+      // the orchestrator is idle "in order to not disrupt the ongoing process").
+      // loom_cdp.py refuses a slash command into a busy composer as the last line of defence; this is
+      // the first, and it is the one that keeps the cycle from even trying.
+      if (input.busy) {
+        return keep("memory banked; waiting for the turn to end before clearing",
+                    { ...state, idleTicks: 0 });
+      }
+      const idleTicks = (state.idleTicks ?? 0) + 1;
+      if (idleTicks < IDLE_TICKS_REQUIRED) {
+        return keep(`memory banked; ${input.role} has been idle for ${idleTicks} of ` +
+                    `${IDLE_TICKS_REQUIRED} checks — confirming the turn really ended before clearing`,
+                    { ...state, idleTicks });
+      }
       return {
         kind: "clear",
         message: CLEAR_MESSAGE,
         note: `memory banked (${input.memorySize} bytes) — clearing`,
-        next: { ...state, ...claim, phase: "clearing", phaseAt: now,
+        next: { ...state, ...claim, phase: "clearing", phaseAt: now, idleTicks: 0,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
                 lastNote: "cleared after a verified save" },
       };
