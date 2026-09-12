@@ -119,3 +119,20 @@ suite("view: another project's orchestrator is not offered in this window", () =
   const p = new SessionTreeProvider(trackerOf([], [foreign]), repo);
   eq(p.getChildren(), [], "nothing to show — not even a project node");
 });
+
+suite("view: a DEAD declared frame does not hide a live orchestrator candidate", () => {
+  // 2026-09-12: shwab_docker's declared frame AND its tagged frame had both died at the restart; the
+  // real running PO was a strong candidate, and the sidebar showed nothing, because a declaration —
+  // any declaration — suppressed every other candidate for that project.
+  const { SessionTreeProvider } = load("statusView.js");
+  const repo = makeRepo({ productowner: {} }, "view-deaddecl");
+  const owners = [
+    { webviewId: "w-ghost", lastSeen: 0, busy: false, contextPct: null, repo, chars: 0, strong: true, declared: true, liveness: "stale" },
+    { webviewId: "w-real", lastSeen: Date.now(), busy: false, contextPct: null, repo, chars: 90000, strong: true, declared: false, liveness: "live" },
+  ];
+  const tracker = { view: () => [], ownerView: () => owners, sessionCount: () => null, liveRoles: () => [] };
+  const tree = new SessionTreeProvider(tracker, repo);
+  const kids = tree.getChildren(tree.getChildren()[0]);
+  const cands = kids.filter((n) => n.kind === "ownerCandidate").map((n) => n.webviewId);
+  ok(cands.includes("w-real"), `the live candidate is offered; got ${JSON.stringify(cands)}`);
+});

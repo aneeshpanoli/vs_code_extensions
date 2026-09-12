@@ -44,6 +44,9 @@ export interface OpenRequest { roles: string[]; requestedAt?: string; note?: str
 export interface Refusal { role: string; reason: string }
 export interface Plan {
   open: ReopenCandidate[];
+  /** Roles with no transcript anywhere: opened as a NEW conversation and bound with `/loom <role>`.
+   *  "Spin up the roles they need" includes roles that have never had a session. */
+  spawn: string[];
   refused: Refusal[];
   /** True when a file was present and should now be replaced with the result. */
   consumed: boolean;
@@ -67,34 +70,39 @@ export function readRequest(repo: string): OpenRequest | null {
  */
 export function planOpen(repo: string, liveRoles: Set<string>, slots: number, now = Date.now()): Plan {
   const req = readRequest(repo);
-  if (!req) return { open: [], refused: [], consumed: false };
+  if (!req) return { open: [], spawn: [], refused: [], consumed: false };
   const age = req.requestedAt ? now - Date.parse(req.requestedAt) : 0;
   if (req.requestedAt && (!Number.isFinite(age) || age > REQUEST_TTL_MS)) {
-    return { open: [], refused: req.roles.map((role) => ({ role, reason: `request is stale (older than ${REQUEST_TTL_MS / 60000}m)` })), consumed: true };
+    return { open: [], spawn: [], refused: req.roles.map((role) => ({ role, reason: `request is stale (older than ${REQUEST_TTL_MS / 60000}m)` })), consumed: true };
   }
   const roster = new Set(boardRoles(repo));
   const open: ReopenCandidate[] = [];
+  const spawn: string[] = [];
   const refused: Refusal[] = [];
   for (const raw of req.roles) {
     const role = canonicalRole(repo, raw);
     if (isOwnerRole(role)) { refused.push({ role: raw, reason: "an orchestrator is never opened this way" }); continue; }
     if (!roster.has(role)) { refused.push({ role: raw, reason: `not a role of ${repo}` }); continue; }
     if (liveRoles.has(role)) { refused.push({ role: raw, reason: "already live" }); continue; }
-    if (open.some((c) => c.role === role)) continue;                   // duplicate in one request
+    if (open.some((c) => c.role === role) || spawn.includes(role)) continue;   // duplicate in one request
+    if (open.length + spawn.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }
     const c = freshestSession(repo, role);
-    if (!c) { refused.push({ role: raw, reason: "no transcript to reopen it from" }); continue; }
-    if (open.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }
-    open.push(c);
+    if (c) open.push(c); else spawn.push(role);
   }
-  return { open, refused, consumed: true };
+  return { open, spawn, refused, consumed: true };
 }
 
 /** Replace the request with its outcome, so the orchestrator can read back what happened. */
-export function writeResult(repo: string, opened: ReopenCandidate[], refused: Refusal[]): void {
+export interface Opened { role: string; sessionId: string | null; from: "board" | "worktree" | "spawned";
+  /** The frame the tab came up in, when it could be told apart from what was already open. This is
+   *  what the orchestrator rings — it no longer has to hunt for the tab by nonce. */
+  webviewId: string | null; bound?: boolean; }
+
+export function writeResult(repo: string, opened: Opened[], refused: Refusal[]): void {
   try {
     fs.writeFileSync(file(repo), JSON.stringify({
       servedAt: new Date().toISOString(),
-      opened: opened.map((c) => ({ role: c.role, sessionId: c.sessionId, from: c.source })),
+      opened,
       refused,
     }, null, 2));
   } catch { /* a result write must never break a tick */ }

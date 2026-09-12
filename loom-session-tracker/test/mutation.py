@@ -151,6 +151,21 @@ MUTATIONS = [
   'import { readFrames } from "./cdp";',
   'import { readFrames, closeWebview } from "./cdp";\nvoid closeWebview;'),
 
+ ("clicking a role opens a stale transcript in a NEW tab (a duplicate)",
+  "src/focus.ts",
+  "  if (ageMs > FRESH_MS) {",
+  "  if (ageMs > FRESH_MS && Boolean(0)) {"),
+
+ ("a dead declared frame hides the live orchestrator candidate",
+  "src/statusView.ts",
+  '        !all.some((x) => x.declared && x.liveness === "live" && x.repo === o.repo))',
+  "        !all.some((x) => x.declared && x.repo === o.repo))"),
+
+ ("a role with no transcript is refused instead of spawned",
+  "src/requests.ts",
+  "    if (c) open.push(c); else spawn.push(role);",
+  '    if (c) open.push(c); else refused.push({ role: raw, reason: "no transcript" });'),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",

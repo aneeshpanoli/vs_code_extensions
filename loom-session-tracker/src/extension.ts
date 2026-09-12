@@ -20,7 +20,8 @@ import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
-import { planOpen, writeResult } from "./requests";
+import { planOpen, writeResult, Opened } from "./requests";
+import { planFocus } from "./focus";
 import { readFrames } from "./cdp";
 import { isOwnerRole } from "./naming";
 import { eligibleTargets, resolveOrchestrator } from "./dispatch";
@@ -254,6 +255,17 @@ export function activate(context: vscode.ExtensionContext) {
         reopenStatus.show();
       } else reopenStatus.hide();
     };
+    // Click a role in the sidebar -> its tab comes to the front. Claude's editor.open reveals an
+    // already-open session (see focus.ts); we only call it when the session is provably open.
+    context.subscriptions.push(vscode.commands.registerCommand("loomSessionTracker.focusSession",
+      async (arg: { repo?: string | null; role?: string } | undefined) => {
+        const role = arg && arg.role; const target = (arg && arg.repo) || repo;
+        if (!role) return;
+        const plan = planFocus(target, role);
+        if (plan.kind === "refuse") { vscode.window.setStatusBarMessage(`Loom: cannot show ${role} — ${plan.reason}`, 9000); return; }
+        try { await vscode.commands.executeCommand("claude-vscode.editor.open", plan.sessionId, undefined, undefined); }
+        catch (e: any) { vscode.window.showWarningMessage(`Loom: could not show ${role}: ${String(e && e.message || e)}`); }
+      }));
     context.subscriptions.push(vscode.commands.registerCommand("loomSessionTracker.reopenMissing", async () => {
       computeMissing();
       if (!missingNow.length) { vscode.window.showInformationMessage("Loom: every role session is open."); return; }
@@ -320,17 +332,39 @@ export function activate(context: vscode.ExtensionContext) {
       if (!plan.consumed) return;
       serving = true;
       try {
-        const opened: typeof plan.open = [];
+        const opened: Opened[] = [];
+        // Frames before, so each new tab can be told apart and its id handed back to the orchestrator.
+        const seen = new Set<string>();
+        try { for (const f of await readFrames()) if (f.webviewId) seen.add(f.webviewId); } catch { /* no diff */ }
+        const newFrame = async (): Promise<string | null> => {
+          await new Promise((r) => setTimeout(r, 2500));
+          try {
+            const now = (await readFrames()).filter((f) => f.webviewId && !seen.has(f.webviewId)).map((f) => String(f.webviewId));
+            for (const w of now) seen.add(w);
+            return now.length === 1 ? now[0] : null;          // ambiguous -> report nothing rather than a guess
+          } catch { return null; }
+        };
         for (const c of plan.open) {
           try {
             await vscode.commands.executeCommand("claude-vscode.editor.open", c.sessionId, undefined, undefined);
-            opened.push(c);
-          } catch (e: any) {
-            plan.refused.push({ role: c.role, reason: `open failed: ${String(e && e.message || e)}` });
-          }
+            opened.push({ role: c.role, sessionId: c.sessionId, from: c.source, webviewId: await newFrame() });
+          } catch (e: any) { plan.refused.push({ role: c.role, reason: `open failed: ${String(e && e.message || e)}` }); }
+        }
+        for (const role of plan.spawn) {
+          // A role that has never had a session: open a fresh conversation and bind it, exactly as a
+          // person would (`/loom <role>` is what records the binding). Only into the frame we watched
+          // appear — never by role name, which is how a bind once landed in another project's tab.
+          try {
+            await vscode.commands.executeCommand("claude-vscode.editor.open", undefined, undefined, undefined);
+            const wid = await newFrame();
+            if (!wid) { plan.refused.push({ role, reason: "opened a new tab but could not tell which frame it is — bind it by hand" }); continue; }
+            await new Promise<void>((res) => injectTo({ role, webviewId: wid, repo }, `/loom ${role}`, "spawn-debug.json",
+              (ok, note) => { opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: ok });
+                              if (!ok) plan.refused.push({ role, reason: `opened but binding failed: ${note}` }); res(); }));
+          } catch (e: any) { plan.refused.push({ role, reason: `spawn failed: ${String(e && e.message || e)}` }); }
         }
         writeResult(repo, opened, plan.refused);
-        debugLog({ servedOpenRequest: { opened: opened.map((c) => c.role), refused: plan.refused } });
+        debugLog({ servedOpenRequest: { opened, refused: plan.refused } });
         if (opened.length) vscode.window.setStatusBarMessage(
           `Loom: ${repo} orchestrator asked for ${opened.length} session(s) — opened`, 10000);
         else if (plan.refused.length) vscode.window.setStatusBarMessage(

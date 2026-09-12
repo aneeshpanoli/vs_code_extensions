@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.26.1",
+  "version": "0.27.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -105,6 +105,10 @@
       {
         "command": "loomSessionTracker.reopenMissing",
         "title": "Loom: Reopen missing sessions (with memory)"
+      },
+      {
+        "command": "loomSessionTracker.focusSession",
+        "title": "Loom: Show this session's tab"
       }
     ],
     "menus": {

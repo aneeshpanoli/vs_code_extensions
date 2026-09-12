@@ -55,6 +55,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
           `\n\n\u26a0 No session in THIS project matches this tag, so notifications and the ` +
           `context-memory cycle cannot reach it. Tag the right session below.`);
       it.contextValue = "loomOrchestrator";
+      it.command = { command: "loomSessionTracker.focusSession", title: "Show this session",
+                     arguments: [{ repo: node.repo, role: node.role }] };
       return it;
     }
     if (node.kind === "repo") {
@@ -85,6 +87,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       `webviewId: ${a.webviewId}\nlast seen: ${new Date(a.lastSeen).toLocaleTimeString()}`;
     // contextValue drives which menu items show (Lock vs Unlock, Retire)
     it.contextValue = locked ? "loomAgentLocked" : "loomAgent";
+    // Click -> bring this session's tab forward (focus.ts decides whether it can be done safely).
+    it.command = { command: "loomSessionTracker.focusSession", title: "Show this session",
+                   arguments: [{ repo: a.repo, role: a.role }] };
     return it;
   }
 
@@ -100,7 +105,11 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       // When the board DECLARES this project's orchestrator frame, that is the only candidate worth a
       // click — offering weak content-attributed sessions beside it is how a diagnostic session got
       // starred twice on 2026-09-09. Declared first, then strong, then weak.
-      .filter((o, _, all) => o.declared || !all.some((x) => x.declared && x.repo === o.repo))
+      // …but only a declaration whose frame is LIVE may suppress. Frame ids die at every restart, and
+      // on 2026-09-12 shwab_docker's declared AND tagged frames were both dead — so its real, running
+      // orchestrator was hidden behind two ghosts and the sidebar showed nothing to click.
+      .filter((o, _, all) => o.declared ||
+        !all.some((x) => x.declared && x.liveness === "live" && x.repo === o.repo))
       .sort((a, b) => Number(b.declared) - Number(a.declared) || Number(b.strong) - Number(a.strong))
       .map((o) => ({
         kind: "ownerCandidate", role: ownerRoleFor(o.repo ?? repo ?? null), webviewId: o.webviewId, liveness: o.liveness,
