@@ -139,7 +139,7 @@ MUTATIONS = [
  ("a stale open request is served anyway",
   "src/requests.ts",
   "  if (req.requestedAt && (!Number.isFinite(age) || age > REQUEST_TTL_MS)) {",
-  "  if (false) {"),
+  "  if (req.requestedAt && Boolean(0)) {"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
