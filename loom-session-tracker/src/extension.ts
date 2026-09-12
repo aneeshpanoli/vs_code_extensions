@@ -19,6 +19,9 @@ import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, ReopenCandidate } from "./reopen";
+import { blankShells, closableShells } from "./blanks";
+import { planOpen, writeResult } from "./requests";
+import { readFrames, closeWebview } from "./cdp";
 import { isOwnerRole } from "./naming";
 import { eligibleTargets, resolveOrchestrator } from "./dispatch";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
@@ -284,16 +287,65 @@ export function activate(context: vscode.ExtensionContext) {
       computeMissing();
       const todo = missingNow.filter((m) => wasLive.has(m.role) || isOwnerRole(m.role));
       if (!todo.length) return;
+      // Snapshot the blank shells BEFORE opening anything: only these are ever closable, and only
+      // if they are still blank afterwards. See blanks.ts for why each clause matters.
+      let before: string[] = [];
+      try { before = blankShells(await readFrames()); } catch { /* no read, no closing */ }
       let n = 0;
       for (const m of todo) {
         try { await vscode.commands.executeCommand("claude-vscode.editor.open", m.sessionId, undefined, undefined); n++; }
         catch (e: any) { debugLog({ restartReopenFailed: m.role, error: String(e && e.message || e) }); }
+      }
+      // Let the reopened panels render before judging what is still blank — a session that has not
+      // painted yet would otherwise look like a shell and be closed the moment it arrived.
+      if (n && before.length && cfg().get<boolean>("closeBlankShellsOnRestart", true)) {
+        await new Promise((r) => setTimeout(r, 8000));
+        try {
+          const closable = closableShells(before, await readFrames(), n);
+          for (const w of closable) {
+            const r = await closeWebview(w);
+            debugLog({ closedBlankShell: w.slice(0, 8), ok: r.ok, note: r.note });
+          }
+          if (closable.length) vscode.window.setStatusBarMessage(
+            `Loom: closed ${closable.length} blank restored tab(s) replaced by their session(s)`, 10000);
+        } catch (e: any) { debugLog({ closeBlankShellsFailed: String(e && e.message || e) }); }
       }
       wakePending = n > 0;
       vscode.window.setStatusBarMessage(`Loom: reopened ${n} session(s) after restart` +
         (wakePending ? " — waking the orchestrator when it is back" : ""), 12000);
       debugLog({ restartReopened: todo.map((m) => `${m.role}<-${m.sessionId.slice(0, 8)}`) });
     };
+    // An orchestrator can write files and ring sessions, but only the extension can open a tab. This
+    // serves `<repo>/open-requests.json` so a PO can bring its own roles back instead of asking the
+    // user to click (see requests.ts for the boundaries).
+    let serving = false;
+    const serveOpenRequests = async () => {
+      if (serving || !repo) return;
+      if (cfg().get<boolean>("serveOpenRequests", true) !== true) return;
+      const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
+      const slots = Math.max(0, coord.cap() - coord.activeTotal());
+      const plan = planOpen(repo, live, slots);
+      if (!plan.consumed) return;
+      serving = true;
+      try {
+        const opened: typeof plan.open = [];
+        for (const c of plan.open) {
+          try {
+            await vscode.commands.executeCommand("claude-vscode.editor.open", c.sessionId, undefined, undefined);
+            opened.push(c);
+          } catch (e: any) {
+            plan.refused.push({ role: c.role, reason: `open failed: ${String(e && e.message || e)}` });
+          }
+        }
+        writeResult(repo, opened, plan.refused);
+        debugLog({ servedOpenRequest: { opened: opened.map((c) => c.role), refused: plan.refused } });
+        if (opened.length) vscode.window.setStatusBarMessage(
+          `Loom: ${repo} orchestrator asked for ${opened.length} session(s) — opened`, 10000);
+        else if (plan.refused.length) vscode.window.setStatusBarMessage(
+          `Loom: ${repo} open request refused (${plan.refused[0].reason})`, 10000);
+      } finally { serving = false; }
+    };
+
     const wakeOrchestrator = () => {
       if (!wakePending || !repo) return;
       const orch = getOrchestrator(repo);
@@ -334,6 +386,7 @@ export function activate(context: vscode.ExtensionContext) {
         runHealth();
         runContextMemory();
         try { computeMissing(); wakeOrchestrator(); } catch { /* a reopen offer must never break a tick */ }
+        serveOpenRequests().catch(() => { /* never break a tick */ });
         tree.refresh();
         if (r.ok) {
           const total = coord.activeTotal();   // agents + orchestrator

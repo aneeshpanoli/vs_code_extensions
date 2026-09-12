@@ -272,6 +272,25 @@ text looks like. The `≥3 distinct roles` heuristic is a fallback for buses tha
 The context cycle refuses outright to run against a tag that does not name an orchestrator — its
 endpoint is a `/clear`, and a worker-named tag is one tick away from wiping a working session.
 
+### Orchestrators open their own sessions
+
+An orchestrator can write files and ring sessions but cannot open a tab. It writes
+`~/.claude/loom/<repo>/open-requests.json` — `{"roles":["developer1"],"requestedAt":"<iso>"}` — and the
+next tick opens each role from its freshest transcript, replacing the file with the outcome
+(`opened` / `refused`, each refusal carrying its reason). Bounded: never an orchestrator, never a role
+already live, never one off the board, never past the active-session cap, and a request older than 30
+minutes is ignored so a dead session cannot open tabs tomorrow. Setting: `serveOpenRequests`.
+Playbook §15 is the orchestrator-facing copy.
+
+### Blank tabs after a restart
+
+Claude Code's restore discards the session id, so every Claude panel comes back as a blank `Untitled`
+conversation — 8 of 26 panels after one measured restart. The restart reopen then adds the real
+sessions, which is why roles appeared twice. Loom now closes a blank shell once its session is back,
+under three conditions that must all hold: it was already blank *before* the reopen, it is *still*
+blank afterwards (so a reused panel is never closed), and never more are closed than were opened.
+Setting: `closeBlankShellsOnRestart`. This is the only case in which Loom closes a Claude tab.
+
 ## Commands
 
 | Command | What it does |

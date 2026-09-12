@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -350,6 +350,16 @@
           "default": 5,
           "minimum": 2,
           "description": "Sessions that may be OPEN at once in a project, including the orchestrator \u2014 so orchestrator + (n-1) agents. spawn() refuses past it. This is NOT ring.py's CAP, which limits how many sessions may be mid-turn simultaneously; concurrency is the memory cost, so raise that one separately and deliberately."
+        },
+        "loomSessionTracker.closeBlankShellsOnRestart": {
+          "type": "boolean",
+          "default": true,
+          "description": "After the restart reopen, close the blank 'Untitled' panels that VSCodium restored and whose real session has just been reopened. Only panels that were already blank before the reopen, are STILL blank afterwards, and never more than were reopened. This is the only case in which Loom closes a Claude tab."
+        },
+        "loomSessionTracker.serveOpenRequests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let this project's orchestrator open its own role sessions by writing ~/.claude/loom/<repo>/open-requests.json ({\"roles\":[...]}). Only roles on this project's roster, never an orchestrator, never one already live, never past the active-session cap, and a request older than 30 minutes is ignored. The file is replaced with the outcome."
         }
       }
     }

@@ -116,6 +116,31 @@ MUTATIONS = [
   "                    { ...state, idleTicks: 0 });",
   "                    { ...state });"),
 
+ ("a blank shell is closed even though it is no longer blank (the reopen reused it)",
+  "src/blanks.ts",
+  "  return before.filter((w) => present.has(w) && stillBlank.has(w)).slice(0, limit);",
+  "  return before.filter((w) => present.has(w)).slice(0, limit);"),
+
+ ("a panel with identity in it counts as a blank shell",
+  "src/blanks.ts",
+  "  return !IDENTITY.test(t);",
+  "  return true;"),
+
+ ("an open request may name an orchestrator",
+  "src/requests.ts",
+  '    if (isOwnerRole(role)) { refused.push({ role: raw, reason: "an orchestrator is never opened this way" }); continue; }',
+  "    if (false) { continue; }"),
+
+ ("an open request ignores the active-session cap",
+  "src/requests.ts",
+  '    if (open.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }',
+  "    if (false) { continue; }"),
+
+ ("a stale open request is served anyway",
+  "src/requests.ts",
+  "  if (req.requestedAt && (!Number.isFinite(age) || age > REQUEST_TTL_MS)) {",
+  "  if (false) {"),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",
