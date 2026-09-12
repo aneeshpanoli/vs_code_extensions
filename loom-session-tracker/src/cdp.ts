@@ -214,7 +214,23 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
  * clean — the caller MUST have verified it on a throwaway before trusting it. This only sends the close;
  * it does not decide WHAT may be closed (that boundary lives in the coordinator).
  */
+/**
+ * DISABLED — this closes the whole EDITOR WINDOW, not the tab.
+ *
+ * Measured 2026-09-12: the restart path closed three "blank shell" webviews in three windows, and
+ * all three WINDOWS (Gaming, funisland, shwab_docker) closed with them. The mechanism: a Claude
+ * panel is an out-of-process iframe, and CDP `/json/close/<targetId>` on an iframe target closes
+ * the WebContents that owns it — which is the window. There is no CDP call that closes one VS Code
+ * tab. Until a tab-scoped close exists (vscode.window.tabGroups), this refuses, so no caller —
+ * retire, delete, the restart path, or anything written later — can take a window down by mistake.
+ * `LOOM_ALLOW_WINDOW_CLOSE=1` in the environment is the only override, and it is for a person at a
+ * terminal who has read this comment.
+ */
 export async function closeWebview(webviewId: string, host = "127.0.0.1", port = cdpPort()): Promise<{ ok: boolean; note: string }> {
+  if (process.env.LOOM_ALLOW_WINDOW_CLOSE !== "1") {
+    return { ok: false, note: `REFUSED: closing webview ${webviewId.slice(0, 8)} over CDP closes its whole ` +
+      `editor window (measured 2026-09-12, three windows lost). Close the tab by hand.` };
+  }
   try {
     const targets = await httpJson(host, port, "/json/list", 3000);
     if (!Array.isArray(targets)) return { ok: false, note: "no target list" };

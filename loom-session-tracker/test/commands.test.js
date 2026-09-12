@@ -129,13 +129,15 @@ suite("command spawn: refuses past the active-session cap, and opens nothing", a
 });
 
 // ── retire ──────────────────────────────────────────────────────────────────
-suite("command retire: closes a confirmed live agent after confirmation", async () => {
+suite("command retire: even confirmed, it closes nothing and tells the person which tab to close", async () => {
+  // 2026-09-12: the automatic close took whole windows down. Retire now ends at naming the frame.
   const { off } = await projectWithAgent("cmdG");
   try {
     vscode._quickPick = "alpha";
     vscode._warnAnswer = "Retire";
     await run("retire");
-    match(infos(), /retired 'alpha'/, "closed and reported");
+    match(errors(), /close that Claude tab by hand/, "refused with instructions");
+    ok(!/retired 'alpha'/.test(infos()), "and never claims to have retired it");
   } finally { off(); }
 });
 
@@ -160,7 +162,7 @@ suite("command retire: a LOCKED agent is refused", async () => {
   } finally { off(); }
 });
 
-suite("command retire: a close that does not confirm is surfaced as an error", async () => {
+suite("command retire: there is no close to confirm — the person is told which tab to close", async () => {
   const repo = makeRepo({ roles: { alpha: {} } }, "cmdJ");
   openProject(repo);
   setOrchestrator(repo, "product-owner", "wid-po");
@@ -170,7 +172,7 @@ suite("command retire: a close that does not confirm is surfaced as an error", a
     vscode._quickPick = "alpha";
     vscode._warnAnswer = "Retire";
     await run("retire");
-    match(errors(), /close did not confirm/, "the failure is reported, not swallowed");
+    match(errors(), /close that Claude tab by hand/, "refused with instructions, never a silent success");
   } finally { off(); }
 });
 

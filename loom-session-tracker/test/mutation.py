@@ -141,6 +141,16 @@ MUTATIONS = [
   "  if (req.requestedAt && (!Number.isFinite(age) || age > REQUEST_TTL_MS)) {",
   "  if (req.requestedAt && Boolean(0)) {"),
 
+ ("closeWebview closes windows again (the 2026-09-12 three-window loss)",
+  "src/cdp.ts",
+  '  if (process.env.LOOM_ALLOW_WINDOW_CLOSE !== "1") {',
+  '  if (process.env.LOOM_ALLOW_WINDOW_CLOSE === "never-set") {'),
+
+ ("the restart path imports the window-closing call",
+  "src/extension.ts",
+  'import { readFrames } from "./cdp";',
+  'import { readFrames, closeWebview } from "./cdp";\nvoid closeWebview;'),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",

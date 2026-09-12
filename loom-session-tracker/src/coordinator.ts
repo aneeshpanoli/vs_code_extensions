@@ -8,7 +8,6 @@
 
 import * as vscode from "vscode";
 import { Tracker } from "./tracker";
-import { closeWebview } from "./cdp";
 import { isLocked } from "./locks";
 import { deleteSession } from "./deleter";
 import { roleToRepo } from "./registry";
@@ -84,9 +83,10 @@ export class Coordinator {
       throw new Error(`REFUSED: '${role}' is not a confirmed live agent of ${this.repo || "this project"} — nothing closed. ` +
         `(The orchestrator and other projects can never be retired here.)`);
     }
-    const r = await closeWebview(agent.webviewId);
-    if (!r.ok) throw new Error(`close did not confirm for '${role}' (${agent.webviewId.slice(0, 8)}): ${r.note}`);
-    return `retired '${role}' (${agent.webviewId.slice(0, 8)}) — ${r.note}`;
+    // Closing over CDP closes the whole WINDOW (measured 2026-09-12, three windows lost), and there
+    // is no tab-scoped close yet. Retire therefore stops at identifying the tab; a person closes it.
+    throw new Error(`'${role}' is live in frame ${agent.webviewId.slice(0, 8)} — close that Claude tab by hand. ` +
+      `(Automatic close is disabled: over CDP it would close the whole editor window.)`);
   }
 
   /** Roles of THIS project (from board.json) that are NOT owners/locked — candidates to delete. */
@@ -111,10 +111,11 @@ export class Coordinator {
     if (!inRoster || (this.repo && inRoster !== this.repo)) {
       throw new Error(`REFUSED: '${role}' is not a role of ${this.repo || "this project"} — nothing deleted.`);
     }
-    // best-effort close the tab if it's currently live
+    // The tab, if live, is NOT closed: over CDP that closes the whole window (2026-09-12). The
+    // artifacts are archived regardless; the tab is reported so a person can close it.
     const live = this.retirableAgents().find((a) => a.role === role);
-    if (live) await closeWebview(live.webviewId);
     const res = deleteSession(this.repo || "", role, repoRoot, stamp);
+    if (live && res.ok) res.steps.push(`tab ${live.webviewId.slice(0, 8)} is still open — close it by hand`);
     if (!res.ok) throw new Error(res.error || "delete failed");
     return `deleted '${role}' — ${res.steps.join("; ") || "no artifacts"} (recoverable in deleted-sessions/ + git branch)`;
   }

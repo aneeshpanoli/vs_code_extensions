@@ -21,7 +21,7 @@ import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
 import { planOpen, writeResult } from "./requests";
-import { readFrames, closeWebview } from "./cdp";
+import { readFrames } from "./cdp";
 import { isOwnerRole } from "./naming";
 import { eligibleTargets, resolveOrchestrator } from "./dispatch";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
@@ -296,20 +296,12 @@ export function activate(context: vscode.ExtensionContext) {
         try { await vscode.commands.executeCommand("claude-vscode.editor.open", m.sessionId, undefined, undefined); n++; }
         catch (e: any) { debugLog({ restartReopenFailed: m.role, error: String(e && e.message || e) }); }
       }
-      // Let the reopened panels render before judging what is still blank — a session that has not
-      // painted yet would otherwise look like a shell and be closed the moment it arrived.
-      if (n && before.length && cfg().get<boolean>("closeBlankShellsOnRestart", true)) {
-        await new Promise((r) => setTimeout(r, 8000));
-        try {
-          const closable = closableShells(before, await readFrames(), n);
-          for (const w of closable) {
-            const r = await closeWebview(w);
-            debugLog({ closedBlankShell: w.slice(0, 8), ok: r.ok, note: r.note });
-          }
-          if (closable.length) vscode.window.setStatusBarMessage(
-            `Loom: closed ${closable.length} blank restored tab(s) replaced by their session(s)`, 10000);
-        } catch (e: any) { debugLog({ closeBlankShellsFailed: String(e && e.message || e) }); }
-      }
+      // NO CLOSING HERE. 0.26.0 closed the blank shells once their sessions were back, through CDP
+      // `/json/close` on the webview target — and that closes the OWNING WINDOW, not the tab. Three
+      // windows (Gaming, funisland, shwab_docker) were lost on the next restart. The shells are
+      // therefore left in place; `blanks.ts` still identifies them, for a future tab-scoped close via
+      // vscode.window.tabGroups, which must be tested against a live window before it is trusted.
+      if (before.length) debugLog({ blankShellsLeftInPlace: before.map((w) => w.slice(0, 8)) });
       wakePending = n > 0;
       vscode.window.setStatusBarMessage(`Loom: reopened ${n} session(s) after restart` +
         (wakePending ? " — waking the orchestrator when it is back" : ""), 12000);

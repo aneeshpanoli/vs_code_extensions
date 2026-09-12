@@ -126,18 +126,31 @@ suite("cdp: a browser with no debugger url yields no frames", async () => {
   });
 });
 
-suite("cdp: closeWebview finds the target by webviewId and closes it", async () => {
+suite("cdp: closeWebview refuses by default, and only a terminal override reaches the target", async () => {
+  // 2026-09-12: closing a webview target closes its whole editor WINDOW. Default is refusal.
   await withFake({ listTargets: [
     { id: "T-1", url: wv("dddd4444-1111") },
     { id: "T-2", url: wv("eeee5555-2222") },
   ] }, async (fake) => {
-    const r = await closeWebview("eeee5555-2222", "127.0.0.1", fake.port);
-    ok(r.ok, "reported closed: " + r.note);
-    eq(fake.closed, ["T-2"], "closed the right target id, not the other one");
-    const miss = await closeWebview("no-such-webview", "127.0.0.1", fake.port);
-    eq(miss.ok, false, "an unknown webviewId is refused");
-    match(miss.note, /no live target/, "explaining why");
-    eq(fake.closed, ["T-2"], "and nothing further was closed");
+    const saved = process.env.LOOM_ALLOW_WINDOW_CLOSE;
+    delete process.env.LOOM_ALLOW_WINDOW_CLOSE;
+    try {
+      const r = await closeWebview("eeee5555-2222", "127.0.0.1", fake.port);
+      eq(r.ok, false, "refused by default");
+      match(r.note, /whole editor window/, "and it says why");
+      eq(fake.closed, [], "NOTHING was closed");
+      // the override exists for a person at a terminal; under it the matching logic is what it was
+      process.env.LOOM_ALLOW_WINDOW_CLOSE = "1";
+      const forced = await closeWebview("eeee5555-2222", "127.0.0.1", fake.port);
+      ok(forced.ok, "override closes: " + forced.note);
+      eq(fake.closed, ["T-2"], "the right target id, not the other one");
+      const miss = await closeWebview("no-such-webview", "127.0.0.1", fake.port);
+      eq(miss.ok, false, "an unknown webviewId is refused even under the override");
+      match(miss.note, /no live target/, "explaining why");
+      eq(fake.closed, ["T-2"], "and nothing further was closed");
+    } finally {
+      if (saved === undefined) delete process.env.LOOM_ALLOW_WINDOW_CLOSE; else process.env.LOOM_ALLOW_WINDOW_CLOSE = saved;
+    }
   });
 });
 

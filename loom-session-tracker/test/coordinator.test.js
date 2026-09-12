@@ -70,26 +70,33 @@ suite("coordinator: a LOCKED role is protected from retire and delete", async ()
   eq(c.deletableRoles(), ["alpha"], "offered again once unlocked");
 });
 
-suite("coordinator: retire closes the agent's webview and reports it", async () => {
+suite("coordinator: retire NEVER closes anything — it names the tab for a person to close", async () => {
+  // 2026-09-12: closing a webview over CDP closed its whole editor WINDOW; three windows were lost.
+  // Retire now stops at identifying the frame. If this test ever sees closeWebview called, the
+  // window-killing path is back.
   const repo = makeRepo({ roles: { alpha: {} } });
   const real = cdp.closeWebview;
   const seen = [];
   cdp.closeWebview = async (wid) => { seen.push(wid); return { ok: true, note: "closed" }; };
   try {
     const c = new Coordinator(trackerOf([agent("alpha", repo)]), repo);
-    const msg = await c.retire("alpha");
-    eq(seen, ["wid-alpha"], "closed the right webview");
-    match(msg, /retired 'alpha'/, "reports what it did");
+    await rejects(() => c.retire("alpha"), /close that Claude tab by hand/, "refuses, and says what to do");
+    await rejects(() => c.retire("alpha"), /wid-alph/, "and names the frame");
+    eq(seen, [], "closeWebview was never invoked");
   } finally { cdp.closeWebview = real; }
 });
 
-suite("coordinator: a close that does not confirm is reported as a failure", async () => {
-  const repo = makeRepo({ roles: { alpha: {} } });
+suite("coordinator: delete archives the artifacts but does not close the live tab", async () => {
+  const repo = makeRepo({ roles: { zeta: {} } });
   const real = cdp.closeWebview;
-  cdp.closeWebview = async () => ({ ok: false, note: "no live target" });
+  const seen = [];
+  cdp.closeWebview = async (wid) => { seen.push(wid); return { ok: true, note: "closed" }; };
   try {
-    const c = new Coordinator(trackerOf([agent("alpha", repo)]), repo);
-    await rejects(() => c.retire("alpha"), /did not confirm/, "surfaces the failure");
+    const c = new Coordinator(trackerOf([agent("zeta", repo)]), repo);
+    const msg = await c.delete("zeta", null, "stamp");
+    match(msg, /deleted 'zeta'/, "the artifacts step still runs");
+    match(msg, /still open — close it by hand/, "and the open tab is reported, not closed");
+    eq(seen, [], "closeWebview was never invoked");
   } finally { cdp.closeWebview = real; }
 });
 
