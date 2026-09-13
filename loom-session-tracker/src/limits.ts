@@ -22,6 +22,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { senderArgs } from "./inject";
 import { execFile } from "child_process";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
@@ -187,7 +188,7 @@ export class LimitWatcher {
   resume(ev: ResumeEvent, message: string, done?: (ok: boolean, note: string) => void): void {
     // --repo: see inject.ts — a bare role name shared by two buses must not resolve cross-project.
     execFile("python3", [LOOM_CDP, "inject", "--role", ev.role, "--message", message, "--submit",
-                         ...(ev.repo ? ["--repo", ev.repo] : [])],
+                         ...(ev.repo ? ["--repo", ev.repo] : []), ...senderArgs("resume", ev.repo)],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
         const ok = !err;

@@ -19,6 +19,7 @@ import * as os from "os";
 import * as path from "path";
 
 import { isOwnerRole } from "./naming";
+import { senderArgs } from "./inject";
 import { execFile } from "child_process";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
@@ -165,7 +166,8 @@ export class ModelPolicy {
     // alone is ambiguous the moment two buses share it, and four of them now carry `developer1`.
     execFile("python3", [LOOM_CDP, "inject", "--role", v.role, "--message", `/model ${targetModel}`,
                          "--submit", ...(v.repo ? ["--repo", v.repo] : []),
-                         ...(v.webviewId ? ["--webview-id", v.webviewId] : [])],
+                         ...(v.webviewId ? ["--webview-id", v.webviewId] : []),
+                         ...senderArgs("model", v.repo)],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
         const ok = !err;

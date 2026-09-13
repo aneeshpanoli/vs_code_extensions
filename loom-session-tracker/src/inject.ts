@@ -46,6 +46,31 @@ export interface InjectTarget {
 
 export interface InjectResult { ok: boolean; note: string; }
 
+// ── the RETURN ADDRESS (user rule, 2026-09-12) ─────────────────────────────────────────────────
+// "Any time any session communicates with another, it should always broadcast its ID and how to
+// communicate back." loom_cdp.py prefixes every non-command message with a header line; this side
+// supplies who the extension is and how a session should answer it, per kind of message — because
+// the extension reads no chat, and a session told to "reply" to it would otherwise talk to nobody.
+let senderWindow: string | null = null;
+/** The workspace folder this window is scoped to; set once at activation. */
+export function setSenderWindow(root: string | null): void { senderWindow = root || null; }
+
+export const REPLY_FOR: Record<string, string> = {
+  "notify-debug.json":  "act on the outbox named here; this tool reads no chat",
+  "stall-debug.json":   "ring the role named here; this tool reads no chat",
+  "context-debug.json": "write the memory file named here; nothing else is read",
+  "restart-debug.json": "for any missing role tab, write ~/.claude/loom/<repo>/open-requests.json",
+  "resume":             "keep status.json current; nothing else is read",
+  "model":              "none needed — your footer is re-read every tick",
+};
+
+/** argv fragment naming the sender and the reply channel, for every inject the extension makes. */
+export function senderArgs(kind: string, repo: string | null): string[] {
+  const who = `loom-session-tracker (window ${senderWindow || "(no folder)"}${repo ? `, project ${repo}` : ""})`;
+  const how = (REPLY_FOR[kind] || "none — this is a tool, not a session").replace("<repo>", repo || "<repo>");
+  return ["--from", who, "--reply", how];
+}
+
 /**
  * Type `message` into the target's composer and submit it. Never throws; `done` always gets a verdict.
  * `debugName` is a file under ~/.claude/loom that records the last attempt (out/err truncated), so a
@@ -53,7 +78,8 @@ export interface InjectResult { ok: boolean; note: string; }
  */
 export function injectTo(target: InjectTarget, message: string, debugName: string,
                          done?: (ok: boolean, note: string) => void): void {
-  const args = [LOOM_CDP, "inject", "--role", target.role, "--message", message, "--submit"];
+  const args = [LOOM_CDP, "inject", "--role", target.role, "--message", message, "--submit",
+                ...senderArgs(debugName, target.repo ?? null)];
   if (target.webviewId) args.push("--webview-id", target.webviewId);
   if (target.repo) args.push("--repo", target.repo);
   execFile("python3", args, { timeout: INJECT_TIMEOUT_MS }, (err, stdout, stderr) => {

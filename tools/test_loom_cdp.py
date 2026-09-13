@@ -90,3 +90,30 @@ with tempfile.TemporaryDirectory() as home:
           m.frame_is_busy('we discussed "Claude is working" earlier ' + "x" * 2500), False)
     check("empty text is not busy", m.frame_is_busy(""), False)
     check("None is not busy", m.frame_is_busy(None), False)
+
+# ── the return address (user rule 2026-09-12: always broadcast who you are and how to reply) ────
+with tempfile.TemporaryDirectory() as home:
+    m = load(home)
+    print()
+    hdr = m.return_address("loom-session-tracker (window tfg_ua)", "write open-requests.json")
+    check("an explicit sender and reply form the header",
+          hdr, "[from loom-session-tracker (window tfg_ua) · reply: write open-requests.json]")
+    check("a plain message is prefixed", m.compose_outgoing("hello", "A", "ring A").startswith("[from A · reply: ring A]\nhello"), True)
+    check("a slash COMMAND is never prefixed", m.compose_outgoing("/model claude-opus-5", "A", "x"), "/model claude-opus-5")
+    check("/loom binding is never prefixed", m.compose_outgoing("/loom developer1", "A", "x"), "/loom developer1")
+    check("an already-addressed message is not double-prefixed",
+          m.compose_outgoing("[from B · reply: ring B]\nhi", "A", "x"), "[from B · reply: ring B]\nhi")
+    check("empty stays empty", m.compose_outgoing("", "A", "x"), "")
+    # cwd inference: a worktree cwd names the role; the .id file supplies the frame
+    b = bus(home, "tfg_ua"); (b / "developer1.id").write_text("abcdef12-0000-0000-0000-000000000000\n")
+    wt = pathlib.Path(home, "Containers", "tfg_ua", ".claude", "worktrees", "developer1"); wt.mkdir(parents=True)
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(pathlib.Path(home, "Containers", "tfg_ua"))], check=True)
+    subprocess.run(["git", "-C", str(pathlib.Path(home, "Containers", "tfg_ua")), "worktree", "add", "-q", "--detach", str(wt)],
+                   capture_output=True)
+    snd = m.sender_from_cwd(str(wt)) if wt.exists() else None
+    check("a session in worktrees/developer1 is tfg_ua/developer1 @ its id file",
+          (snd or {}).get("role"), "developer1")
+    check("…and knows its frame", (snd or {}).get("wid", "")[:8], "abcdef12")
+    check("no cwd identity and no --from is still SENT, but visibly unidentified",
+          m.return_address(None, None).startswith("[from unidentified sender"), True)

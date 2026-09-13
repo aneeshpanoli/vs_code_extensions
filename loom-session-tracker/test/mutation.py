@@ -181,6 +181,11 @@ MUTATIONS = [
   "      if (!this.inMyWindow(f, validRoles)) continue;",
   "      if (!this.inMyWindow(f, validRoles) && Boolean(0)) continue;"),
 
+ ("the extension's notifications carry no return address",
+  "src/inject.ts",
+  '                ...senderArgs(debugName, target.repo ?? null)];',
+  "                ];"),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",

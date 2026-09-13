@@ -28,7 +28,7 @@ import { eligibleTargets, resolveOrchestrator } from "./dispatch";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
-import { injectTo } from "./inject";
+import { injectTo, setSenderWindow } from "./inject";
 import { DEFAULT_WINDOW_TOKENS, pct } from "./context";
 
 let timer: NodeJS.Timeout | undefined;
@@ -48,6 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
     publishNaming();
     const tracker = new Tracker(repo);
     tracker.setWindowRoot(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
+    setSenderWindow(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
     const maxActive = () => Number(cfg().get("maxActiveSessions", MAX_ACTIVE_TOTAL)) || MAX_ACTIVE_TOTAL;
     const coord = new Coordinator(tracker, repo, maxActive());
     // THIS project's roster, read from ITS board — not from the global {role: repo} map, which is
