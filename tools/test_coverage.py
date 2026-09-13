@@ -10,7 +10,7 @@ GC-005, MP-001 and RB-001 and survived all three, because nothing tested the mer
 
     python3 tools/test_coverage.py
 """
-import importlib.util, json, os, sys, tempfile, pathlib
+import importlib.util, json, os, sys, tempfile, pathlib, urllib.parse
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coverage.py")
 spec = importlib.util.spec_from_file_location("coverage_t", SRC)
@@ -91,6 +91,57 @@ with tempfile.TemporaryDirectory() as tmp:
     check("an empty-functions entry is not counted as an observation", len(obs2[str(mod)]), 2)
     check("…so it cannot silently turn a half-covered file into a covered one",
           cov.line_rows(obs2)[0][1:3], (4, 4))
+
+# ── V8 offsets are UTF-16 code units, Python indexes codepoints ─────────────────────────────────
+# Found by an adversarial pass over the real dumps and reproduced here: coordinator.js:173, a
+# `throw` sitting inside a zero-count range in EVERY observation, was scored COVERED because two
+# 🔒 earlier in the file slid every offset two characters right. A tool that reports a line covered
+# when nothing ran it is worse than one that reports nothing.
+EMOJI_SRC = 'const lock = "🔒🔒";\nthrow new Error("x");\n'
+check("a pure-BMP file needs no mapping at all", cov.u16_starts("plain ascii"), None)
+check("each astral character costs two UTF-16 units",
+      cov.u16_starts("a🔒b")[:4], [0, 1, 3, 4])
+check("a UTF-16 offset past the emoji maps back to its codepoint",
+      cov.to_cp(22, cov.u16_starts(EMOJI_SRC)), 20)
+check("offsets in a BMP file pass through untouched", cov.to_cp(7, None), 7)
+
+with tempfile.TemporaryDirectory() as tmp:
+    out = pathlib.Path(tmp, "out"); out.mkdir()
+    covdir = pathlib.Path(tmp, "cov"); covdir.mkdir()
+    mod = out / "emoji.js"; mod.write_text(EMOJI_SRC, encoding="utf8")
+    u16 = len(EMOJI_SRC.encode("utf-16-le")) // 2
+    # line 2 is dead, expressed the way V8 expresses it: in UTF-16 units
+    dead_start = len('const lock = "🔒🔒";\n'.encode("utf-16-le")) // 2
+    json.dump({"result": [{"url": "file://" + str(mod), "functions": [
+        {"ranges": [{"startOffset": 0, "endOffset": u16, "count": 1},
+                    {"startOffset": dead_start, "endOffset": u16, "count": 0}]}]}]},
+        open(covdir / "cov-1.json", "w"))
+    rows = cov.line_rows(cov.read_dumps(str(covdir), str(out)))
+    check("the line after the emoji is scored DEAD, not shifted into looking alive",
+          rows[0][3], [2])
+    check("…and the emoji line itself is covered", rows[0][1:3], (1, 2))
+
+    # a dump measured against a DIFFERENT build must fail loudly, not clamp
+    json.dump({"result": [{"url": "file://" + str(mod), "functions": [
+        {"ranges": [{"startOffset": 0, "endOffset": u16 + 500, "count": 0}]}]}]},
+        open(covdir / "cov-1.json", "w"))
+    try:
+        cov.line_rows(cov.read_dumps(str(covdir), str(out)))
+        check("a dump that overruns the source is refused", "no error", "SystemExit")
+    except SystemExit as e:
+        check("a dump that overruns the source is refused, naming the rebuild",
+              "out/ was rebuilt after the run" in str(e), True)
+
+# ── percent-encoded paths ───────────────────────────────────────────────────────────────────────
+with tempfile.TemporaryDirectory() as tmp:
+    out = pathlib.Path(tmp, "has space", "out"); out.mkdir(parents=True)
+    covdir = pathlib.Path(tmp, "cov"); covdir.mkdir()
+    mod = out / "thing.js"; mod.write_text(SRC_JS)
+    json.dump({"result": [{"url": "file://" + urllib.parse.quote(str(mod)), "functions": [
+        {"ranges": [{"startOffset": 0, "endOffset": len(SRC_JS), "count": 1}]}]}]},
+        open(covdir / "cov-1.json", "w"))
+    check("a module under a path with a space is still counted, not silently dropped",
+          [r[0] for r in cov.line_rows(cov.read_dumps(str(covdir), str(out)))], ["thing.js"])
 
 print()
 if FAILS:

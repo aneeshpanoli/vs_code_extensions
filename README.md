@@ -222,7 +222,7 @@ tier — changes nothing and says so in `tracker-debug.json`. Settings:
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
 (optionally with a name-substring filter, e.g. `./test.sh notifier`) — 623 checks across 39 files, no test framework, run under VSCodium's bundled node since this
 machine has no npm. (Not quite dependency-free: the CDP fake needs `ws`, which the
-extension itself depends on.) Measured coverage is **93.1% of lines** (5641/6060,
+extension itself depends on.) Measured coverage is **93.1% of lines** (5640/6060,
 measured 2026-09-13 at 0.34.0). It no longer depends on the runner mode: `tools/coverage.py`
 used to *union* each process's UNCOVERED ranges, so a line counted as uncovered if any one of
 the per-file processes missed it and the figure fell as cores rose — the same run read 73.4% at
