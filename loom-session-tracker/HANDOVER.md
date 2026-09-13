@@ -14,9 +14,11 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 **Version 0.33.0** is merged and pushed. The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-"0.33.0" here as "0.33.0 is what the editor is executing". **563 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **92/92 mutations caught** under the
-baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving. `./live.sh`
+"0.33.0" here as "0.33.0 is what the editor is executing". **593 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **102/102 mutations caught** under the
+baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
+(Those two counts are as of the MP-001 merge; re-measure after banking RB-001 beside it, and
+note that `./test.sh` does NOT compile — a stale `out/` after a merge reads as a red suite.) `./live.sh`
 is clean except the warnings under open threads and the expected "windows are running an OLD build"
 failure until that deploy + reload. Read this section, then `README.md`, then run `./live.sh` and
 believe it over anything written here.
