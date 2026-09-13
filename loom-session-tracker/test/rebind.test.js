@@ -301,6 +301,27 @@ suite("R3: the orchestrator's frame is recorded in orchestrator.json too", async
   eq(fs.readFileSync(busPath(repo, "productowner.id"), "utf8"), "90de1ffe-0000-4000-8000-000000000000\n", "and its id FILE healed");
 });
 
+suite("R3: the board's OWN spelling is refreshed, not shadowed by a second field", () => {
+  // The extension reads `webviewId`; the boards the Loom skill writes use `webview_id`.
+  // vs_code_extensions' own productowner entry carries `webview_id` and nothing else (2026-09-13).
+  // Healing only the camel spelling would leave a correct new field beside a stale old one.
+  const repo = makeRepo({ roles: { alpha: { webview_id: "01d00000-0000-4000-8000-000000000000" } } });
+  eq(busWebviewFor(repo, "alpha").board, "01d00000-0000-4000-8000-000000000000",
+     "the snake spelling is READ, so the bus is not reported as silent");
+  rebindFrame(repo, "alpha", "9e000000-0000-4000-8000-000000000000", null, false);
+  const e = readJson(busPath(repo, "board.json")).roles.alpha;
+  eq(e.webview_id, "9e000000-0000-4000-8000-000000000000", "the entry's own spelling is refreshed");
+  eq(e.webviewId, "9e000000-0000-4000-8000-000000000000", "and the one the extension reads is set");
+});
+
+suite("R3: an entry with no snake field does not GROW one", () => {
+  const repo = makeRepo({ roles: { alpha: { webviewId: "01d00000-0000-4000-8000-000000000000" } } });
+  rebindFrame(repo, "alpha", "9e000000-0000-4000-8000-000000000000", null, false);
+  const e = readJson(busPath(repo, "board.json")).roles.alpha;
+  eq(e.webviewId, "9e000000-0000-4000-8000-000000000000", "refreshed");
+  eq(e.webview_id, undefined, "and no second spelling invented");
+});
+
 suite("R3: busWebviewFor reports each of the three places an id is recorded", () => {
   const repo = makeRepo({ roles: { alpha: { webviewId: "b0a2d000-0000-4000-8000-000000000000" } } });
   writeJson(busPath(repo, "bindings.json"), { "b17d0000-0000-4000-8000-000000000000": "alpha" });

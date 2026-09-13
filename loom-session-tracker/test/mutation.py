@@ -579,6 +579,11 @@ MUTATIONS = [
   "    if (wid) sink.identified(m.role, wid); else sink.ambiguous(m.role);",
   '    sink.identified(m.role, wid || "unknown");'),
 
+ ("only the camel spelling is healed, leaving the board's own stale `webview_id` beside it",
+  "src/rebind.ts",
+  "      const hasSnake = typeof cur.webview_id === \"string\";",
+  "      const hasSnake = false;"),
+
  ("a worktree WINDOW looks for worktrees inside itself, so a role's transcripts are never found",
   "src/rebind.ts",
   '  return path.join(root, ".claude", "worktrees", role);',

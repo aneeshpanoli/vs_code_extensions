@@ -132,7 +132,14 @@ export function busWebviewFor(repo: string, role: string): { bindings: string | 
   for (const [w, r] of loadBindings(repo)) if (r === role) { bindings = w; break; }
   const b = boardOf(repo);
   const e = b && b.roles[role];
-  const board = e && typeof e === "object" && typeof e.webviewId === "string" && e.webviewId ? e.webviewId : null;
+  // BOTH SPELLINGS. The extension reads `webviewId` (registry.busDeclaredFrames), but the boards the
+  // Loom skill actually writes use `webview_id` — vs_code_extensions' own `productowner` entry
+  // carries `webview_id` and no `webviewId` at all (checked 2026-09-13). Reading only one of them
+  // reports "the bus said nothing" about an entry that plainly said something.
+  const board = e && typeof e === "object"
+    ? (typeof e.webviewId === "string" && e.webviewId ? e.webviewId
+       : typeof e.webview_id === "string" && e.webview_id ? e.webview_id : null)
+    : null;
   let idfile: string | null = null;
   try {
     const l = fs.readFileSync(path.join(LOOM_ROOT, repo, `${role}.id`), "utf8").split(/\r?\n/);
@@ -205,8 +212,14 @@ export function rebindFrame(repo: string, role: string, webviewId: string,
     const f = path.join(LOOM_ROOT, repo, "board.json");
     const b = boardOf(repo);
     if (b && b.roles[role] && typeof b.roles[role] === "object") {
-      if (b.roles[role].webviewId !== webviewId) {
-        b.roles[role] = { ...b.roles[role], webviewId, rebound_by: "loom-session-tracker by session id" };
+      const cur = b.roles[role];
+      // Write `webviewId` (what the extension reads) and ALSO refresh `webview_id` when the entry
+      // already carries that spelling — otherwise the heal leaves a correct new field beside a stale
+      // old one, and every reader that prefers the old spelling keeps following the dead id.
+      const hasSnake = typeof cur.webview_id === "string";
+      if (cur.webviewId !== webviewId || (hasSnake && cur.webview_id !== webviewId)) {
+        b.roles[role] = { ...cur, webviewId, ...(hasSnake ? { webview_id: webviewId } : {}),
+                          rebound_by: "loom-session-tracker by session id" };
         if (writeAtomic(f, JSON.stringify(b.data, null, 2))) files.push("board.json");
       }
     } else if (b) { notes.push(`board.json has no ${role} entry — left alone`); }
