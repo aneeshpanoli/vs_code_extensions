@@ -265,8 +265,8 @@ MUTATIONS = [
  # the machine still needs; a mutant that survives means that particular loss could happen unnoticed.
  ("a transcript a bus still references is collected anyway (the wrong-lookup hazard, restored)",
   "src/gc.ts",
-  "    if (referenced.has(t.sid)) continue;                      // something on the bus points at it",
-  "    if (referenced.has(t.sid) && Boolean(0)) continue;"),
+  "    if (referenced.has(sid)) continue;                        // something on the bus points at it",
+  "    if (referenced.has(sid) && Boolean(0)) continue;"),
 
  ("the newest transcript in a project dir is collectable — the session a /clear would resume from",
   "src/gc.ts",
@@ -316,8 +316,8 @@ MUTATIONS = [
  # by adversarial review before it was banked; a survivor means that hole is open again.
  ("a build nine windows are still RUNNING is archived (the registry is not the runtime)",
   "src/gc.ts",
-  "  for (const v of running) keep.add(`${EXT_PREFIX}${v}`);",
-  "  for (const v of running) { void v; }"),
+  "  for (const v of running.versions) keep.add(`${EXT_PREFIX}${v}`);",
+  "  for (const v of running.versions) { void v; }"),
 
  ("a non-semver current version no longer refuses the extension tier (VERSION=unknown)",
   "src/gc.ts",
@@ -331,8 +331,8 @@ MUTATIONS = [
 
  ("a LIVE role's transcript is archived when its bus is not one loomDirs() scans",
   "src/gc.ts",
-  "    if (liveSessions.has(t.sid)) continue;",
-  "    if (liveSessions.has(t.sid) && Boolean(0)) continue;"),
+  "    if (liveSessions.has(sid)) continue;",
+  "    if (liveSessions.has(sid) && Boolean(0)) continue;"),
 
  ("a session id present only in a role's status.json is not a reference",
   "src/gc.ts",
@@ -394,6 +394,74 @@ MUTATIONS = [
   "src/gc.ts",
   '        near ? `its name is one typo away from the role "${near}"` : "",',
   '        false ? `its name is one typo away from the role "${near}"` : "",'),
+ # ── GC-004: the DATA the collector is fed (second review). Each of these is a read that could not
+ # answer, returning "nothing" where every guard downstream reads "nothing" as permission.
+ ("an unreadable running-versions.json fails OPEN — a torn file archives the build nine windows run",
+  "src/gc.ts",
+  "  if (!running.readable) {",
+  "  if (!running.readable && Boolean(0)) {"),
+
+ ("the version stamp is keyed by PROJECT again — two windows on one project share a slot",
+  "src/extension.ts",
+  "          all[windowId] = { version: VERSION, at: new Date().toISOString(), repo: repo || null };",
+  '          all[repo || "(no project)"] = { version: VERSION, at: new Date().toISOString(), repo: repo || null };'),
+
+ ("the version stamp is written non-atomically — ten windows every 15s produce the torn file above",
+  "src/extension.ts",
+  """          const tmp = stamp + ".tmp." + process.pid;
+          fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+          fs.renameSync(tmp, stamp);""",
+  "          fs.writeFileSync(stamp, JSON.stringify(all, null, 2));"),
+
+ ("a TRUNCATED reference sweep reads as 'nothing references this'",
+  "src/gc.ts",
+  "  if (sweep.truncated) {",
+  "  if (sweep.truncated && Boolean(0)) {"),
+
+ ("a file over the size bound is skipped silently instead of truncating the sweep",
+  "src/gc.ts",
+  "      if (st.size > SCAN_MAX_FILE_BYTES) { truncated = true; continue; }",
+  "      if (st.size > SCAN_MAX_FILE_BYTES) { continue; }"),
+
+ ("the sweep's file budget runs out without saying so",
+  "src/gc.ts",
+  "      if (budget <= 0) { truncated = true; return; }",
+  "      if (budget <= 0) { return; }"),
+
+ ("a role that stopped writing status hours ago still counts as LIVE",
+  "src/gc.ts",
+  "      if (!st || !st.isFile() || now - st.mtimeMs > withinMs) continue;",
+  "      if (!st || !st.isFile()) continue;"),
+
+ ("the collector is handed only THIS window's live roles (the automatic pass is machine-wide)",
+  "src/extension.ts",
+  "      const roles = new Set<string>([...bus.roles, ...mine]);",
+  "      const roles = new Set<string>([...mine]);"),
+
+ ("a long pass never refreshes its claim — 700 MB of moves under a five-minute lease",
+  "src/gc.ts",
+  "    if (opts.refresh && Date.now() - lastRefresh >= refreshEvery) {",
+  "    if (opts.refresh && Boolean(0) && Date.now() - lastRefresh >= refreshEvery) {"),
+
+ ("finishing a pass clobbers a claim another window has taken over",
+  "src/gc.ts",
+  "  const ours = windowId === undefined || state.owner === undefined || state.owner === windowId;",
+  "  const ours = true;"),
+
+ ("a registration's `version` is ignored whenever it also carries a `location`",
+  "src/gc.ts",
+  "    if (e.version) registered.add(`${EXT_PREFIX}${e.version}`);",
+  "    else if (e.version) registered.add(`${EXT_PREFIX}${e.version}`);"),
+
+ ("the typo radius ignores how short the role name is (`po` shields `qa`)",
+  "src/gc.ts",
+  "        return r.length >= 5 ? d <= 2 : d <= 1 && d > 0;",
+  "        return r.length >= 5 && d <= 2;"),
+
+ ("session ids are compared case-sensitively — an uppercase board id protects nothing",
+  "src/gc.ts",
+  "    const sid = t.sid.toLowerCase();",
+  "    const sid = t.sid;"),
 ]
 
 def sh(cmd):

@@ -101,6 +101,7 @@ const mine = (plan, prefix) =>
   plan.tier1.filter((i) => i.kind === "extension" && i.label.startsWith(prefix)).map((i) => i.label).sort();
 
 suite("gc tier 1: every deployed build except the running one and the registered one", () => {
+  runningVersionsFile({});          // R1: with no stamp file at all, the whole tier is refused
   deployExt("9.30.0");
   deployExt("9.31.0");
   deployExt("9.32.0");
@@ -624,7 +625,7 @@ suite("gc S4: a session named only in a role's status.json is referenced", () =>
   const dir = "-home-t-projRefS";
   writeAged(path.join(PROJECTS, dir, "refstatu-0004.jsonl"), "{}\\n", 90);
   writeAged(path.join(PROJECTS, dir, "zzzzzzzz-rs.jsonl"), "{}\\n", 0);
-  ok(gc.referencedSessionIds().has("refstatu-0004"), "counted as a reference");
+  ok(gc.referencedSessions().ids.has("refstatu-0004"), "counted as a reference");
   eq(pick(gc.planGc(input()), 1, "refstatu").length, 0, "so it is not collectable");
 });
 
@@ -637,7 +638,7 @@ suite("gc S4: a session named only in an open-requests result is referenced", ()
   const dir = "-home-t-projRefO";
   writeAged(path.join(PROJECTS, dir, "refopen1-0005.jsonl"), "{}\\n", 90);
   writeAged(path.join(PROJECTS, dir, "zzzzzzzz-ro.jsonl"), "{}\\n", 0);
-  ok(gc.referencedSessionIds().has("refopen1-0005"), "counted as a reference");
+  ok(gc.referencedSessions().ids.has("refopen1-0005"), "counted as a reference");
   eq(pick(gc.planGc(input()), 1, "refopen1").length, 0, "so it is not collectable");
 });
 
@@ -649,7 +650,7 @@ suite("gc S4: the universal sweep finds a session id mentioned in any bus .md or
   const dir = "-home-t-projSweep";
   writeAged(path.join(PROJECTS, dir, sid + ".jsonl"), "{}\\n", 200);
   writeAged(path.join(PROJECTS, dir, "zzzzzzzz-sw.jsonl"), "{}\\n", 0);
-  ok(gc.referencedSessionIds().has(sid), "a prose mention in a notes file still counts");
+  ok(gc.referencedSessions().ids.has(sid), "a prose mention in a notes file still counts");
   eq(pick(gc.planGc(input()), 1, sid.slice(0, 8)).length, 0, "so the transcript stays");
 });
 
@@ -657,7 +658,7 @@ suite("gc S4: the collector's own log does not count as a reference", () => {
   const sid = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
   writeJson(path.join(LOOM, "gc-debug.json"),
             [{ at: "2026-09-01T00:00:00Z", done: [{ kind: "transcript", src: `/x/${sid}.jsonl` }] }]);
-  ok(!gc.referencedSessionIds().has(sid),
+  ok(!gc.referencedSessions().ids.has(sid),
      "letting our own leavings count would make the collector protect them forever");
 });
 
@@ -835,7 +836,7 @@ suite("gc S3: a LIVE role's transcript survives even when its bus is not one loo
   const repo = "tools";
   writeJson(path.join(LOOM, repo, "board.json"), { roles: { dev: { session_id: "toolsdev-0012" } } });
   ok(!gc.loomDirs().includes(repo), "the fixture bus really is one loomDirs() skips");
-  ok(!gc.referencedSessionIds().has("toolsdev-0012"), "so nothing there counts as a reference");
+  ok(!gc.referencedSessions().ids.has("toolsdev-0012"), "so nothing there counts as a reference");
   const dir = "-home-t-projTools";
   writeAged(path.join(PROJECTS, dir, "toolsdev-0012.jsonl"), "{}\n", 200);
   writeAged(path.join(PROJECTS, dir, "zzzzzzzz-tl.jsonl"), "{}\n", 0);
@@ -844,4 +845,231 @@ suite("gc S3: a LIVE role's transcript survives even when its bus is not one loo
      "with no live role it IS collectable — which is what makes the next assertion mean something");
   eq(pick(gc.planGc(input({ liveRoles: new Set([`${repo}/dev`]) })), 1, "toolsdev").length, 0,
      "and the live roster alone keeps it");
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// GC-004 — the second review: the DATA the collector is fed defeated its safeguards
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// Every hole below is the same shape: a read that could not answer returned "nothing" instead of
+// "I do not know", and every guard downstream reads "nothing" as permission.
+
+// ── R1 · an unreadable running-versions.json refuses the whole extension tier ────────────────
+
+suite("gc R1: a TORN running-versions.json collects no build at all", () => {
+  deployExt("7.10.0");
+  deployExt("7.11.0", "7.11.0");
+  fs.writeFileSync(path.join(LOOM, "running-versions.json"), '{"win-1": {"vers');   // interrupted write
+  const plan = gc.planGc(input({ currentVersion: "7.11.0" }));
+  eq(plan.tier1.filter((i) => i.kind === "extension").length, 0,
+     "an empty keep-set is indistinguishable from 'nothing is running' — and ten windows rewrite " +
+     "this file every 15 seconds, so a torn read is ordinary");
+  ok(plan.notes.some((n) => /running-versions\.json is missing or unreadable/.test(n)), "and it says why");
+});
+
+suite("gc R1: an ABSENT running-versions.json collects no build either", () => {
+  deployExt("7.20.0");
+  deployExt("7.21.0", "7.21.0");
+  try { fs.rmSync(path.join(LOOM, "running-versions.json")); } catch { /* already gone */ }
+  const plan = gc.planGc(input({ currentVersion: "7.21.0" }));
+  eq(plan.tier1.filter((i) => i.kind === "extension").length, 0, "no stamp, no opinion");
+  eq(gc.runningVersions(NOW, 86400000).readable, false, "and the reader says so rather than returning empty");
+});
+
+// ── R2 · the stamp is keyed by window, and both shapes are read ──────────────────────────────
+
+suite("gc R2: two windows of ONE project on different builds both protect their build", () => {
+  deployExt("7.30.0");
+  deployExt("7.31.0");
+  deployExt("7.32.0", "7.32.0");
+  // the whole point: both entries are the same project, and a repo-keyed file could hold only one
+  runningVersionsFile({
+    "1234:abc": { version: "7.30.0", at: new Date(NOW - 60000).toISOString(), repo: "Gaming" },
+    "5678:def": { version: "7.31.0", at: new Date(NOW - 60000).toISOString(), repo: "Gaming" },
+  });
+  const plan = gc.planGc(input({ currentVersion: "7.32.0" }));
+  eq(mine(plan, "7.3"), [], "neither window has the floor pulled out from under it");
+});
+
+suite("gc R2: the OLD repo-keyed shape is still honoured alongside the new one", () => {
+  deployExt("7.40.0");
+  deployExt("7.41.0");
+  deployExt("7.42.0", "7.42.0");
+  runningVersionsFile({
+    Gaming: { version: "7.40.0", at: new Date(NOW - 60000).toISOString() },          // pre-0.33.0
+    "999:zzz": { version: "7.41.0", at: new Date(NOW - 60000).toISOString(), repo: "Lumen" },
+  });
+  const plan = gc.planGc(input({ currentVersion: "7.42.0" }));
+  eq(mine(plan, "7.4"), [],
+     "mixed builds write both shapes for a while; the keep-set is the union of every entry");
+});
+
+// ── R3 · a truncated reference sweep is not an answer ────────────────────────────────────────
+
+suite("gc R3: a sweep that ran out of budget collects NO transcript", () => {
+  // more .json files under the loom root than the sweep agrees to open
+  const noisy = path.join(LOOM, "gcR3noise");
+  fs.mkdirSync(noisy, { recursive: true });
+  for (let i = 0; i < 4200; i++) fs.writeFileSync(path.join(noisy, `n${i}.json`), "{}");
+  const dir = "-home-t-projR3";
+  const src = writeAged(path.join(PROJECTS, dir, "beyondbu-0100.jsonl"), "{}\n", 90);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-r3.jsonl"), "{}\n", 0);
+  try {
+    ok(gc.referencedSessions().truncated, "the sweep admits it gave up");
+    const plan = gc.planGc(input());
+    eq(pick(plan, 1, "beyondbu").length, 0,
+       "an id the sweep never reached is indistinguishable from one nothing references");
+    ok(plan.notes.some((n) => /reference sweep .* gave up early/.test(n)), "and it says why");
+    ok(fs.existsSync(src), "the transcript is still there");
+  } finally { fs.rmSync(noisy, { recursive: true, force: true }); }
+});
+
+suite("gc R3: a file over the size bound truncates the sweep rather than being skipped quietly", () => {
+  const big = busPath(makeRepo({ roles: {} }, "gcR3big"), "huge.json");
+  fs.writeFileSync(big, '{"pad":"' + "x".repeat(9_000_000) + '"}');
+  try {
+    ok(gc.referencedSessions().truncated, "skipping a file silently is how a live id went missing");
+  } finally { fs.rmSync(big, { force: true }); }
+});
+
+suite("gc R3: a 3 MB file is read, not skipped — a banked handover is routinely over 2 MB", () => {
+  const repo = makeRepo({ roles: {} }, "gcR3mid");
+  const sid = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
+  fs.writeFileSync(busPath(repo, "handover.md"), "x".repeat(3_000_000) + `\nsession ${sid}\n`);
+  const sweep = gc.referencedSessions();
+  ok(!sweep.truncated, "3 MB is inside the 8 MB bound");
+  ok(sweep.ids.has(sid), "and the id in it counts");
+});
+
+// ── R4 · the live roster the collector uses is machine-wide ──────────────────────────────────
+
+suite("gc R4: a role is live to the collector when the BUS says so, whatever this window tracks", () => {
+  const repo = makeRepo({ roles: { faraway: {} } }, "gcR4bus");
+  writeJson(busPath(repo, "faraway", "status.json"), { status: "working", session_id: "farawayy-0200" });
+  const live = gc.busLiveRoles(Date.now());
+  ok(live.roles.has(`${repo}/faraway`), "a status.json written just now is a session that is running");
+  ok(live.sessionIds.has("farawayy-0200"), "and its session id is live too");
+});
+
+suite("gc R4: a role whose status.json has not been written for hours is not live", () => {
+  const repo = makeRepo({ roles: { sleepy: {} } }, "gcR4old");
+  const f = busPath(repo, "sleepy", "status.json");
+  writeJson(f, { status: "working", session_id: "sleepyyy-0201" });
+  const t = (Date.now() - 5 * 3600000) / 1000;
+  fs.utimesSync(f, t, t);
+  const live = gc.busLiveRoles(Date.now());
+  ok(!live.roles.has(`${repo}/sleepy`), "the file's mtime is the honest clock, not its updated_at");
+  ok(!live.sessionIds.has("sleepyyy-0201"), "so its id is not protected as live");
+});
+
+// ── R5 · the claim survives the move loop; finishing never clobbers a takeover ────────────────
+
+suite("gc R5: the default throttle is half the lease, not every item", () => {
+  const dir = "-home-t-applyThrottle";
+  for (let i = 0; i < 3; i++) writeAged(path.join(PROJECTS, dir, `thrott${i}-050${i}.jsonl`), "{}\n", 40);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-tt.jsonl"), "{}\n", 0);
+  const plan = gc.planGc(input());
+  const items = plan.tier1.filter((i) => i.label.includes("thrott"));
+  let refreshes = 0;
+  gc.applyGc({ ...plan, tier1: items, tier2: [], tier3: [] }, [1], { refresh: () => { refreshes++; } });
+  eq(refreshes, 0, "three small files take a millisecond; rewriting the lease file each time is waste");
+});
+
+suite("gc R5: a long pass refreshes its claim between items", () => {
+  const dir = "-home-t-applyRefresh";
+  for (let i = 0; i < 3; i++) {
+    writeAged(path.join(PROJECTS, dir, `refresh${i}-030${i}.jsonl`), "{}\n", 40);
+  }
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-rf.jsonl"), "{}\n", 0);
+  const plan = gc.planGc(input());
+  const items = plan.tier1.filter((i) => i.label.includes("refresh"));
+  ok(items.length >= 3, "three items to move");
+  let refreshes = 0;
+  // `refreshEveryMs: 0` removes the throttle, so the callback is observable. The first version of
+  // the applier moved up to 700 MB without ever touching its claim, and the lease is five minutes.
+  const r = gc.applyGc({ ...plan, tier1: items, tier2: [], tier3: [] }, [1],
+    { refresh: () => { refreshes++; }, refreshEveryMs: 0 });
+  eq(r.done.length, items.length, "everything moved");
+  eq(refreshes, items.length, "and the claim was refreshed between every one of them");
+});
+
+suite("gc R5: a refresh that throws never fails the pass", () => {
+  const dir = "-home-t-applyThrow";
+  writeAged(path.join(PROJECTS, dir, "throwref-0400.jsonl"), "{}\n", 40);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-th.jsonl"), "{}\n", 0);
+  const plan = gc.planGc(input());
+  const item = pick(plan, 1, "throwref")[0];
+  const r = gc.applyGc({ ...plan, tier1: [item], tier2: [], tier3: [] }, [1],
+    { refresh: () => { throw new Error("bus went away"); }, refreshEveryMs: 0 });
+  eq(r.skipped.length, 0, "keeping a lease alive is best-effort, not a precondition");
+  eq(r.done.length, 1, "the move still happened");
+});
+
+suite("gc R5: finishing does NOT release a claim another window has taken over", () => {
+  const takenOver = { owner: "winB", ownerAt: NOW };
+  const next = gc.finishAuto(takenOver, NOW + 1000, null, "our pass ended", "winA");
+  eq(next.owner, "winB", "winA's lease went stale and winB started; clearing it would hand winB's " +
+     "in-flight pass to a third window");
+  eq(next.ownerAt, NOW, "untouched");
+  eq(next.lastRunAt, NOW + 1000, "but what we did is still recorded");
+});
+
+suite("gc R5: finishing releases our OWN claim as before", () => {
+  const ours = { owner: "winA", ownerAt: NOW };
+  const next = gc.finishAuto(ours, NOW + 1000, null, "done", "winA");
+  eq(next.owner, undefined, "released");
+  eq(next.ownerAt, undefined, "cleanly");
+});
+
+// ── R6 · the small corrections ───────────────────────────────────────────────────────────────
+
+suite("gc R6: a registration whose location and version disagree keeps BOTH builds", () => {
+  deployExt("7.50.0");
+  deployExt("7.51.0");
+  deployExt("7.52.0");
+  const loc = path.join(EXT_ROOT, "local.loom-session-tracker-7.50.0");
+  fs.writeFileSync(path.join(EXT_ROOT, "extensions.json"), JSON.stringify([
+    { identifier: { id: "local.loom-session-tracker" }, version: "7.51.0",
+      location: { fsPath: loc, path: loc } },        // a registry caught mid-rewrite
+  ]));
+  runningVersionsFile({ w: { version: "7.52.0", at: new Date(NOW).toISOString() } });
+  const plan = gc.planGc(input({ currentVersion: "7.52.0" }));
+  eq(mine(plan, "7.5"), [], "whichever field is the stale one, the build the editor loads survives");
+});
+
+suite("gc R6: a SHORT role name uses a tighter typo radius", () => {
+  // At distance 2 every two-letter role is a typo of every other: `po` would shield `qa`.
+  const repo = makeRepo({ roles: { po: {}, qa: {} } }, "gcR6short");
+  const root = makeGitRepo("r6short");
+  addWorktree(root, "qb", { commit: true, merge: true });     // one edit from `qa` — a real near-miss
+  addWorktree(root, "zz", { commit: true, merge: true });     // two edits from `qa` — not a typo
+  const plan = gc.planGc(input({ repoRoots: { [repo]: root } }));
+  match(pick(plan, 3, `${repo}/qb`)[0].detail, /one typo away from the role "qa"/,
+        "one edit on a short name is still a near-miss");
+  eq(labels(pick(plan, 2, `${repo}/zz`)), [`${repo}/zz`],
+     "but two edits on a two-letter name is a different word, and real garbage must stay collectable");
+});
+
+suite("gc R6: an UPPERCASE session id in a board still protects its transcript", () => {
+  const sid = "9F8E7D6C-5B4A-4938-8271-60514F3E2D1C";
+  const repo = makeRepo({ roles: { dev: { session_id: sid } } }, "gcR6upper");
+  const dir = "-home-t-projUpper";
+  writeAged(path.join(PROJECTS, dir, sid.toLowerCase() + ".jsonl"), "{}\n", 90);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-up.jsonl"), "{}\n", 0);
+  ok(gc.referencedSessions().ids.has(sid.toLowerCase()), `${repo}'s board reference is folded to lower case`);
+  eq(pick(gc.planGc(input()), 1, sid.slice(0, 8).toLowerCase()).length, 0, "so the transcript stays");
+});
+
+suite("gc R6: an UPPERCASE transcript FILENAME is matched against a lower-case reference", () => {
+  // The other direction, and the one that makes the comparison itself load-bearing: the reference
+  // readers fold to lower case, so a file named in upper case is only protected if the candidate is
+  // folded too. Both halves of a case-insensitive compare have to be tested or one of them is free
+  // to rot.
+  const sid = "AB12CD34-5E6F-4708-9A1B-2C3D4E5F6071";
+  const repo = makeRepo({ roles: { dev: { session_id: sid.toLowerCase() } } }, "gcR6upperFile");
+  const dir = "-home-t-projUpperFile";
+  writeAged(path.join(PROJECTS, dir, sid + ".jsonl"), "{}\n", 90);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-uf.jsonl"), "{}\n", 0);
+  ok(gc.referencedSessions().ids.has(sid.toLowerCase()), `${repo}'s board names it in lower case`);
+  eq(pick(gc.planGc(input()), 1, sid.slice(0, 8)).length, 0,
+     "and the upper-case file on disk is recognised as the same session");
 });

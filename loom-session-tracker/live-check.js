@@ -232,13 +232,17 @@ const info = (n, d) => record("INFO", n, d);
     const pkgV = JSON.parse(fsx.readFileSync(path.join(__dirname, "package.json"), "utf8")).version;
     const stamp = JSON.parse(fsx.readFileSync(
       path.join(require("os").homedir(), ".claude", "loom", "running-versions.json"), "utf8"));
-    const behind = Object.entries(stamp).filter(([, v]) => v && v.version !== pkgV);
+    // Entries are keyed by windowId since 0.33.0 and carry `repo` as a field; older builds keyed
+    // them by repo. Both shapes are read, and only FRESH entries are judged — a week-old key is a
+    // window that has been closed, not a window running an old build.
+    const label = ([k, v]) => (v && v.repo) || (/^\d+:/.test(k) ? `window ${k}` : k);
     const fresh = Object.entries(stamp).filter(([, v]) => v && Date.now() - Date.parse(v.at) < 10 * 60000);
+    const behind = fresh.filter(([, v]) => v.version !== pkgV);
     if (!fresh.length) {
       warn("running version", `no window has ticked in the last 10 minutes — cannot tell what is running`);
     } else if (behind.length) {
       fail("windows are running an OLD build",
-        behind.map(([r, v]) => `${r} is on ${v.version}`).join("; ") +
+        behind.map((e) => `${label(e)} is on ${e[1].version}`).join("; ") +
         ` — deployed is ${pkgV}. Reload those windows (Developer: Reload Window); until then they ` +
         `behave like the build they loaded, whatever this file says.`);
     } else {

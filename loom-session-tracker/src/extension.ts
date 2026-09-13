@@ -31,7 +31,7 @@ import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrches
 import { injectTo, setSenderWindow } from "./inject";
 import { DEFAULT_WINDOW_TOKENS, pct, transcriptFor } from "./context";
 import { planGc, applyGc, renderGc, gcSummary, fmtBytes, loadGcState, saveGcState, dueForAuto,
-         finishAuto, refreshLease, liveSessionIdsOf, GcConfig, GcPlan, ApplyOptions,
+         finishAuto, refreshLease, liveSessionIdsOf, busLiveRoles, GcConfig, GcPlan, ApplyOptions,
          DEFAULT_GC_CONFIG } from "./gc";
 
 let timer: NodeJS.Timeout | undefined;
@@ -447,11 +447,28 @@ export function activate(context: vscode.ExtensionContext) {
         debugLog({ version: VERSION, repo, ok: r.ok, error: r.error, liveRoles: r.liveRoles,
                    agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
         try {
+          // KEYED BY WINDOW, not by project. Two windows are routinely open on one project (a
+          // worktree window resolves to its parent repo id) and would share a slot, so whichever
+          // ticked second hid the other's build; every folderless window collapsed into one
+          // "(no project)" entry. Garbage collection reads this to decide which builds are still in
+          // use, so a hidden window is a build that looks collectable while an editor is running it.
           const stamp = path.join(os.homedir(), ".claude", "loom", "running-versions.json");
           let all: any = {};
           try { all = JSON.parse(fs.readFileSync(stamp, "utf8")) || {}; } catch { /* first */ }
-          all[repo || "(no project)"] = { version: VERSION, at: new Date().toISOString() };
-          fs.writeFileSync(stamp, JSON.stringify(all, null, 2));
+          if (!all || typeof all !== "object" || Array.isArray(all)) all = {};
+          all[windowId] = { version: VERSION, at: new Date().toISOString(), repo: repo || null };
+          // Prune entries no window has refreshed in a week, or the file grows a key per reload
+          // forever (a new pid and a new windowId every time).
+          const weekAgo = Date.now() - 7 * 86_400_000;
+          for (const [k, v] of Object.entries<any>(all)) {
+            const at = Date.parse(String(v && v.at || ""));
+            if (Number.isFinite(at) && at < weekAgo) delete all[k];
+          }
+          // ATOMIC: ten windows rewrite this every 15 s, and gc refuses to collect any build when it
+          // reads a torn file — so a plain write would routinely disable the extension tier.
+          const tmp = stamp + ".tmp." + process.pid;
+          fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+          fs.renameSync(tmp, stamp);
         } catch { /* a version stamp must never break a tick */ }
         runNotifier();
         runLimitWatcher();
@@ -538,13 +555,26 @@ export function activate(context: vscode.ExtensionContext) {
       }
       return out;
     };
-    const gcLiveRoles = (): Set<string> =>
-      new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => `${a.repo}/${a.role}`));
+    /**
+     * The live roster garbage collection is judged against. `tracker.view()` is scoped to THIS
+     * window's project by design, and the automatic pass is machine-wide — so on its own it reports
+     * every other project as having nothing live, and every other project's worktrees and
+     * transcripts lose their live protection. The bus knows better: a role whose `status.json` was
+     * written in the last half hour is running, whoever is watching it. Union of the two.
+     */
+    const gcLive = (): { roles: Set<string>; sessionIds: Set<string> } => {
+      const bus = busLiveRoles(Date.now());
+      const mine = new Set(tracker.view().filter((a) => a.liveness === "live")
+        .map((a) => `${a.repo}/${a.role}`));
+      const roles = new Set<string>([...bus.roles, ...mine]);
+      return { roles, sessionIds: new Set<string>([...bus.sessionIds, ...liveSessionIdsOf(mine)]) };
+    };
+    const gcLiveRoles = (): Set<string> => gcLive().roles;
     /** The world AS IT IS at apply time — read fresh, never carried over from planning. Without the
      *  live roster here, `health.removeWorktree`'s live refusal could never fire from gc at all. */
-    const gcApplyOptions = (): ApplyOptions => {
-      const live = gcLiveRoles();
-      return { repoRoots: gcRepoRoots(), liveRoles: live, liveSessionIds: liveSessionIdsOf(live) };
+    const gcApplyOptions = (refresh?: () => void): ApplyOptions => {
+      const live = gcLive();
+      return { repoRoots: gcRepoRoots(), liveRoles: live.roles, liveSessionIds: live.sessionIds, refresh };
     };
     const computeGcPlan = (): GcPlan | null => {
       if (!gcConfig().enabled) return null;
@@ -569,7 +599,11 @@ export function activate(context: vscode.ExtensionContext) {
         const mid = refreshLease(loadGcState(), windowId, Date.now());
         if (mid) saveGcState(mid);
         if (plan) {
-          result = applyGc(plan, [1], gcApplyOptions());
+          const keepClaim = () => {
+            const r = refreshLease(loadGcState(), windowId, Date.now());
+            if (r) saveGcState(r);
+          };
+          result = applyGc(plan, [1], gcApplyOptions(keepClaim));
           note = `tier 1: ${result.done.length} collected (${fmtBytes(result.bytesFreed)}), ${result.skipped.length} skipped`;
           if (result.done.length) {
             vscode.window.setStatusBarMessage(
@@ -577,7 +611,7 @@ export function activate(context: vscode.ExtensionContext) {
           }
         } else note = "collection is off";
       } catch (e: any) { note = `aborted: ${String(e && e.message || e).slice(0, 80)}`; }
-      saveGcState(finishAuto(loadGcState(), Date.now(), result, note));
+      saveGcState(finishAuto(loadGcState(), Date.now(), result, note, windowId));
       debugLog({ gc: note });
     };
     /** Tiers 1+2, after a confirmation that names the counts. */
@@ -596,7 +630,7 @@ export function activate(context: vscode.ExtensionContext) {
         `_archive/${plan.date} or keeps its branch.`, "Collect", "Cancel");
       if (answer !== "Collect") { vscode.window.setStatusBarMessage("Loom: nothing collected.", 4000); return; }
       const result = applyGc(plan, [1, 2], gcApplyOptions());
-      saveGcState(finishAuto(loadGcState(), Date.now(), result, "manual tiers 1+2"));
+      saveGcState(finishAuto(loadGcState(), Date.now(), result, "manual tiers 1+2", windowId));
       vscode.window.setStatusBarMessage(
         `Loom: collected ${result.done.length} item(s), ${fmtBytes(result.bytesFreed)}; ${result.skipped.length} skipped.`, 8000);
       if (result.skipped.length) {
