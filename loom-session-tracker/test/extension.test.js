@@ -494,3 +494,240 @@ suite("context memory: a visible orchestrator panel with no compact button is NO
     eq(readJson(busPath(repo, "context-state.json")).triggerFromPanel, true);
   } finally { off2(); }
 });
+
+// ── garbage collection, through activate() ───────────────────────────────────────────────────
+// The planner and applier are asserted directly in gc.test.js; what is tested here is the WIRING:
+// that the digest offers the action with the real counts, that "No" changes nothing on disk, that
+// "Yes" actually moves the fixture files, and that the automatic tier-1 pass is rate-limited and
+// leased so seven open windows do not all collect at once.
+//
+// TWO THINGS EVERY SUITE HERE MUST CONTROL, both learned by getting them wrong:
+//   * the AUTOMATIC pass runs on activation, so a suite about the manual path must first say the
+//     machine is not due (`notDue()`), or activation quietly collects the fixture out from under it;
+//   * suites share one sandbox HOME and one dated archive, so two suites archiving
+//     `local.loom-session-tracker-0.10.0` collide and the second is skipped as "already exists".
+//     Every suite below therefore uses version numbers of its own.
+
+/** Boot with an extensionPath, so VERSION is a real version instead of "unknown". */
+async function activateAsVersion(frames, version) {
+  const extDir = fs.mkdtempSync(path.join(os.tmpdir(), "loom-extpath-"));
+  fs.writeFileSync(path.join(extDir, "package.json"), JSON.stringify({ version }));
+  cdp.readFrames = async () => frames;
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
+  const context = { subscriptions: [], extensionPath: extDir };
+  ext.activate(context);
+  await settle();
+  return () => { ext.deactivate(); for (const d of context.subscriptions) { try { d.dispose && d.dispose(); } catch {} } };
+}
+
+const EXTS = path.join(os.homedir(), ".vscode-oss", "extensions");
+const PROJ = path.join(os.homedir(), ".claude", "projects");
+const GC_STATE = path.join(LOOM, "gc-state.json");
+
+/** The machine has just collected, so activation's automatic pass stands down. */
+const notDue = () => writeJson(GC_STATE, { lastRunAt: Date.now(), lastNote: "test: not due" });
+/** The machine has never collected. */
+const due = () => { try { fs.rmSync(GC_STATE); } catch { /* already absent */ } };
+
+/** Deployed build directories, plus the extensions.json entry saying which one the editor loads. */
+function deployed(versions, registered) {
+  fs.mkdirSync(EXTS, { recursive: true });
+  for (const v of versions) fs.mkdirSync(path.join(EXTS, `local.loom-session-tracker-${v}`), { recursive: true });
+  const loc = path.join(EXTS, `local.loom-session-tracker-${registered}`);
+  fs.writeFileSync(path.join(EXTS, "extensions.json"), JSON.stringify(
+    [{ identifier: { id: "local.loom-session-tracker" }, version: registered, location: { fsPath: loc, path: loc } }]));
+}
+/** An old, unreferenced transcript in a directory that also holds a newer one (so it is collectable). */
+function collectableTranscript(dir, sid, ageDays = 40) {
+  const f = path.join(PROJ, dir, sid + ".jsonl");
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, "old\n");
+  const t = (Date.now() - ageDays * 86400000) / 1000;
+  fs.utimesSync(f, t, t);
+  fs.writeFileSync(path.join(PROJ, dir, "keepnewe-" + sid.slice(-4) + ".jsonl"), "{}\n");
+  return f;
+}
+const archived = (...rest) => path.join(LOOM, "_archive", new Date().toISOString().slice(0, 10), ...rest);
+
+suite("gc wiring: the digest offers Collect garbage with the real counts", async () => {
+  const repo = makeRepo({ roles: { blockedone: {} } }, "gcW1");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  writeJson(busPath(repo, "blockedone", "status.json"), { status: "blocked", current: "a decision" });
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  notDue();
+  deployed(["1.10.0", "1.11.0", "0.33.0"], "0.33.0");
+  collectableTranscript("-gcw1-proj", "gcw1sess-0001");
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    let offered = null;
+    vscode._answer = (m, actions) => { offered = { m, actions }; return undefined; };
+    await vscode.commands.executeCommand("loomSessionTracker.digest");
+    await settle(40);
+    ok(offered, "the digest came up (there is a blocked role)");
+    ok(offered.actions.includes("Collect garbage"), "and it offers the action: " + offered.actions);
+    // The count must be the REAL one, and this sandbox is shared with every suite above, so the
+    // expected number is the planner's own answer rather than a literal that drifts with fixtures.
+    const gc = load("gc.js");
+    const expect = gc.planGc({ now: Date.now(), cfg: gc.DEFAULT_GC_CONFIG, currentVersion: "0.33.0",
+                               liveRoles: new Set(), repoRoots: {} });
+    const n = expect.tier1.length + expect.tier2.length;
+    ok(n >= 3, `the fixture really is collectable (${n}: two builds and a transcript at least)`);
+    match(offered.m, new RegExp(`${n} collectable`), "with the real count: " + offered.m);
+  } finally { off(); }
+});
+
+suite("gc wiring: the plan can be read without collecting anything", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW1b");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  notDue();
+  deployed(["1.20.0", "0.33.0"], "0.33.0");
+  const kept = path.join(EXTS, "local.loom-session-tracker-1.20.0");
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    vscode._quickPick = (items) => items.find((i) => i.label === "Show plan");
+    await vscode.commands.executeCommand("loomSessionTracker.collectGarbage");
+    await settle(40);
+    match(vscode._messages.info.join("\n"), /Garbage, tier 1/, "the plan is shown");
+    ok(fs.existsSync(kept), "and reading it collects nothing");
+  } finally { off(); }
+});
+
+suite("gc wiring: answering No to the confirmation changes nothing on disk", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW2");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  notDue();
+  deployed(["1.30.0", "0.33.0"], "0.33.0");
+  const tr = collectableTranscript("-gcw2-proj", "gcw2sess-0002");
+  const doomed = path.join(EXTS, "local.loom-session-tracker-1.30.0");
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    vscode._quickPick = (items) => items.find((i) => i.label === "Run tiers 1+2");
+    vscode._warnAnswer = "Cancel";
+    await vscode.commands.executeCommand("loomSessionTracker.collectGarbage");
+    await settle(40);
+    // the exact tier-1 count is whatever this shared sandbox has accumulated by now; what matters
+    // here is that the confirmation states counts before anything is touched (gcW1 pins the numbers)
+    match(vscode._messages.warn.join("\n"),
+          /collect \d+ tier-1 item\(s\) \(archived\) and \d+ tier-2 item\(s\)/,
+          "the confirmation names the counts before anything is touched");
+    match(vscode._messages.warn.join("\n"), /Nothing is deleted/, "and promises what it will not do");
+    ok(fs.existsSync(tr), "the transcript is still where it was");
+    ok(fs.existsSync(doomed), "and so is the superseded build");
+    match(vscode._statusMessages.join("\n"), /nothing collected/, "and it says so");
+  } finally { off(); }
+});
+
+suite("gc wiring: answering Collect actually moves the files into the dated archive", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW3");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  notDue();
+  deployed(["1.40.0", "0.33.0"], "0.33.0");
+  const tr = collectableTranscript("-gcw3-proj", "gcw3sess-0003");
+  const doomed = path.join(EXTS, "local.loom-session-tracker-1.40.0");
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    vscode._quickPick = (items) => items.find((i) => i.label === "Run tiers 1+2");
+    vscode._warnAnswer = "Collect";
+    await vscode.commands.executeCommand("loomSessionTracker.collectGarbage");
+    await settle(60);
+    ok(!fs.existsSync(tr), "the transcript moved");
+    ok(!fs.existsSync(doomed), "and so did the superseded build");
+    ok(fs.existsSync(archived("extensions", "local.loom-session-tracker-1.40.0")),
+       "the build is in the archive — recoverable, never deleted");
+    ok(fs.existsSync(archived("transcripts", "-gcw3-proj", "gcw3sess-0003.jsonl")),
+       "and so is the transcript");
+    ok(fs.existsSync(path.join(EXTS, "local.loom-session-tracker-0.33.0")), "the running build is untouched");
+  } finally { off(); }
+});
+
+suite("gc wiring: the automatic tier-1 pass runs once, and not again inside the interval", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW4");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  due();
+  deployed(["1.50.0", "0.33.0"], "0.33.0");
+  const doomed = path.join(EXTS, "local.loom-session-tracker-1.50.0");
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(80);
+    ok(!fs.existsSync(doomed), "activation collected tier 1 without asking — every action is a move");
+    ok(fs.existsSync(archived("extensions", "local.loom-session-tracker-1.50.0")), "into the archive");
+    const st = readJson(GC_STATE);
+    ok(st.lastRunAt, "the pass is recorded");
+    eq(st.owner, undefined, "and its lease is released, so a crash cannot deadlock the next one");
+  } finally { off(); }
+  // a second window activating immediately must not run it again
+  const before = readJson(GC_STATE).lastRunAt;
+  deployed(["1.51.0", "0.33.0"], "0.33.0");
+  const doomed2 = path.join(EXTS, "local.loom-session-tracker-1.51.0");
+  vscode._reset();
+  openProject(repo);
+  const off2 = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(80);
+    ok(fs.existsSync(doomed2), "the next window inside the 24h interval collects nothing");
+    eq(readJson(GC_STATE).lastRunAt, before, "and the interval is not restarted");
+  } finally { off2(); }
+});
+
+suite("gc wiring: a window does NOT collect while another window holds the lease", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW5");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  deployed(["1.60.0", "0.33.0"], "0.33.0");
+  const doomed = path.join(EXTS, "local.loom-session-tracker-1.60.0");
+  // due (the last pass is long past) but claimed seconds ago by a window that is still working
+  writeJson(GC_STATE, { lastRunAt: Date.now() - 100 * 3600000, owner: "other-window", ownerAt: Date.now() - 1000 });
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(80);
+    ok(fs.existsSync(doomed), "one collector per machine — the second window stands down");
+    eq(readJson(GC_STATE).owner, "other-window", "and leaves the claim alone");
+  } finally { off(); }
+});
+
+suite("gc wiring: a STALE lease does not block collection forever", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW5b");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;      // 0.33.0 ships it off; see D1
+  deployed(["1.70.0", "0.33.0"], "0.33.0");
+  const doomed = path.join(EXTS, "local.loom-session-tracker-1.70.0");
+  // claimed by a window that has since been closed — its lease expired
+  writeJson(GC_STATE, { lastRunAt: Date.now() - 100 * 3600000, owner: "dead-window",
+                        ownerAt: Date.now() - 60 * 60000 });
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(80);
+    ok(!fs.existsSync(doomed), "the abandoned claim is taken over and the pass runs");
+    eq(readJson(GC_STATE).owner, undefined, "and released again afterwards");
+  } finally { off(); }
+});
+
+suite("gc wiring: gcEnabled=false collects nothing and says so", async () => {
+  const repo = makeRepo({ roles: {} }, "gcW6");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  deployed(["1.80.0", "0.33.0"], "0.33.0");
+  const doomed = path.join(EXTS, "local.loom-session-tracker-1.80.0");
+  due();
+  vscode._config["loomSessionTracker.gcEnabled"] = false;
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(80);
+    ok(fs.existsSync(doomed), "nothing was collected automatically");
+    await vscode.commands.executeCommand("loomSessionTracker.collectGarbage");
+    await settle(40);
+    match(vscode._messages.info.join("\n"), /garbage collection is disabled/, "and the command explains why");
+    ok(fs.existsSync(doomed), "still there");
+  } finally { off(); }
+});

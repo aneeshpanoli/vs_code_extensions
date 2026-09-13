@@ -11,8 +11,11 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
 
-**Version 0.32.0** deployed and pushed; 449 tests, 46/46 mutations caught (parallel), `./live.sh`
-clean except the warnings listed under open threads. Read this section, then `README.md`, then run
+**Version 0.33.0** built (NOT yet deployed or pushed); **523 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), **72/72 mutations caught** under the baseline-grading
+gate GC-003 introduced — measured on 0.33.0 composed over `main` @ f435750, where the count is 524.
+`./live.sh` is clean except the warnings under open threads and the expected "windows are running an
+OLD build" failure until the deploy + reload. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
 ### The principles the code now rests on (each was learned from a live failure)
@@ -70,6 +73,32 @@ clean except the warnings listed under open threads. Read this section, then `RE
     (an oversize memory still clears — the note says to trim it); and **no watchers, Monitors or
     `/loop` in an orchestrator session** — the tracker wakes it when a role finishes, stalls or is
     resumed, and every self-armed wake pays the whole context again (restore prompt, playbook §17).
+
+15. **Garbage is misinformation, not waste** (0.33.0, measured 2026-09-13: 34 deployed builds with
+    one in use, 2.4 GB of transcripts with 931 untouched for 14 days, funisland at 75 worktrees of
+    which 72 are on no board role, boards naming 16 dead sessions, 1.4 GB of checkpoints). The cost
+    is not disk: an orphan worktree or a dead board id feeds straight back into an orchestrator's
+    context — a `git worktree list` of funisland fills a panel, and by principle 14 that is paid on
+    every turn — and a dead transcript is a wrong-lookup hazard (the fourteen-clear night ran on a
+    stale copy under another project's directory). `src/gc.ts` plans and applies in three tiers and
+    **never deletes anything**: tier 1 (superseded builds, unreferenced transcripts, old `.bak-`
+    files) moves into `~/.claude/loom/_archive/<date>/` automatically once per `gcIntervalHours`
+    behind a cross-window lease like the context cycle's; tier 2 (orphaned *clean and merged*
+    worktrees via the existing `removeWorktree` safeguards, board entries marked `dead` and never
+    removed) needs a click; tier 3 (stale buses, copied owner `.id` files, unmerged/dirty orphans,
+    checkpoints) is only ever listed. `gcEnabled` ships **false**: the first pass on this machine
+    moves ~700 MB, so a person runs Show plan → Run tiers 1+2 once before it is automatic.
+    The hardening that survived adversarial review is the interesting part, and all of it is one
+    idea — **the registry is not the runtime, and a plan is not the world**:
+    an editor keeps the code it loaded, so nine windows were on 0.29.0 while `extensions.json` said
+    0.32.0 (`running-versions.json` is now part of the keep-set, and a non-semver `VERSION` refuses
+    the whole tier); a session id can be referenced only in a `status.json` or an `open-requests`
+    result, so the reference set is those plus a sweep of every `*.json`/`*.md` under the loom root,
+    over buses that have no `board.json` at all; a worktree name is matched through the bus's aliases
+    and a name one typo from a real role (`Gaming/protyping`) drops to tier 3; and every safeguard is
+    asked AGAIN at apply time against the live roster, because the plan is read by a person who then
+    clicks. A lease timestamp in the future is expired, not fresh — a clock step must not create a
+    claim nothing can break.
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),

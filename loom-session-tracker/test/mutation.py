@@ -252,6 +252,139 @@ MUTATIONS = [
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",
   'const c = RESETS_AT_RE.exec("");'),
+ # ── garbage collection (0.33.0). Each safeguard below is a way a collector could destroy something
+ # the machine still needs; a mutant that survives means that particular loss could happen unnoticed.
+ ("a transcript a bus still references is collected anyway (the wrong-lookup hazard, restored)",
+  "src/gc.ts",
+  "    if (referenced.has(t.sid)) continue;                      // something on the bus points at it",
+  "    if (referenced.has(t.sid) && Boolean(0)) continue;"),
+
+ ("the newest transcript in a project dir is collectable — the session a /clear would resume from",
+  "src/gc.ts",
+  "    if (newestPerDir.get(t.projectDir) === t.file) continue;  // the freshest in its dir IS that dir's session",
+  "    if (newestPerDir.get(t.projectDir) === t.file && Boolean(0)) continue;"),
+
+ ("an ORCHESTRATOR's board entry may be marked dead — the entry that re-finds it after a /clear",
+  "src/gc.ts",
+  "  if (isOwnerRole(role)) return null;",
+  "  if (isOwnerRole(role) && Boolean(0)) return null;"),
+
+ ("a LIVE role's board entry may be marked dead — a fresh session's id lags its transcript",
+  "src/gc.ts",
+  "  if (liveRoles.has(`${repo}/${role}`)) return null;",
+  "  if (liveRoles.has(`${repo}/${role}`) && Boolean(0)) return null;"),
+
+ ("a DIRTY orphan worktree is offered for removal — uncommitted work is not garbage",
+  "src/gc.ts",
+  '        w.dirty ? "uncommitted work" : "",',
+  '        false ? "uncommitted work" : "",'),
+
+ ("an orphan worktree backing a LIVE session is offered for removal",
+  "src/gc.ts",
+  '        w.live ? "a LIVE session" : "",',
+  '        false ? "a LIVE session" : "",'),
+
+ ("an UNMERGED orphan worktree is offered for removal — its commits are on no other branch",
+  "src/gc.ts",
+  '        merged === false ? `unmerged (${w.ahead ?? "?"} commit(s) ahead)` : "",',
+  '        false ? `unmerged (${w.ahead ?? "?"} commit(s) ahead)` : "",'),
+
+ ("a build is archived without knowing which one the editor loads (uninstall from under it)",
+  "src/gc.ts",
+  '    plan.notes.push("extensions.json unreadable — no deployed build is collectable this run");\n    return;',
+  '    plan.notes.push("extensions.json unreadable — no deployed build is collectable this run");'),
+
+ ("the collector's cross-window lease is gone — seven windows collect the same files at once",
+  "src/gc.ts",
+  "  const heldByOther = !!state.owner && state.owner !== windowId && leaseAge >= 0 && leaseAge < LEASE_MS;",
+  "  const heldByOther = false;"),
+
+ ("the automatic pass ignores its own interval and runs on every activation",
+  "src/gc.ts",
+  "  if (state.lastRunAt && sinceLast >= 0 && sinceLast < every) {",
+  "  if (state.lastRunAt && sinceLast >= 0 && sinceLast < every && Boolean(0)) {"),
+ # ── GC-002 hardening (0.33.0). Each of these was a real hole in the first version of gc.ts, found
+ # by adversarial review before it was banked; a survivor means that hole is open again.
+ ("a build nine windows are still RUNNING is archived (the registry is not the runtime)",
+  "src/gc.ts",
+  "  for (const v of running) keep.add(`${EXT_PREFIX}${v}`);",
+  "  for (const v of running) { void v; }"),
+
+ ("a non-semver current version no longer refuses the extension tier (VERSION=unknown)",
+  "src/gc.ts",
+  "  if (!SEMVER_RE.test(input.currentVersion)) {",
+  "  if (!SEMVER_RE.test(input.currentVersion) && Boolean(0)) {"),
+
+ ("only the LAST registration in extensions.json is honoured",
+  "src/gc.ts",
+  "    if (typeof loc === \"string\" && loc) registered.add(path.basename(loc));",
+  "    if (typeof loc === \"string\" && loc) { registered.clear(); registered.add(path.basename(loc)); }"),
+
+ ("a LIVE role's transcript is archived when its bus is not one loomDirs() scans",
+  "src/gc.ts",
+  "    if (liveSessions.has(t.sid)) continue;",
+  "    if (liveSessions.has(t.sid) && Boolean(0)) continue;"),
+
+ ("a session id present only in a role's status.json is not a reference",
+  "src/gc.ts",
+  "      if (st && typeof st === \"object\") { add(st.session_id); add(st.sessionId); }",
+  "      if (st && typeof st === \"object\" && Boolean(0)) { add(st.session_id); add(st.sessionId); }"),
+
+ ("the applier hands scanWorktrees an EMPTY live set — removeWorktree's live refusal can never fire",
+  "src/gc.ts",
+  """          const live = new Set(Array.from(liveRoles)
+            .filter((k) => k.startsWith(item.repo + "/")).map((k) => k.slice(item.repo!.length + 1)));""",
+  "          const live = new Set<string>();"),
+
+ ("a transcript whose session went LIVE between the plan and the click is archived anyway",
+  "src/gc.ts",
+  '        if (item.sessionId && liveSessionIds.has(item.sessionId)) reason = "its session is LIVE now";',
+  '        if (item.sessionId && liveSessionIds.has(item.sessionId) && Boolean(0)) reason = "its session is LIVE now";'),
+
+ ("a board entry is marked dead without re-asking whether it still is",
+  "src/gc.ts",
+  "  if (!deadEntryReason(repo, role, liveRoles, entry)) {",
+  "  if (!deadEntryReason(repo, role, liveRoles, entry) && Boolean(0)) {"),
+
+ ("a board entry rebound by a /clear since the plan is marked dead on its OLD id",
+  "src/gc.ts",
+  '  if (item.sessionId && sid !== item.sessionId) return "the entry was rebound since the plan was made";',
+  '  if (item.sessionId && sid !== item.sessionId && Boolean(0)) return "the entry was rebound since the plan was made";'),
+
+ ("a lease stamped in the FUTURE can never be broken (clock skew locks out every window)",
+  "src/gc.ts",
+  "  const heldByOther = !!state.owner && state.owner !== windowId && leaseAge >= 0 && leaseAge < LEASE_MS;",
+  "  const heldByOther = !!state.owner && state.owner !== windowId && leaseAge < LEASE_MS;"),
+
+ ("a lastRunAt in the FUTURE means the interval never elapses again",
+  "src/gc.ts",
+  "  if (state.lastRunAt && sinceLast >= 0 && sinceLast < every) {",
+  "  if (state.lastRunAt && sinceLast < every) {"),
+
+ ("a window refreshes a lease that belongs to another window",
+  "src/gc.ts",
+  "  if (state.owner !== windowId) return null;",
+  "  if (state.owner !== windowId && Boolean(0)) return null;"),
+
+ ("a DANGLING SYMLINK at the archive destination is overwritten instead of refused",
+  "src/gc.ts",
+  '  if (existsAny(dest)) return "destination already exists — left alone";',
+  '  if (statOf(dest)) return "destination already exists — left alone";'),
+
+ ("a copy verified against a TRUNCATED measurement counts as verified",
+  "src/gc.ts",
+  '  if (before.truncated || after.truncated) return "copy failed, source left in place (too large to verify)";',
+  '  if ((before.truncated || after.truncated) && Boolean(0)) return "copy failed, source left in place (too large to verify)";'),
+
+ ("a worktree named by a bus ALIAS of a live role reads as an orphan",
+  "src/gc.ts",
+  "      if (!w.orphaned || canon.has(canonical)) continue;",
+  "      if (!w.orphaned) continue;"),
+
+ ("a worktree one typo away from a real role is offered for removal (Gaming/protyping)",
+  "src/gc.ts",
+  '        near ? `its name is one typo away from the role "${near}"` : "",',
+  '        false ? `its name is one typo away from the role "${near}"` : "",'),
 ]
 
 def sh(cmd):

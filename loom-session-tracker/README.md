@@ -191,6 +191,87 @@ workers on the premium model, unbanked worktree changes, roles whose session is 
 roles, and whether an orchestrator is tagged at all — with one-click **Tag orchestrator** and
 **Reopen sessions**.
 
+### Garbage collection
+
+Nothing else here looks **across** projects at what has stopped being used. Measured on this machine
+2026-09-13: **34** deployed extension versions (99 MB, one in use); **2.4 GB** of transcripts, 931 of
+them untouched for 14 days; funisland with **75** worktrees of which **72** belong to no board role
+(4.7 GB), Gaming 13 of 8; boards naming dead sessions (Gaming 5 of 6, lowercase `gaming` 10 of 10,
+shwab_docker 1); **1.4 GB** of checkpoints; **19** `.bak-<epoch>` files.
+
+The bytes are not the point. An orphan worktree or a dead board id **feeds back into an
+orchestrator's context** — one `git worktree list` of funisland fills a panel, and the context is
+re-read every turn — and a dead transcript is a wrong-lookup hazard: Lumen's orchestrator was banked,
+cleared and restored fourteen times in one night against a stale copy of a transcript that was
+sitting in Gaming's directory. Garbage here is not waste, it is misinformation.
+
+**Nothing is ever deleted, at any tier.** Every action is a move into
+`~/.claude/loom/_archive/<date>/`, a `git worktree remove` that keeps the branch and its commits, or
+a field added to a board entry — and every one is logged with its way back in
+`~/.claude/loom/gc-debug.json`. A cross-device move copies, verifies the byte total and only then
+releases the source; a verify that fails — or that cannot be trusted because the walk hit its budget
+— takes the half-written destination with it and leaves the original alone, because a truncated
+archive that looks complete is worse than no archive.
+
+**A plan is a guess about a moment that has passed.** It is shown to a person, who reads it and
+clicks, and in that window a session can start, a tree can go dirty and a board entry can be
+rewritten by another session. So every safeguard is checked again at apply time, against the world as
+it is then — live roles, live session ids, merge state, and whether the board entry still names the
+session the plan judged.
+
+**`gcEnabled` is `false` in 0.33.0.** The first pass on a machine that has never had one moves
+hundreds of megabytes unattended. Run `Collect Garbage (across projects)` → **Show plan** → **Run
+tiers 1+2** once by hand, then turn it on.
+
+**Tier 1 — automatic, no confirmation, always reversible.** Runs once per `gcIntervalHours` per
+*machine* (one window at a time takes a lease in `gc-state.json`, exactly as the context cycle does,
+so seven open windows do not race; the claim is refreshed at half-life so a long pass cannot expire
+under its own holder, and a timestamp in the future is treated as expired rather than as fresh). It
+runs on the interval, not only at activation.
+
+* Deployed builds under `~/.vscode-oss/extensions/local.loom-session-tracker-*` other than this
+  window's version, **every** version registered in `extensions.json`, and **every version any window
+  is still running** per `running-versions.json`. An editor keeps the code it loaded until it is
+  reloaded: measured 2026-09-13, the registry said 0.32.0 while *nine* windows were on 0.29.0, so
+  registry-alone would have pulled the extension out from under nine live editors. If
+  `extensions.json` cannot be read, or this window's own version is not a semver (the `unknown`
+  case), the whole extension tier is refused.
+* Transcripts older than `gcTranscriptDays` that **nothing references**, that are **not the newest in
+  their project directory**, and that are **not a live role's session**. "References" means: any board
+  `session_id` (nested or flat), any `context-state.json` sessionId, any role's `status.json`
+  session id, any `open-requests.json` `opened[].sessionId`, and — the catch-all — any 36-character
+  session id appearing in any `*.json`/`*.md` under `~/.claude/loom` (bounded by file size and count).
+  Buses **without** a `board.json` are scanned too: four of them hold a `context-state.json` naming a
+  live session. A session's `<sid>/subagents/` tree moves with it or not at all.
+* `*.bak-<epoch>` files under `~/.claude/loom` older than `gcBackupDays`, judged by the epoch in the
+  name rather than an mtime a later copy may have refreshed.
+
+**Tier 2 — one click, reported in the digest.** Only from the digest action or the command, after a
+confirmation naming the counts.
+
+* Worktrees under `<repo>/.claude/worktrees/<name>` where the name is on no board role **and is not
+  an alias of one** (a bus renames roles in `naming.json`; livegita's `worktrees/developer` belongs to
+  `gitadeveloper`), the branch is **fully merged** into the default branch, and the tree is **clean**.
+  A name that is within one or two edits of a real role is somebody's typo — `Gaming/protyping` for
+  `prototyping` — and drops to tier 3 rather than being offered. Removal goes through the same
+  `removeWorktree` safeguards the cleanup report uses (nothing dirty, rostered, live, detached, or
+  holding gitignored files git cannot restore), with the **live roster passed in** so that refusal can
+  actually fire. The branch and its commits are kept.
+* Board entries whose `session_id` has no transcript anywhere get `"status": "dead"` and a dated
+  `gc_note`. The entry is never removed, an owner role is never touched, and a role with a live tab
+  is never touched (a fresh session's board id lags its transcript by seconds).
+
+**Tier 3 — a person decides; the digest lists them and nothing acts.** Buses untouched for
+`staleBusDays`; owner `.id` files pointing at a frame another bus also declares (this is how
+ReciEats' orchestrator came to be offered in Gaming's sidebar); orphan worktrees that are unmerged or
+dirty — funisland's live here until someone looks at them; and `~/.claude/checkpoints`, reported by
+size only, because there is no retention policy for those yet and inventing one quietly is how work
+gets lost.
+
+Settings: `gcEnabled` (true), `gcIntervalHours` (24), `gcTranscriptDays` (14), `gcBackupDays` (7);
+tier 3's bus staleness reuses `staleBusDays`. `./live.sh` prints the current dry-run plan counts, and
+`Collect Garbage (across projects)` always offers **Show plan** before **Run tiers 1+2**.
+
 ### Session lifecycle
 
 Spawn a session for a role, retire (close) one, lock one against deletion, or delete a role's
@@ -352,6 +433,7 @@ described under "Orchestrators open their own sessions" and no longer happens.
 | `What Needs Me? (startup digest)` | The attention summary |
 | `Toggle All-Projects View` | This project only, or every project |
 | `Worktree Cleanup Report` | Report first, remove second |
+| `Collect Garbage (across projects)` | Show the plan, or run tiers 1+2 after a confirmation |
 | `Bank Orchestrator Memory & Clear Context` | Run a context-memory cycle now |
 
 ## Settings
@@ -371,14 +453,22 @@ All under `loomSessionTracker.`.
 | `enforceOrchestratorModel` / `orchestratorModel` | `true` / `claude-fable-5-1[1m]` | Put the tagged orchestrator back on it when a restore drops it to the pin |
 | `showStartupDigest` / `staleBusDays` / `digestUnbankedCheck` | `true` / `30` / `true` | The attention summary |
 | `contextMemory` | `true` | Run the bank → clear → restore cycle |
-| `contextThresholdPct` | `50` | When to run it |
+| `contextThresholdPct` | `30` | When to run it (30, not 50, since 0.32.0 — see principle 14) |
 | `contextWindowTokens` | `1000000` | Window size for the transcript estimate |
 | `contextMemoryFile` | `""` | Empty = `~/.claude/loom/<project>/<role>/memory.md` |
 | `contextSaveTimeoutMinutes` | `10` | Give up (clearing nothing) if the memory never appears |
 | `contextClearTimeoutMinutes` | `5` | Give up on confirming a `/clear` |
 | `contextCooldownMinutes` | `15` | Minimum gap between cycles |
+| `gcEnabled` | `false` | Collect garbage across projects (nothing is ever deleted). Off for 0.33.0 — run it by hand once first |
+| `gcIntervalHours` | `24` | How often the automatic tier-1 pass runs, per machine |
+| `gcTranscriptDays` | `14` | Age past which an unreferenced transcript is archivable |
+| `gcBackupDays` | `7` | Age past which a `*.bak-<epoch>` under `~/.claude/loom` is archivable |
 
 ## Files it touches
+
+**Moves, never deletes:** garbage collection archives under `~/.claude/loom/_archive/<date>/`
+(`extensions/`, `transcripts/<projectdir>/`, `backups/`) and records every move in `gc-debug.json`.
+It is the only thing here that touches `~/.vscode-oss/extensions`.
 
 **Reads, never writes:** `<project>/board.json` (the roster), `<project>/bindings.json` (written by
 `loom_cdp.py` at `/loom` time), each role's `status.json`/`inbox.md`/`outbox.md`, and
@@ -387,7 +477,8 @@ All under `loomSessionTracker.`.
 **Writes** (all atomic, change-only, and never fatal if they fail):
 `<project>/targetmap.json`, `orchestrator.json`, `session-locks.json`, `notify-state.json`,
 `limit-state.json`, `model-policy.json`, `stall-state.json`, `context-state.json`; globally
-`active-sessions.json`, `working-sessions.json`, `worktree-removals.json`; plus `*-debug.json`
+`active-sessions.json`, `working-sessions.json`, `worktree-removals.json`, `gc-state.json`; plus
+`*-debug.json`
 files recording the last injection attempt of each kind, which is where to look when something did
 not arrive.
 
