@@ -11,7 +11,7 @@ import { currentRepo, repoRoot } from "./project";
 import { Coordinator, MAX_ACTIVE_TOTAL } from "./coordinator";
 import { roleToRepo, boardRoles, busRepos } from "./registry";
 import { setLock } from "./locks";
-import { getOrchestrator, setOrchestrator, setOrchestratorFrame, ORCHESTRATOR_CANDIDATES } from "./orchestrator";
+import { getOrchestrator, setOrchestrator, setOrchestratorFrame, ORCHESTRATOR_CANDIDATES, rebindSession } from "./orchestrator";
 import { ownerRoleFor, publishNaming } from "./naming";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
@@ -231,6 +231,12 @@ export function activate(context: vscode.ExtensionContext) {
       // Persist BEFORE injecting: if the injection fails, the phase still advances and the cycle
       // times out with a warning — a clear can never be sent twice.
       saveState(repo, step.next);
+      // The clear gave the orchestrator a NEW session id; the board still records the old one, which
+      // reads as a dead, still-full transcript forever (the fourteen-clear night). We are the party
+      // that saw the fresh transcript appear, so record it — before the restore prompt goes out.
+      if (step.kind === "restore" && step.next.sessionId && step.next.sessionId !== state.sessionId &&
+          rebindSession(repo, orch.role, step.next.sessionId))
+        debugLog({ rebound: { role: orch.role, sessionId: step.next.sessionId } });
       debugLog({ contextMemory: { step: step.kind, note: step.note, phase: step.next.phase, reading } });
       if (step.kind === "none") return step;
       if (step.kind === "abort") { vscode.window.showWarningMessage(`Loom: ${step.note}`); return step; }

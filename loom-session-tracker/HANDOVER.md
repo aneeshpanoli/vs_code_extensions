@@ -11,7 +11,7 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
 
-**Version 0.30.1** deployed and pushed; 446 tests, 42/42 mutations caught (parallel), `./live.sh`
+**Version 0.31.0** deployed and pushed; 447 tests, 43/43 mutations caught (parallel), `./live.sh`
 clean except the warnings listed under open threads. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
@@ -52,7 +52,9 @@ clean except the warnings listed under open threads. Read this section, then `RE
 13. **The panel's silence is an opinion** (0.30.1): the compact button renders only past 50% used,
     so a visible conversation with no button is under 50% and no transcript estimate may start a
     cycle. A transcript that stopped before the last clear is dead. One session id can live in two
-    project dirs; the newest copy is the session.
+    project dirs; the newest copy is the session. After a confirmed clear the extension REBINDS the
+    orchestrator's `board.json` entry to the fresh id itself (`rebindSession`, 0.31.0); the restore
+    prompt and playbook §14 step 4 ask the orchestrator to confirm it.
 12. **Only the orchestrator is on the premium tier** (user direction 2026-09-13). The settings pin is
     `claude-opus-5`; the tagged orchestrator's own idle frame is promoted with `/model`. The footer
     chip lags a switch until the next turn, so `models.acknowledgedSwitch()` reads the "Set model

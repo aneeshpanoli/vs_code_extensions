@@ -324,6 +324,7 @@ suite("context memory: the fresh session is restored from the memory doc", async
     eq(st.sessionId, "sid-ctx5", "now following the new session");
     eq(st.cycles, 1, "counted");
     match(readJson(path.join(LOOM, "context-debug.json")).message, /Fresh context/, "restore prompt sent");
+    eq(readJson(busPath(repo, "board.json")).po.session_id, "sid-ctx5", "the board now names the fresh session (rebound)");
   } finally { off(); }
 });
 

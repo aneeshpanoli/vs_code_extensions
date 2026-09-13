@@ -308,6 +308,33 @@ suite("memory: the restore prompt re-establishes who it is and what to trust", (
   match(m, /you are po, the orchestrator of demo/, "identity");
   match(m, /~\/\.claude\/loom\/demo\/board\.json/, "the board");
   match(m, /correct \/bus\/memory\.md on the spot/, "keeps the memory doc true");
+  match(m, /REBIND: the clear gave you a NEW session id.*board\.json entry has been updated.*\$CLAUDE_SESSION_ID/, "and tells it to confirm the rebind");
+});
+
+suite("orchestrator: rebindSession records the post-/clear session id on the board and nothing else changes", () => {
+  const { rebindSession } = load("orchestrator.js");
+  const nested = makeRepo({ roles: { po: { session_id: "sid-old", branch: "main", webview_id: "wid-po" }, dev: { session_id: "sid-dev" } } });
+  ok(rebindSession(nested, "po", "sid-new"), "written");
+  const b = readJson(busPath(nested, "board.json"));
+  eq(b.roles.po.session_id, "sid-new"); eq(b.roles.po.webview_id, "wid-po", "webview id kept"); eq(b.roles.po.branch, "main");
+  eq(b.roles.dev.session_id, "sid-dev", "other roles untouched");
+  ok(b.roles.po.rebound_by, "says who wrote it");
+  ok(!rebindSession(nested, "po", "sid-new"), "same id: no write");
+  const flat = makeRepo({ productowner: { session_id: "sid-old" }, developer1: { session_id: "d1" } });
+  ok(rebindSession(flat, "productowner", "sid-new2"));
+  eq(readJson(busPath(flat, "board.json")).productowner.session_id, "sid-new2", "flat boards too");
+  eq(readJson(busPath(flat, "board.json")).developer1.session_id, "d1");
+  ok(!rebindSession("no-such-repo-xyz", "po", "s"), "missing board: false, never throws");
+  // the tag's spelling differs from the board's (Gaming: tag product-owner, board productowner)
+  const spelt = makeRepo({ productowner: { session_id: "sid-old", webview_id: "w" }, developer: { session_id: "d" } });
+  ok(rebindSession(spelt, "product-owner", "sid-new3"));
+  const sb = readJson(busPath(spelt, "board.json"));
+  eq(sb.productowner.session_id, "sid-new3", "the existing owner row is corrected");
+  ok(!sb["product-owner"], "no second owner row is invented");
+  // a board with no owner entry at all (funisland) is left alone
+  const none = makeRepo({ gamification: { session_id: "g" }, curriculum: { session_id: "c" } });
+  ok(!rebindSession(none, "product-owner", "sid-new4"), "nothing to correct");
+  eq(Object.keys(readJson(busPath(none, "board.json"))).sort(), ["curriculum", "gamification"], "no row added");
 });
 
 // ── confirming a clear with no transcript to check ──────────────────────────

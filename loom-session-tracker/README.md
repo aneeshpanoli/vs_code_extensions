@@ -153,6 +153,11 @@ Past `contextThresholdPct` (50%) this extension makes that deliberate instead:
 2. **Clear** — `/clear`, but only once that file is verifiably on disk.
 3. **Restore** — a prompt into the fresh context: read the memory file, then the board, then the
    project docs, and reconcile them so the memory stays true.
+4. **Rebind** — `/clear` gives the orchestrator a new session id. The extension, having seen the
+   fresh transcript appear, writes that id into the orchestrator's `board.json` entry itself
+   (`session_id`, `rebound_by`) before the restore prompt goes out, and the prompt asks the
+   orchestrator to confirm it against `$CLAUDE_SESSION_ID`. A stale id reads as a dead, still-full
+   transcript — the fourteen-clear night.
 
 The percentage comes from the panel's own compact button (`73% context used — click to compact`),
 which the app renders only past 50% used. The session's transcript (its last `usage` block) gives

@@ -201,6 +201,11 @@ MUTATIONS = [
   "      if (st.isFile() && (!best || st.mtimeMs > best.mtime)) best = { file: f, mtime: st.mtimeMs };",
   "      if (st.isFile() && !best) best = { file: f, mtime: st.mtimeMs };"),
 
+ ("the board is not rebound to the fresh session after /clear (the dead-id loop can start again)",
+  "src/extension.ts",
+  '      if (step.kind === "restore" && step.next.sessionId && step.next.sessionId !== state.sessionId &&',
+  '      if (step.kind === "restore" && Boolean(0) && step.next.sessionId && step.next.sessionId !== state.sessionId &&'),
+
  ("a switch acknowledged before a later turn still counts as fresh (the chip has had its chance)",
   "src/models.ts",
   '  if (before.includes("You:") || since.includes("You:")) return null;',

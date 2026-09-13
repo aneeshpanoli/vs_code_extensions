@@ -6,7 +6,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import { OWNER_ALIASES } from "./naming";
+import { OWNER_ALIASES, isOwnerRole } from "./naming";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
@@ -63,4 +63,38 @@ export function setOrchestratorFrame(repo: string, webviewId: string | null): vo
     fs.writeFileSync(tmp, JSON.stringify({ ...cur, webviewId }, null, 2));
     fs.renameSync(tmp, f);
   } catch { /* a frame refresh must never throw from a tick */ }
+}
+
+/**
+ * After a `/clear`, the orchestrator is a NEW session id and the board still records the old one —
+ * which is how Lumen's cycle read a dead transcript as 57% fourteen times (2026-09-13). The
+ * extension is the one party that has SEEN the fresh transcript appear (memory.ts confirms the clear
+ * by it), so it records that id on the board itself rather than hoping the restore prompt is
+ * followed. Only the owner role's entry, only `session_id` and `bound_at`; everything else is kept.
+ * Nested (`roles{}`) and flat boards both supported. Never throws.
+ */
+export function rebindSession(repo: string, role: string, sessionId: string): boolean {
+  if (!repo || !role || !sessionId) return false;
+  const f = path.join(LOOM_ROOT, repo, "board.json");
+  try {
+    const d = JSON.parse(fs.readFileSync(f, "utf8"));
+    const roles = d && d.roles && typeof d.roles === "object" ? d.roles : d;
+    if (!roles || typeof roles !== "object") return false;
+    // THE BOARD'S OWN SPELLING. The tag says `product-owner` where Gaming's board says
+    // `productowner` (audit 2026-09-13); writing the tag's spelling would add a second owner row and
+    // leave the stale one in place. So the existing owner-named entry is the one corrected — the exact
+    // name first, else any owner alias — and a board with NO owner entry (funisland) is left alone:
+    // the cycle's own state carries the id, and inventing a roster row is not this function's job.
+    const key = Object.keys(roles).find((k) => k === role && roles[k] && typeof roles[k] === "object")
+      ?? Object.keys(roles).find((k) => isOwnerRole(k) && roles[k] && typeof roles[k] === "object");
+    if (!key) return false;
+    const entry = roles[key];
+    if (entry.session_id === sessionId) return false;
+    roles[key] = { ...entry, session_id: sessionId, bound_at: new Date().toISOString(),
+                   rebound_by: "loom-session-tracker after /clear" };
+    const tmp = f + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(d, null, 2));
+    fs.renameSync(tmp, f);
+    return true;
+  } catch { return false; }
 }

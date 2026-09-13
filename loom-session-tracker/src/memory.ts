@@ -173,8 +173,11 @@ export function restoreMessage(memoryFile: string, repo: string, role: string): 
     `  2. ~/.claude/loom/${repo}/board.json — the roster and each role's state;\n` +
     `  3. the project docs (CLAUDE.md and docs/) for anything the memory asserts.\n` +
     `Reconcile them: where the memory disagrees with the docs or the board, the docs and the board win — ` +
-    `correct ${memoryFile} on the spot so it stays the accurate account. Then continue from the next step ` +
-    `it names, and keep updating it as you work.` +
+    `correct ${memoryFile} on the spot so it stays the accurate account.\n` +
+    `  4. REBIND: the clear gave you a NEW session id. Your ~/.claude/loom/${repo}/board.json entry has ` +
+    `been updated with the id that was seen to appear; confirm it equals your $CLAUDE_SESSION_ID and fix ` +
+    `it if not (a stale session_id reads as a dead, still-full transcript). Your ${role}.id file is unchanged.\n` +
+    `Then continue from the next step the memory names, and keep updating it as you work.` +
     ` If any role's tab is missing, do not ask a person and do not park its work: write ` +
     `~/.claude/loom/${repo}/open-requests.json {"roles":[...],"requestedAt":"<iso>"} — the tab is ` +
     `opened within seconds and its webviewId written back for you to ring (playbook §15).`;
