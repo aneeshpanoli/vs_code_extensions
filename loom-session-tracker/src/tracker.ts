@@ -9,6 +9,7 @@ import { canonicalRole, isOwnerRole } from "./naming";
 import { Agent, roleToRepo, boardRoles, busDeclaredFrames, declarationHolds, rivalDeclarers,
          freshestClaimant, writeTargetmaps, loadBindings, busRepos } from "./registry";
 import { countSessions, publishCount, SessionCount, isBusy } from "./sessions";
+import { sessionOwners, rebindFrame, RebindLog } from "./rebind";
 import { detectLimit, LimitInfo } from "./limits";
 import { detectModel, ModelInfo } from "./models";
 
@@ -50,8 +51,20 @@ export interface TickResult {
   ok: boolean;                 // did the CDP read succeed (≥1 frame)?
   changedRepos: string[];      // repos whose targetmap was rewritten
   liveRoles: string[];
+  /** Bus records this tick pointed at a new frame, because a session id said so. Empty on every
+   *  ordinary tick — the writer is change-only. Logged by the caller with old→new. */
+  rebinds: RebindLog[];
   error?: string;
 }
+
+/** Priority of a role identified by its CLAUDE SESSION ID.
+ *
+ *  It sits just above the `/loom` binding and the bus declaration (both 2), and RB-001 asked for
+ *  "the same authority as a /loom binding". Same class, and deliberately half a step above it,
+ *  because the two can disagree and when they do the session id is right: a declaration names a
+ *  webviewId, and a webviewId is minted fresh by every IDE restart, while the session id is the same
+ *  one it was yesterday. The id file is the cache; this is the address. */
+const P_SESSION = 2.5;
 
 const STALE_AFTER_MS = 90_000;   // an agent unseen this long is dropped from the model entirely
 
@@ -82,6 +95,11 @@ export class Tracker {
   windowRoot: string | null = null;
   setWindowRoot(name: string | null): void { this.windowRoot = name || null; }
 
+  /** This window's workspace FOLDER PATH (not just its name). Only used to find a role's worktree
+   *  when its board entry does not record one — see rebind.roleWorktree. */
+  windowCwd: string | null = null;
+  setWindowCwd(p: string | null): void { this.windowCwd = p || null; }
+
   /** Is this frame in a window that belongs to this project? Legacy reads (no parentId) pass. */
   inMyWindow(f: { windowRoot: string | null; windowKnown: boolean }, roster: Set<string>): boolean {
     if (!this.repoFilter || !this.windowRoot || !f.windowKnown) return true;
@@ -108,7 +126,8 @@ export class Tracker {
       // The agents stay, but we can no longer vouch for them, so they render STALE.
       this.lastTickOk = false;
       this.ageOut();
-      return { ok: false, changedRepos: [], liveRoles: this.liveRoles(), error: this.lastError || "no frames" };
+      return { ok: false, changedRepos: [], liveRoles: this.liveRoles(), rebinds: [],
+               error: this.lastError || "no frames" };
     }
     this.lastOk = Date.now();
     this.lastTickOk = true;
@@ -130,6 +149,8 @@ export class Tracker {
     // themselves use (ReciEats/README-ids.md). A declaration beats content in both directions: it is
     // how an orchestrator is found at all, and how a worker's own tab keeps its role when a bystander
     // merely prints its worktree paths.
+    // {claude session id -> role} for THIS project. The one identity that survives a restart.
+    const bySession = this.repoFilter ? sessionOwners(this.repoFilter, this.windowCwd) : new Map();
     const declared = this.repoFilter ? busDeclaredFrames(this.repoFilter) : [];
     const declaredBy = new Map<string, typeof declared[number]>();
     for (const d of declared) {
@@ -148,10 +169,42 @@ export class Tracker {
     const ownerFrames = new Set(Array.from(declaredBy.values())
       .filter((d) => isOwnerRole(d.role)).map((d) => d.webviewId));
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
-    const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string; text: string; signed: boolean }>();
+    const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string;
+                                   text: string; signed: boolean; viaSession: boolean }>();
     const now0 = Date.now();
+    /** Owner roles matched by session id this tick (owners are not tracked agents, so they cannot
+     *  ride in `best`, but their frame still has to be written back to the bus). */
+    const sessionMatched = new Map<string, { webviewId: string; text: string }>();
     for (const f of frames) {
       if (!f.webviewId) continue;
+      // ── THE SESSION ID COMES FIRST, ahead of even the window filter.
+      // The window rule exists to stop CONTENT from being misattributed: a panel can print anything,
+      // but it is in exactly one window. A session id is not content — it is minted by Claude Code,
+      // read off the frame's own URL, unique across the machine, and matched only against THIS
+      // project's own board and worktrees. Nothing another project holds can collide with it, so the
+      // window heuristic has nothing left to protect against here, and applying it would re-break the
+      // case this exists for: after a restart a role's tab is frequently reopened into a window that
+      // is not its own.
+      const sessOwner = f.claudeSessionId ? bySession.get(f.claudeSessionId) : undefined;
+      if (sessOwner && this.repoFilter) {
+        const role = canonicalRole(this.repoFilter, sessOwner.role);
+        if (isOwnerRole(role)) {
+          // The orchestrator is never a tracked agent (classify excludes owners so it can never be
+          // retired). Recording it here is what lets a PO be found after a restart with nobody typing.
+          this.owners.set(f.webviewId, {
+            lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
+            repo: this.repoFilter, chars: (f.text || "").length, strong: true, declared: true,
+            model: detectModel(f.text),
+          });
+          sessionMatched.set(role, { webviewId: f.webviewId, text: f.text });
+          continue;
+        }
+        const prev = best.get(role);
+        if (!prev || prev.priority < P_SESSION)
+          best.set(role, { webviewId: f.webviewId, priority: P_SESSION, len: f.text.length,
+                           repo: this.repoFilter, text: f.text, signed: true, viaSession: true });
+        continue;
+      }
       // WINDOW FIRST. Whatever a panel prints, it is in exactly one window, and one project per
       // window is the convention: a frame from another folder's window is not this project's.
       if (!this.inMyWindow(f, validRoles)) continue;
@@ -167,7 +220,7 @@ export class Tracker {
         const prev = best.get(role);
         if (!prev || prev.priority < 2)
           best.set(role, { webviewId: f.webviewId, priority: 2, len: f.text.length,
-                           repo: this.repoFilter, text: f.text, signed: true });
+                           repo: this.repoFilter, text: f.text, signed: true, viaSession: false });
         continue;
       }
       if (ownerFrames.has(f.webviewId)) {
@@ -243,7 +296,7 @@ export class Tracker {
       const prev = best.get(role);
       if (!prev || priority > prev.priority || (priority === prev.priority && f.text.length > prev.len))
         best.set(role, { webviewId: f.webviewId, priority, len: f.text.length, repo, text: f.text,
-                         signed: priority >= 1.2 });   // marker (1.2) or authoritative binding (1.5)
+                         signed: priority >= 1.2, viaSession: false });   // marker (1.2) or authoritative binding (1.5)
     }
 
     const now = Date.now();
@@ -270,7 +323,25 @@ export class Tracker {
     publishCount(this.sessions);
 
     const changedRepos = writeTargetmaps(Array.from(this.agents.values()));
-    return { ok: true, changedRepos, liveRoles: this.liveRoles() };
+
+    // REBIND ON THE BUS — the ONE case in which this tracker writes a binding. `bindings.json` is
+    // otherwise never written here, so that a `/loom` self-binding stays durable and cannot be
+    // clobbered by our own detection cache; that rule is narrowed by exactly this clause and no
+    // other. Only a role whose frame was identified BY SESSION ID is rewritten. Content never
+    // rewrites anything, and a frame whose session id could not be read changes nothing at all.
+    const rebinds: RebindLog[] = [];
+    if (this.repoFilter) {
+      for (const [role, b] of best) {
+        if (!b.viaSession) continue;
+        const log = rebindFrame(this.repoFilter, role, b.webviewId, b.text, isBusy(b.text));
+        if (log) rebinds.push(log);
+      }
+      for (const [role, m] of sessionMatched) {
+        const log = rebindFrame(this.repoFilter, role, m.webviewId, m.text, isBusy(m.text));
+        if (log) rebinds.push(log);
+      }
+    }
+    return { ok: true, changedRepos, liveRoles: this.liveRoles(), rebinds };
   }
 
   /** Drop agents unseen for > STALE_AFTER_MS (a tab genuinely closed). */

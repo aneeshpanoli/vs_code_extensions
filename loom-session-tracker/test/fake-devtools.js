@@ -11,9 +11,10 @@ const WebSocket = require("ws");
 /**
  * @param {object} o
  *  targets:      [{ sessionId, url, type, text | texts[], contextPct }]  attached at the root
- *                contextPct makes the target answer with the real envelope {t,c} that the reader
- *                sends (innerText + the compact button's "% context used"); without it the target
- *                answers a bare string, which the reader must still accept.
+ *                contextPct makes the target answer with the real envelope {t,c,s} that the reader
+ *                sends (innerText + the compact button's "% context used" + the Claude session id
+ *                off the inner frame's URL); without any of them the target answers a bare string,
+ *                which the reader must still accept. `session`/`sessions` set the {s} field.
  *  grandchildren:{ [parentSessionId]: [{ sessionId, url, type, text }] } revealed once the parent is armed
  *  dropEvaluate: never answer Runtime.evaluate
  *  detachAfterAttach: [sessionId] emit Target.detachedFromTarget right after attaching
@@ -86,8 +87,13 @@ async function startFakeDevTools(o = {}) {
         // `texts` lets a target answer differently on the first and second pass
         const text = Array.isArray(t.texts) ? (t.texts[Math.min(n, t.texts.length - 1)] || "") : (t.text || "");
         const pcts = Array.isArray(t.contextPcts) ? t.contextPcts[Math.min(n, t.contextPcts.length - 1)] : t.contextPct;
-        const value = (t.contextPct !== undefined || t.contextPcts !== undefined)
-          ? JSON.stringify({ t: text, c: pcts === undefined ? null : pcts })
+        // `sessions` lets a target answer with a different Claude session id per pass (a panel whose
+        // inner frame is still navigating on the first read).
+        const sess = Array.isArray(t.sessions) ? t.sessions[Math.min(n, t.sessions.length - 1)] : t.session;
+        const envelope = t.contextPct !== undefined || t.contextPcts !== undefined ||
+                         t.session !== undefined || t.sessions !== undefined;
+        const value = envelope
+          ? JSON.stringify({ t: text, c: pcts === undefined ? null : pcts, s: sess === undefined ? null : sess })
           : text;
         return reply({ result: { type: "string", value } });
       }

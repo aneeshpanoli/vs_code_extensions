@@ -192,7 +192,7 @@ suite("cdp: a percentage seen on either pass is kept", async () => {
 });
 
 suite("cdp: a plain-string answer is still valid (no envelope)", () => {
-  eq(parseRead("just text"), { text: "just text", contextPct: null }, "bare string");
-  eq(parseRead('{"t":"hi","c":42}'), { text: "hi", contextPct: 42 }, "envelope");
-  eq(parseRead('{"broken'), { text: '{"broken', contextPct: null }, "unparseable -> treated as text");
+  eq(parseRead("just text"), { text: "just text", contextPct: null, sessionId: null }, "bare string");
+  eq(parseRead('{"t":"hi","c":42}'), { text: "hi", contextPct: 42, sessionId: null }, "envelope");
+  eq(parseRead('{"broken'), { text: '{"broken', contextPct: null, sessionId: null }, "unparseable -> treated as text");
 });

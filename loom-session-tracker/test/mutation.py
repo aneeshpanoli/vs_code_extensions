@@ -499,6 +499,90 @@ MUTATIONS = [
   "src/gc.ts",
   "    if (wrote !== false) lastWrite = now();",
   "    lastWrite = now();"),
+
+ # ── RB-001: the session id is the ADDRESS, the webviewId is a cache ───────────────────────────
+ # Every one of these restores the state the bus was actually in after the 2026-09-13 restart:
+ # records pointing at dead frames, or — worse — at confidently wrong ones.
+
+ ("the session id is read with a loose pattern, so the webviewId is mistaken for it",
+  "src/cdp.ts",
+  '  const m = SESSION_RE.exec(String(url || ""));',
+  '  const m = /[?&]id=([0-9a-f-]{8,})/i.exec(String(url || ""));'),
+
+ ("a malformed session id from the page is trusted verbatim instead of being refused",
+  "src/cdp.ts",
+  'sessionId: typeof o.s === "string" ? sessionIdFromUrl("?session=" + o.s) : null };',
+  'sessionId: typeof o.s === "string" ? o.s : null };'),
+
+ ("a session id seen on only ONE of the two passes is thrown away",
+  "src/cdp.ts",
+  "        if (cur.sessionId === null && read.sessionId !== null) text.set(sid, { ...cur, sessionId: read.sessionId });",
+  "        void cur;"),
+
+ ("the tracker ignores session ids entirely — back to hand-rebinding after every restart",
+  "src/tracker.ts",
+  "      const sessOwner = f.claudeSessionId ? bySession.get(f.claudeSessionId) : undefined;",
+  '      const sessOwner = f.claudeSessionId ? bySession.get("no-such-session") : undefined;'),
+
+ ("a session id claimed by TWO roles is resolved by luck instead of refused",
+  "src/rebind.ts",
+  "    out.delete(id); dropped.add(id);",
+  "    void dropped;"),
+
+ ("a directory listing outranks the board's own statement about a session id",
+  "src/rebind.ts",
+  "    if (prev.source === \"board\" && source === \"transcript\") return;   // a statement beats a listing",
+  "    if (prev.source === \"board\" && source === \"transcript\") { out.set(id, { role, source }); return; }"),
+
+ ("a stale bus declaration outranks the live session id it contradicts",
+  "src/tracker.ts",
+  "const P_SESSION = 2.5;",
+  "const P_SESSION = 1;"),
+
+ ("an id file's guard is dropped by a path that never read the frame",
+  "src/rebind.ts",
+  "    if (guard && frameText !== null && !frameText.includes(guard) && !busy) {",
+  '    if (guard && !(frameText || "").includes(guard) && !busy) {'),
+
+ ("an id file's guard is dropped off a BUSY frame, whose scrollback is virtualized",
+  "src/rebind.ts",
+  "    if (guard && frameText !== null && !frameText.includes(guard) && !busy) {",
+  "    if (guard && frameText !== null && !frameText.includes(guard)) {"),
+
+ ("the DEAD binding is left in place beside the new one, so the role answers twice",
+  "src/rebind.ts",
+  "    for (const k of Object.keys(map)) if (k !== webviewId && map[k] === role) { delete map[k]; changed = true; }",
+  "    /* the stale entry is left behind */"),
+
+ ("the rebind writer is not change-only, so every 15-second tick rewrites the bus",
+  "src/rebind.ts",
+  '  try { if (fs.readFileSync(file, "utf8") === next) return false; } catch { /* missing -> write */ }',
+  '  try { fs.readFileSync(file, "utf8"); } catch { /* missing -> write */ }'),
+
+ ("a roster row is INVENTED for a role the board never listed",
+  "src/rebind.ts",
+  "    } else if (b) { notes.push(`board.json has no ${role} entry — left alone`); }",
+  "    } else if (b) { b.roles[role] = { webviewId }; writeAtomic(f, JSON.stringify(b.data, null, 2)); }"),
+
+ ("an ambiguous open claims the first new frame it sees",
+  "src/newframe.ts",
+  "        return now.length === 1 ? now[0] : null;",
+  "        return now[0] || null;"),
+
+ ("frames from an ambiguous open are not absorbed, so the NEXT open is unreadable too",
+  "src/newframe.ts",
+  "        for (const w of now) seen.add(w);",
+  "        if (now.length === 1) seen.add(now[0]);"),
+
+ ("the restart path attributes a tab it could not tell apart",
+  "src/newframe.ts",
+  "    if (wid) sink.identified(m.role, wid); else sink.ambiguous(m.role);",
+  '    sink.identified(m.role, wid || "unknown");'),
+
+ ("a worktree WINDOW looks for worktrees inside itself, so a role's transcripts are never found",
+  "src/rebind.ts",
+  '  return path.join(root, ".claude", "worktrees", role);',
+  '  return path.join(windowCwd, ".claude", "worktrees", role);'),
 ]
 
 def sh(cmd):

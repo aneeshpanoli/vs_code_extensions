@@ -39,8 +39,8 @@ suite("edge: a percentage that is not a number is not a percentage", () => {
   eq(parseRead('{"t":"hi","c":"73"}').contextPct, null, "a numeric string is refused");
   eq(parseRead('{"t":"hi","c":null}').contextPct, null, "null");
   eq(parseRead('{"c":73}').contextPct, null, "an envelope with no text is not our envelope");
-  eq(parseRead("[1,2,3]"), { text: "[1,2,3]", contextPct: null }, "a JSON array is just text");
-  eq(parseRead(""), { text: "", contextPct: null }, "empty string");
+  eq(parseRead("[1,2,3]"), { text: "[1,2,3]", contextPct: null, sessionId: null }, "a JSON array is just text");
+  eq(parseRead(""), { text: "", contextPct: null, sessionId: null }, "empty string");
 });
 
 // ── project attribution: the names on this machine are adversarial ─────────
