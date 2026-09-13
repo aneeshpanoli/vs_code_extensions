@@ -14,8 +14,8 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 **Version 0.33.0** is merged and pushed. The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-"0.33.0" here as "0.33.0 is what the editor is executing". **551 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **85/85 mutations caught** under the
+"0.33.0" here as "0.33.0 is what the editor is executing". **563 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **92/92 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving. `./live.sh`
 is clean except the warnings under open threads and the expected "windows are running an OLD build"
 failure until that deploy + reload. Read this section, then `README.md`, then run `./live.sh` and
@@ -125,6 +125,41 @@ believe it over anything written here.
     which is scoped to one project by design, so `busLiveRoles()` reads every
     `<repo>/<role>/status.json` touched in the last 30 minutes (the file's mtime, not its
     `updated_at`, which measurably lies).
+
+    **The WRITER side of the same sentence** (GC-006, 2026-09-13). Making the reader fail closed did
+    nothing while the writer still failed open: `catch { /* first */ }` around the stamp read treated
+    "there is no file" and "I could not read the file" as the same thing, and they are opposites. It
+    then pruned nothing and ATOMICALLY published `{ thisWindow: <version> }` — erasing every other
+    window's entry, which gc reads as a perfectly *readable* file naming ONE version and archives
+    every other running build in tier 1, the unattended tier. Only `ENOENT` is "first" now; any other
+    read error, parse failure or non-object shape SKIPS the write for that tick and says why in
+    `tracker-debug.json`. There is deliberately no self-heal on a file that exists and will not
+    parse: an old build rewriting it non-atomically can sit truncated for longer than any re-read
+    gap, so "unchanged on re-read" would license exactly the erasure this prevents. A wedged stamp
+    over-keeps builds; a confidently wrong one archives a build out from under a live editor.
+    The corollary is that the bound must exist in the other direction too: a stamp entry whose `at`
+    will not parse is dropped by the reader and pruned by the writer, because nothing could ever age
+    it out and it would pin its build in the keep-set permanently.
+
+    **Two places where this refusal is sticky, and both are quiet** — worth knowing before reading a
+    plan that collected nothing. (a) The reference sweep's bounds are ALL-OR-NOTHING: one `.md` over
+    8 MB anywhere under `~/.claude/loom` refuses the entire transcript tier, with only a line in
+    `plan.notes` as the signal. (b) A window that is OPEN but whose extension host has wedged stops
+    stamping, and after `gcIntervalHours` its build is archived in tier 1 *under a running editor* —
+    reload it rather than leaving it sitting there.
+
+17. **Name the guard that actually decides, not the one that looks like it does** (GC-006,
+    2026-09-13). A review found the tier-2 worktree removal — the ONE path here that deletes rather
+    than moves — guarded by `busLiveRoles`'s 30-minute window, which returns two roles machine-wide,
+    and proposed widening it. It is not that guard. `scanWorktrees` calls a worktree orphaned only
+    when its name is absent from `boardRoles(repo)`, and that roster is the board UNION every role
+    owning a MAILBOX on the bus — any directory holding a `status.json`, `inbox.md` or `outbox.md`,
+    at ANY age. Liveness never gets a say, and a "wider liveness set" would have been a strictly
+    narrower test inside a guard that already passed: an unreachable safeguard that reads as
+    load-bearing, which is worse than none. The fix was a test pinning the real guard through this
+    tier (there was none), a mutant on it, and honest comments. Same judgement as the redundant
+    lowercasing in GC-004 and the S3 live check in GC-002 — the third and fourth time now: when a
+    guard turns out to be redundant, retarget at the point that decides; never add another copy.
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),

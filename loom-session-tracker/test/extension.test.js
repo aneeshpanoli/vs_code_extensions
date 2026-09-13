@@ -820,13 +820,17 @@ suite("gc R2 wiring: a second window does not overwrite the first window's entry
   } finally { off2(); }
 });
 
-suite("gc R4 wiring: the collector is given the roster of EVERY project, not just this window's", async () => {
+// RENAMED in GC-006 to what the body proves. It proved that `busLiveRoles` — the source the
+// extension builds its roster FROM — is machine-wide, not that the extension hands that roster to
+// the collector; the extension's own supply is what `gc wiring: the digest offers Collect garbage
+// with the real counts` pins, by computing its expectation from the same call.
+suite("gc R4 wiring: the BUS roster the collector is built from covers EVERY project", async () => {
   const mine = makeRepo({ roles: { local: {} } }, "gcR4mine");
   // another project entirely, with a role that is writing status right now
   const other = makeRepo({ roles: { remote: {} } }, "gcR4other");
   writeJson(busPath(other, "remote", "status.json"), { status: "working", session_id: "remotese-0300" });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-r4-"));
-  // that other project's worktree, orphaned + clean + merged: collectable unless the role reads live
+  // that other project's worktree, orphaned + clean + merged
   execFileSync("git", ["-C", root, "init", "-q", "-b", "main"]);
   execFileSync("git", ["-C", root, "config", "user.email", "t@example.com"]);
   execFileSync("git", ["-C", root, "config", "user.name", "t"]);
@@ -855,6 +859,129 @@ suite("gc R4 wiring: the collector is given the roster of EVERY project, not jus
     const plan = gcmod.planGc({ now: Date.now(), cfg: { ...gcmod.DEFAULT_GC_CONFIG, enabled: true },
                                 currentVersion: "0.33.0", liveRoles: bus.roles, repoRoots: { [other]: root } });
     eq(plan.tier2.filter((i) => i.label === `${other}/remote`).length, 0,
-       "so it is never offered for removal");
+       "so it is never offered for removal — though note the ROSTER would also have kept it: a " +
+       "status.json is a mailbox, and a mailbox role is not orphaned (see planWorktrees)");
+  } finally { off(); }
+});
+
+// ── GC-006 R1 · the WRITER side of "a read that cannot answer is a refusal" ───────────────────
+// GC-004 R1 made gc's READER of running-versions.json fail closed. The writer still failed open:
+// `catch { /* first */ }` left `all = {}` on every kind of read failure, and the tick then pruned
+// nothing and ATOMICALLY published `{ thisWindow: <version> }` — erasing every other window's entry.
+// gc reads that as a perfectly readable file naming ONE version, and moves every other running
+// build's directory in tier 1, the unattended tier.
+
+const STAMP = path.join(LOOM, "running-versions.json");
+const debugJson = () => readJson(path.join(LOOM, "tracker-debug.json"));
+/** Another window's entry, stamped just now. */
+const otherWindow = (version) => ({ version, at: new Date().toISOString(), repo: "SomeOtherRepo" });
+
+suite("gc R1 writer: an UNPARSEABLE stamp file is not rewritten, and the entries in it survive", async () => {
+  const repo = makeRepo({ roles: {} }, "gcR1torn");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  // A file being rewritten non-atomically by a pre-0.33.0 window, caught mid-write: one complete
+  // entry and a truncated one. Every 0.29.0 window on this machine does exactly this every 15 s.
+  const torn = '{\n "1:aaa": {"version": "0.29.0", "at": "' + new Date().toISOString() + '"},\n "2:bbb": {"vers';
+  fs.writeFileSync(STAMP, torn);
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(60);
+    eq(fs.readFileSync(STAMP, "utf8"), torn,
+       "the file is byte-for-byte what it was: a read that could not answer is not permission to " +
+       "replace it, and replacing it would have erased 0.29.0 while nine windows were running it");
+    match(String(debugJson().stamp), /unparseable/, "and the tick says why, every 15 seconds");
+  } finally { off(); }
+});
+
+suite("gc R1 writer: a stamp file that cannot be READ is not rewritten either", async () => {
+  const repo = makeRepo({ roles: {} }, "gcR1eacces");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  // A perfectly good file — the failure is in the reading. EMFILE and a transient EACCES are the
+  // real ones; both arrive here as an exception that is not ENOENT.
+  writeJson(STAMP, { "1:aaa": otherWindow("0.29.0") });
+  const good = fs.readFileSync(STAMP, "utf8");
+  const realRead = fs.readFileSync;
+  fs.readFileSync = function (f, ...rest) {
+    if (String(f) === STAMP) { const e = new Error("EMFILE"); e.code = "EMFILE"; throw e; }
+    return realRead.call(fs, f, ...rest);
+  };
+  let off;
+  try {
+    off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+    await settle(60);
+  } finally { fs.readFileSync = realRead; if (off) off(); }
+  eq(fs.readFileSync(STAMP, "utf8"), good, "untouched — the other window's build is still recorded");
+  eq(readJson(STAMP)["1:aaa"].version, "0.29.0", "which is the whole point: gc keeps 0.29.0");
+  match(String(debugJson().stamp), /read failed \(EMFILE\)/, "and the reason is on the bus");
+});
+
+suite("gc R1 writer: a stamp file that is not an OBJECT is not rewritten", async () => {
+  const repo = makeRepo({ roles: {} }, "gcR1array");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  fs.writeFileSync(STAMP, "[1,2,3]");            // parses, but nothing we can prune or add to
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(60);
+    eq(fs.readFileSync(STAMP, "utf8"), "[1,2,3]", "a shape we do not understand is not ours to replace");
+    match(String(debugJson().stamp), /not an object/, "and it says so");
+  } finally { off(); }
+});
+
+suite("gc R1 writer: an ABSENT stamp file IS written — ENOENT is the one 'first' case", async () => {
+  const repo = makeRepo({ roles: {} }, "gcR1first");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  try { fs.rmSync(STAMP); } catch { /* already gone */ }
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(60);
+    const stamp = readJson(STAMP);
+    ok(stamp, "the file was created");
+    eq(Object.keys(stamp).length, 1, "with this window in it");
+    eq(Object.values(stamp)[0].version, "0.33.0", "running the build it is running");
+    eq(debugJson().stamp, undefined, "and nothing to report — refusing here would wedge a fresh machine");
+  } finally { off(); }
+});
+
+suite("gc R1 writer: another window's entry survives an ordinary tick", async () => {
+  // The regression the refusals exist to prevent, stated positively: the normal path MERGES.
+  const repo = makeRepo({ roles: {} }, "gcR1merge");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  writeJson(STAMP, { "1:aaa": otherWindow("0.29.0") });
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(60);
+    const stamp = readJson(STAMP);
+    eq(Object.keys(stamp).length, 2, "two entries: the other window's and ours");
+    eq(stamp["1:aaa"].version, "0.29.0", "and 0.29.0 is still claimed by the window that is running it");
+  } finally { off(); }
+});
+
+suite("gc R1 writer: an entry whose timestamp will not parse is pruned on write", async () => {
+  // R3's other half. The reader stopped honouring such an entry; if the writer kept it, the file
+  // would carry it for ever — one damaged entry per reload, and the prune could never reach them.
+  const repo = makeRepo({ roles: {} }, "gcR1undated");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  writeJson(STAMP, {
+    "1:undated": { version: "0.28.0", at: "not a date" },
+    "2:fresh": otherWindow("0.29.0"),
+  });
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(60);
+    const stamp = readJson(STAMP);
+    ok(!("1:undated" in stamp), "an entry that cannot say when it was written cannot age out, so it goes");
+    eq(stamp["2:fresh"].version, "0.29.0", "and the one that can is untouched");
   } finally { off(); }
 });

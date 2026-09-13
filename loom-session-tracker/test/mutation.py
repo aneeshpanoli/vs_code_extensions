@@ -408,10 +408,10 @@ MUTATIONS = [
 
  ("the version stamp is written non-atomically — ten windows every 15s produce the torn file above",
   "src/extension.ts",
-  """          const tmp = stamp + ".tmp." + process.pid;
-          fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
-          fs.renameSync(tmp, stamp);""",
-  "          fs.writeFileSync(stamp, JSON.stringify(all, null, 2));"),
+  """            const tmp = stamp + ".tmp." + process.pid;
+            fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+            fs.renameSync(tmp, stamp);""",
+  "            fs.writeFileSync(stamp, JSON.stringify(all, null, 2));"),
 
  ("a TRUNCATED reference sweep reads as 'nothing references this'",
   "src/gc.ts",
@@ -440,8 +440,8 @@ MUTATIONS = [
 
  ("a long pass never refreshes its claim — 700 MB of moves under a five-minute lease",
   "src/gc.ts",
-  "    if (opts.refresh && Date.now() - lastRefresh >= refreshEvery) {",
-  "    if (opts.refresh && Boolean(0) && Date.now() - lastRefresh >= refreshEvery) {"),
+  "    if (!opts.refresh || now() - lastWrite < refreshEvery) return;",
+  "    if (!opts.refresh || now() - lastWrite < refreshEvery || Boolean(1)) return;"),
 
  ("finishing a pass clobbers a claim another window has taken over",
   "src/gc.ts",
@@ -462,6 +462,43 @@ MUTATIONS = [
   "src/gc.ts",
   "    const sid = t.sid.toLowerCase();",
   "    const sid = t.sid;"),
+
+ # ── GC-006 ────────────────────────────────────────────────────────────────────────────────────
+
+ ("the version stamp WRITER fails open — any unreadable file starts from {} and erases the rest",
+  "src/extension.ts",
+  '            if (!e || e.code !== "ENOENT") stampNote = `read failed (${String(e && e.code || e)}) — not rewritten`;',
+  "            void e;"),
+
+ ("a stamp file that will not PARSE is replaced with this window's entry alone",
+  "src/extension.ts",
+  '            if (broke) stampNote = "unparseable — not rewritten";',
+  '            if (broke) parsed = {};'),
+
+ ("a stamp entry with an unparseable timestamp is never pruned, so the file grows for ever",
+  "src/extension.ts",
+  "              if (!Number.isFinite(at) || at < weekAgo) delete all[k];",
+  "              if (Number.isFinite(at) && at < weekAgo) delete all[k];"),
+
+ ("a stamp entry with an unparseable timestamp pins its build in the keep-set for ever",
+  "src/gc.ts",
+  "    if (!Number.isFinite(at) || now - at > withinMs) continue;",
+  "    if (Number.isFinite(at) && now - at > withinMs) continue;"),
+
+ ("a worktree whose role owns a mailbox but no board entry is collectable",
+  "src/health.ts",
+  "    return { role, path: p, orphaned: !roster.has(role), dirty, risky, ahead, live: liveRoles.has(role), branch };",
+  "    return { role, path: p, orphaned: true, dirty, risky, ahead, live: liveRoles.has(role), branch };"),
+
+ ("a long pass is never followed by a refresh — only preceded by one",
+  "src/gc.ts",
+  "    tryRefresh();\n  }\n  logGc(result);",
+  "  }\n  logGc(result);"),
+
+ ("the refresh throttle resets on an attempt that wrote nothing",
+  "src/gc.ts",
+  "    if (wrote !== false) lastWrite = now();",
+  "    lastWrite = now();"),
 ]
 
 def sh(cmd):

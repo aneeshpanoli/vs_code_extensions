@@ -235,12 +235,19 @@ runs on the interval, not only at activation.
   reloaded: measured 2026-09-13, the registry said 0.32.0 while *nine* windows were on 0.29.0, so
   registry-alone would have pulled the extension out from under nine live editors. If
   `extensions.json` cannot be read, or this window's own version is not a semver (the `unknown`
-  case), the whole extension tier is refused.
+  case), the whole extension tier is refused. A window that is OPEN but whose extension host has
+  wedged stops stamping, and after `gcIntervalHours` its build reads as nobody's and is archived in
+  tier 1 — under a running editor; reload such a window rather than leaving it sitting there. (A
+  stamp entry whose `at` will not parse is dropped for the same reason: nothing could ever age it
+  out, so it would pin its build in the keep-set permanently.)
 * Transcripts older than `gcTranscriptDays` that **nothing references**, that are **not the newest in
   their project directory**, and that are **not a live role's session**. "References" means: any board
   `session_id` (nested or flat), any `context-state.json` sessionId, any role's `status.json`
   session id, any `open-requests.json` `opened[].sessionId`, and — the catch-all — any 36-character
   session id appearing in any `*.json`/`*.md` under `~/.claude/loom` (bounded by file size and count).
+  Those bounds are ALL-OR-NOTHING and sticky: if the sweep gives up early — too many files, too deep,
+  or one `.md` over 8 MB — the **whole transcript tier is refused** until that stops being true, with
+  only a line in the plan's notes to say so. One oversize banked handover switches the tier off.
   Buses **without** a `board.json` are scanned too: four of them hold a `context-state.json` naming a
   live session. A session's `<sid>/subagents/` tree moves with it or not at all.
 * `*.bak-<epoch>` files under `~/.claude/loom` older than `gcBackupDays`, judged by the epoch in the
@@ -255,8 +262,12 @@ confirmation naming the counts.
   A name that is within one or two edits of a real role is somebody's typo — `Gaming/protyping` for
   `prototyping` — and drops to tier 3 rather than being offered. Removal goes through the same
   `removeWorktree` safeguards the cleanup report uses (nothing dirty, rostered, live, detached, or
-  holding gitignored files git cannot restore), with the **live roster passed in** so that refusal can
-  actually fire. The branch and its commits are kept.
+  holding gitignored files git cannot restore). **This is the one action here that deletes**: the
+  branch, its commits and a restore command in `worktree-removals.json` are kept, but the working
+  directory goes, and with it anything git was never told about. The guard that actually decides is
+  the **roster**, not liveness: a worktree is a candidate only when its name is on no board entry and
+  owns no mailbox (`status.json`/`inbox.md`/`outbox.md`) on its project's bus — at any age, however
+  long ago that role last wrote.
 * Board entries whose `session_id` has no transcript anywhere get `"status": "dead"` and a dated
   `gc_note`. The entry is never removed, an owner role is never touched, and a role with a live tab
   is never touched (a fresh session's board id lags its transcript by seconds).
@@ -460,14 +471,14 @@ All under `loomSessionTracker.`.
 | `contextSaveTimeoutMinutes` | `10` | Give up (clearing nothing) if the memory never appears |
 | `contextClearTimeoutMinutes` | `5` | Give up on confirming a `/clear` |
 | `contextCooldownMinutes` | `15` | Minimum gap between cycles |
-| `gcEnabled` | `false` | Collect garbage across projects (nothing is ever deleted). Off for 0.33.0 — run it by hand once first |
+| `gcEnabled` | `false` | Collect garbage across projects (everything reversible except a tier-2 worktree removal). Off for 0.33.0 — run it by hand once first |
 | `gcIntervalHours` | `24` | How often the automatic tier-1 pass runs, per machine |
 | `gcTranscriptDays` | `14` | Age past which an unreferenced transcript is archivable |
 | `gcBackupDays` | `7` | Age past which a `*.bak-<epoch>` under `~/.claude/loom` is archivable |
 
 ## Files it touches
 
-**Moves, never deletes:** garbage collection archives under `~/.claude/loom/_archive/<date>/`
+**Moves, not deletes — with one exception:** garbage collection archives under `~/.claude/loom/_archive/<date>/`
 (`extensions/`, `transcripts/<projectdir>/`, `backups/`) and records every move in `gc-debug.json`.
 It is the only thing here that touches `~/.vscode-oss/extensions`.
 
