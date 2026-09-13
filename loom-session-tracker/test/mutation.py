@@ -756,6 +756,24 @@ MUTATIONS = [
   "src/models.ts",
   "    } catch { return false; }                               // a ledger write must never break a tick",
   "    } catch { /* a ledger write must never break a tick */ }"),
+
+ # FX-001 R1 — killed by "R1: an ack (`id: X-ack`) opens nothing". Acks are the orchestrator's own
+ # replies written into the SAME inbox.md as the handoff; without the suffix check `handoffId()`
+ # hands the ack's id to every caller as if it were a real block, and a ledger line + an escalation
+ # record open for work nobody will ever do.
+ ("the -ack suffix check is removed — an orchestrator's ack opens a ledger line and an escalation record",
+  "src/models.ts",
+  "function isAckId(id: string | null | undefined): boolean {\n  return /-ack\\s*$/i.test(String(id ?? \"\"));\n}",
+  "function isAckId(id: string | null | undefined): boolean {\n  return false;\n}"),
+
+ # FX-001 R1 — killed by "R1: a state file carrying -ack records loses them on save". Purging on
+ # LOAD alone is not enough: `pending()` and other read-only callers never call `saveState`, so a
+ # purge that only ran there would never reach disk. Pinning it at the save site is what makes "on
+ # the next save" true regardless of which caller triggers it.
+ ("the -ack purge is removed from saveState — a durable model-policy.json keeps growing ack entries",
+  "src/models.ts",
+  "    purgeAcks(st);\n    const f = stateFile(repo);",
+  "    const f = stateFile(repo);"),
 ]
 
 def sh(cmd):
@@ -816,7 +834,10 @@ def parse_results(out):
 def make_tree(idx):
     """A throwaway copy of the project; node_modules is symlinked, never copied."""
     work = pathlib.Path(tempfile.mkdtemp(prefix=f"mut{idx}-"))
-    for item in ("src", "test", "package.json", "tsconfig.json", "test.sh"):
+    # live-check.js: FX-001's live-check.test.js requires it by relative path (`../live-check.js`)
+    # to reach `judgeRunningVersions` — omitting it here is not "one file missing", it is the whole
+    # baseline crashing (MODULE_NOT_FOUND), which used to read as a suite-wide false red before this.
+    for item in ("src", "test", "package.json", "tsconfig.json", "test.sh", "live-check.js"):
         srcp = ROOT / item
         if srcp.is_dir():
             shutil.copytree(srcp, work / item)

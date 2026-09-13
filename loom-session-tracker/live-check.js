@@ -43,7 +43,44 @@ const warn = (n, d) => record("WARN", n, d);
 const fail = (n, d) => record("FAIL", n, d);
 const info = (n, d) => record("INFO", n, d);
 
-(async () => {
+// A stamp is live only if refreshed within a few tick intervals — three of the 15s stamp interval
+// (extension.ts), tolerant of a busy host (FX-001 R2). Every window rewrites its entry every tick,
+// so after a restart the OLD windows' entries stop dead at the restart instant while the NEW
+// windows' entries start seconds later; a 10-MINUTE window (the constant this replaced) read every
+// dead OLD-build entry as "behind" for up to ten minutes, on windows that no longer exist. Measured
+// 2026-09-13 23:33Z: five 0.33.0 stamps at 23:31 beside five 0.35.0 stamps at 23:33 — a false FAIL.
+const STAMP_FRESH_MS = 60_000;
+
+/**
+ * Judge one `running-versions.json` snapshot against the deployed package version. Pure — no fs, no
+ * clock reads beyond `now` — so a test can drive it directly instead of writing a stamp file and
+ * spawning CDP. Exported for exactly that.
+ *
+ * An entry whose `at` will not parse is neither fresh nor stale-and-counted: `models.ts`'s sibling
+ * rule for the WRITER (principle 16, GC-006) is that such an entry can never age out, so it must
+ * never enter the count either direction here — it is simply not evidence.
+ */
+function judgeRunningVersions(stamp, pkgV, now = Date.now()) {
+  const label = ([k, v]) => (v && v.repo) || (/^\d+:/.test(k) ? `window ${k}` : k);
+  const parseable = Object.entries(stamp || {}).filter(([, v]) => v && Number.isFinite(Date.parse(v.at)));
+  const fresh = parseable.filter(([, v]) => now - Date.parse(v.at) < STAMP_FRESH_MS);
+  const staleCount = parseable.length - fresh.length;
+  const staleNote = staleCount ? `, ${staleCount} stale stamp(s) ignored` : "";
+  if (!fresh.length) {
+    return { level: "WARN",
+      detail: `no window has ticked in the last ${STAMP_FRESH_MS / 1000}s — cannot tell what is running${staleNote}` };
+  }
+  const behind = fresh.filter(([, v]) => v.version !== pkgV);
+  if (behind.length) {
+    return { level: "FAIL",
+      detail: behind.map((e) => `${label(e)} is on ${e[1].version}`).join("; ") +
+        ` — deployed is ${pkgV}. Reload those windows (Developer: Reload Window); until then they ` +
+        `behave like the build they loaded, whatever this file says.${staleNote}` };
+  }
+  return { level: "PASS", detail: `${fresh.length} window(s) on ${pkgV}${staleNote}` };
+}
+
+async function main() {
   const repos = busRepos();
   const frames = (await readFrames()).filter((f) => f.webviewId);
   if (!frames.length) {
@@ -233,21 +270,10 @@ const info = (n, d) => record("INFO", n, d);
     const stamp = JSON.parse(fsx.readFileSync(
       path.join(require("os").homedir(), ".claude", "loom", "running-versions.json"), "utf8"));
     // Entries are keyed by windowId since 0.33.0 and carry `repo` as a field; older builds keyed
-    // them by repo. Both shapes are read, and only FRESH entries are judged — a week-old key is a
-    // window that has been closed, not a window running an old build.
-    const label = ([k, v]) => (v && v.repo) || (/^\d+:/.test(k) ? `window ${k}` : k);
-    const fresh = Object.entries(stamp).filter(([, v]) => v && Date.now() - Date.parse(v.at) < 10 * 60000);
-    const behind = fresh.filter(([, v]) => v.version !== pkgV);
-    if (!fresh.length) {
-      warn("running version", `no window has ticked in the last 10 minutes — cannot tell what is running`);
-    } else if (behind.length) {
-      fail("windows are running an OLD build",
-        behind.map((e) => `${label(e)} is on ${e[1].version}`).join("; ") +
-        ` — deployed is ${pkgV}. Reload those windows (Developer: Reload Window); until then they ` +
-        `behave like the build they loaded, whatever this file says.`);
-    } else {
-      pass("running version", `${fresh.length} window(s) on ${pkgV}`);
-    }
+    // them by repo. Both shapes are read; see `judgeRunningVersions` for what counts as fresh.
+    const j = judgeRunningVersions(stamp, pkgV);
+    const name = j.level === "FAIL" ? "windows are running an OLD build" : "running version";
+    record(j.level, name, j.detail);
   } catch {
     warn("running version", "no ~/.claude/loom/running-versions.json yet — every window predates the " +
       "version stamp (0.22.0); reload them and it will appear");
@@ -421,7 +447,15 @@ const info = (n, d) => record("INFO", n, d);
       `${c.strong ? "STRONG" : "weak"} ctx=${c.pct === null ? "-" : c.pct + "%"} chars=${c.chars}`);
   }
   report();
-})().catch((e) => { fail("live-check", String((e && e.stack) || e)); report(); });
+}
+
+// Guarded so `require("./live-check.js")` — the only way a test can reach `judgeRunningVersions` —
+// never opens a CDP connection. `./live.sh` still runs this as a script (require.main === module).
+if (require.main === module) {
+  main().catch((e) => { fail("live-check", String((e && e.stack) || e)); report(); });
+}
+
+module.exports = { judgeRunningVersions, STAMP_FRESH_MS };
 
 function report() {
   const C = { PASS: "\x1b[32m", WARN: "\x1b[33m", FAIL: "\x1b[31m", INFO: "\x1b[36m" };
