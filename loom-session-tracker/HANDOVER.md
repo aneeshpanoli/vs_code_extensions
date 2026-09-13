@@ -11,7 +11,7 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
 
-**Version 0.32.0** deployed and pushed; 449 tests, 46/46 mutations caught (parallel), `./live.sh`
+**Version 0.32.1** deployed and pushed; 450 tests, 46/46 mutations caught by a REAL gate (baseline-graded, no-op self-check), `./live.sh`
 clean except the warnings listed under open threads. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
