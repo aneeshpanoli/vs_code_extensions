@@ -317,6 +317,16 @@ claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic sessi
 
 ## Open threads (2026-09-13)
 
+- **Audit 2026-09-13 (two Explore agents, all seven projects):** no project doc told the orchestrator
+  to refresh its own `board.json` session_id after a clear; every one teaches rebinding WORKERS. The
+  shared loom skill said "bind once, never rebind" — now qualified (global copy and funisland's copy,
+  the latter uncommitted in funisland's repo). Repaired by hand with `rebindSession`: Lumen
+  (75e42c92), ReciEats (d4452a2b; its state pointed at a third id), livegita (`po` entry had no
+  session_id at all; c55cf44e), shwab_docker (tag pointed at the QUANT frame 32da9c83 — 15 aborted
+  cycles; re-tagged to 4fedfbea / transcript 907775cc, backups beside orchestrator.json and
+  productowner.id; `bindings.json` still maps dead 972792b0 → productowner). tfg_ua was correct.
+  Gaming's bus is abandoned/cross-wired (board sid has no transcript; its productowner.id is
+  ReciEats' frame) and funisland's board has NO owner entry — `rebindSession` leaves both alone.
 - **Windows on old builds** — `./live.sh` names them; 0.29.0 needs a reload per window. Until the
   ReciEats window reloads, its PO's `open-requests.json` for developer1 is refused "already live"
   (Lumen's developer1 claimed cross-window — fixed in 0.28.0, not yet loaded there).
