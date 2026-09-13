@@ -8,6 +8,48 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ---
 
+
+## ★ Resume here — banked 2026-09-13 before a context clear
+
+**Version 0.29.0** deployed and pushed; 431 tests, 34/34 mutations caught (46 s, parallel), `./live.sh`
+clean except the warnings listed under open threads. Read this section, then `README.md`, then run
+`./live.sh` and believe it over anything written here.
+
+### The principles the code now rests on (each was learned from a live failure)
+1. **Names are a contract** (`src/naming.ts`): one owner test `isOwnerRole()`, aliases on the bus in
+   `<repo>/naming.json`, four-role vocabulary with numbered instances (`developer1`, never
+   `developer_1` — underscores are invisible to both regexes).
+2. **A panel belongs to the window it is in** (0.28.0): CDP `parentId` → window folder; a repo-scoped
+   tracker never claims a frame from another folder's window. This superseded a week of text
+   heuristics (attribution purity, marker-over-path, corroboration, contested declarations) — those
+   remain as the fallback for legacy reads with no parentId.
+3. **Declarations beat guesses**: `<role>.id` files and board webviewIds identify frames; a targetmap
+   is a cached guess. `loom_cdp.py` refuses a by-role lookup into any bus's declared orchestrator.
+4. **Commands need an idle composer**: `/model`, `/clear`, `/loom` typed mid-turn queue as messages and
+   never execute; `loom_cdp.inject()` refuses them unless `--allow-busy`; the context cycle needs two
+   consecutive idle readings before `/clear`.
+5. **Never close a Claude tab over CDP** — `/json/close` on a webview target closes the WHOLE WINDOW
+   (three windows lost 2026-09-12). `cdp.closeWebview()` refuses; `retire`/`delete` name the tab
+   for a person. A tab-scoped close needs `vscode.window.tabGroups` and a live test first.
+6. **Every message carries a return address** (`[from repo/role @ id8 · reply: ring @repo/role.id]`),
+   enforced in `loom_cdp.inject()`; the extension passes `senderArgs()`. Playbook §16.
+7. **Orchestrators open their own roles**: `<repo>/open-requests.json` → reopened from the freshest
+   transcript or SPAWNED + bound if the role never had a session; the result carries each new tab's
+   `webviewId`. Playbook §15. The restart wake and the post-`/clear` restore both tell the PO this.
+8. **Restart path**: previously-live roles are reopened automatically 30 s after activation (the one
+   sanctioned auto-open), then the PO is woken once. Blank `Untitled` shells from Claude Code's
+   restore are left in place (see 5).
+9. **Testing**: `./test.sh` (parallel by file), `python3 test/mutation.py` (parallel, refuses a dirty
+   `src/`), `./live.sh` (real bus + running editor, FAILS on: old build in a window, poisoned
+   targetmap, invisible orchestrator, worker-named tag). Fixtures in `test/fixtures/live` are real
+   panels, redacted, self-verified at capture; capture the BUS too or fixtures encode the blind spot.
+10. **Gate on real exit codes.** Twice a `time`/`tail` pipe hid a red result and a push went out.
+
+### Things outside git this depends on
+`~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
+`~/.claude/loom/test_loom_cdp.py` (mirrored in `tools/`), `ORCHESTRATION-PLAYBOOK.md` §13–§16.
+Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
+
 ## Where everything is
 
 | | |
@@ -256,49 +298,20 @@ measured on the live editor rather than reasoned about:
 Simulated after the change: Gaming claims nobody (its developer's session is not open), ReciEats
 claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic session is nobody's worker.
 
-## Open threads
+## Open threads (2026-09-13)
 
-- **MIGRATION TO THE FOUR ROLES is undecided in scope.** The vocabulary (product-owner / developer /
-  designer / monetization) is declared and reported by `./live.sh`, but only livegita is near it (3/4).
-  funisland 1/13, Gaming 2/6, shwab_docker 1/7 — real, distinct, live agents. Renaming live mailboxes
-  is a per-project decision to take when that project's sessions are idle. livegita's own path:
-  `gitadeveloper/` -> `developer/` (session must stop writing to the old dir first), `po/` ->
-  `product-owner/` (then `naming.json` `owner` can go), drop the empty `productowner/`.
-- **livegita migration is STAGED, not run:** `~/.claude/loom/livegita/migrate-to-four-roles.sh` refuses unless developer/gitadeveloper/po are idle (verified: exits 3 while the developer works LG-047), backs up the bus, folds `gitadeveloper/`→`developer/`, renames `po/`→`product-owner/`, drops empty `productowner/`, rewrites board/bindings/targetmap/orchestrator/naming/state. After it runs, re-bind the developer with `/loom developer --repo livegita` so it signs its real name.
-- **`loom_cdp.py` `--repo` is optional at the CLI.** The extension always passes it; a hand-typed
-  `inject --role developer` with no `--repo` is refused as ambiguous. That is the intended failure.
-
-- **The three stale tags** above — one click each, in the right window. (livegita's is now correct:
-  `po @ f13a5e27`, reading 60% off the panel.)
-- **`livegita/productowner/`** is an empty duplicate mailbox the PO session created for itself at
-  17:40 on 2026-09-09, with a board note saying "rings go to po/ — this dir is an alias". The bus's
-  `naming.json` pins `"owner": "po"`, so nothing is confused by it; retire the directory once that
-  session stops writing its status there.
-- **`livegita/gitadeveloper` vs `developer`** — aliased to one identity for CLASSIFICATION only; both
-  mailboxes are still watched, because the live session writes to `gitadeveloper/` and was mid-task.
-  Retire the directory when it is idle. NOTE the tension recorded in `loom_cdp.py`: `gitadeveloper` was
-  project-prefixed ON PURPOSE, because a bare `developer` collides across buses and that collision
-  misrouted LG-001 into the ReciEats PO tab on 2026-09-08. `loom_cdp.py`'s `KNOWN_ROLES` is a FLAT
-  global set, so the prefix still earns its keep there. Nothing was changed about what the session
-  signs, and bare `developer` was NOT added to `KNOWN_ROLES`.
-- ~~**`livegita` has no offerable candidate**~~ — SOLVED 2026-09-09, and the earlier diagnosis in this
-  document was wrong. It was not "dominated by `worktrees/developer` paths". Two separate faults:
-  livegita spells its orchestrator `po`, which was in none of the four hardcoded owner sets; and its PO
-  tab quotes its single developer's sign-off, which `detectOwner`'s `>=3 distinct roles` test can never
-  catch on a one-worker team, so the PO was classified AS the developer and beat the real developer's
-  frame on text length. Fixed by `src/naming.ts` (one owner contract, shared with `loom_cdp.py`) and
-  `registry.boardOwnerFrames()` (the board declares the PO's `webviewId`; it beats content detection).
-- **The cycle has never completed end to end on a real session.** Every stage is tested and the
-  refusals are proven, but no orchestrator has yet banked, cleared and restored for real. The first
-  one to watch is funisland at 88%.
-- **`gaming` (lowercase) is a stale duplicate bus** of `Gaming`; the digest reports the role-name
-  collisions. Nobody has decided whether to retire it.
-- **16 board `session_id`s point at nothing** — worth a pass over the boards.
-- **Model policy and limit resume have no lease**, unlike the context cycle. They are idempotent
-  nudges rather than destructive, so two windows doing them twice is noise, not damage — but it is
-  the same class of bug if that ever changes.
-
----
+- **Windows on old builds** — `./live.sh` names them; 0.29.0 needs a reload per window. Until the
+  ReciEats window reloads, its PO's `open-requests.json` for developer1 is refused "already live"
+  (Lumen's developer1 claimed cross-window — fixed in 0.28.0, not yet loaded there).
+- **`Gaming/developer1.id` and `Gaming/productowner.id` are stale copies of ReciEats'** — delete them
+  (user's call). `live.sh` warns on every contested declaration.
+- **Blank `Untitled` shells after every restart** — Claude Code's restore discards the session id.
+  Left in place on purpose (principle 5). `blanks.ts` identifies them for a future tabGroups close.
+- **`~/.claude/settings.json` pins `claude-fable-5-1[1m]`** so every restarted session starts on the
+  premium tier and the model policy chases all of them. Changing the pin is the fix; user's call.
+- **The context-memory cycle has still never completed end to end on a real session.**
+- `gaming` (lowercase) is a stale duplicate bus of `Gaming`; 16 board session_ids point at nothing.
+- Model policy and limit resume have no cross-window lease (the context cycle does).
 
 ## How the person running this works
 
