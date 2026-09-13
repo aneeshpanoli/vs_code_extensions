@@ -11,6 +11,15 @@ What separates a test that describes REALITY from one that merely describes the 
 breaks when reality does. Each mutation below restores a defect that was actually live that night; a
 mutation that SURVIVES means that defect could return unnoticed, and this script fails.
 
+HOW A MUTANT IS GRADED — and why it is not the exit code (rewritten 2026-09-13). This script used to
+call a mutant "caught" whenever `./test.sh` exited non-zero. That is only evidence if the suite is
+GREEN without the mutation, and it was not: under LOOM_TEST_JOBS=1 — the mode every mutant runs in —
+the suite was red at HEAD c0804c8, so every mutant inherited that one failure and every mutant was
+scored caught. A no-op mutant would have been too. So the run now measures an unmutated BASELINE
+first, REFUSES to grade anything against a red one (exit 2), and counts a mutant as caught only when
+a test that PASSED on the baseline FAILS on the mutant — naming the tests. A no-op mutant is included
+as a self-check and must be reported SURVIVED.
+
     ELECTRON_RUN_AS_NODE=1 codium ... -- run via: python3 test/mutation.py
 """
 import subprocess, sys, os, pathlib, tempfile
@@ -257,7 +266,7 @@ MUTATIONS = [
 def sh(cmd):
     return subprocess.run(cmd, shell=True, cwd=ROOT, capture_output=True, text=True)
 
-# REFUSE TO RUN OVER UNCOMMITTED WORK. This script restores each mutant with `git checkout -- src/`,
+# REFUSE TO RUN OVER UNCOMMITTED WORK. This script used to restore each mutant with `git checkout -- src/`,
 # which cannot tell a mutation from work in progress: on 2026-09-09 it silently destroyed an hour of
 # uncommitted changes to registry.ts, roles.ts, tracker.ts and statusView.ts. Commit (or stash) first;
 # the whole point of the tool is to run against the code you are about to trust.
@@ -268,57 +277,184 @@ if dirty:
     print(dirty)
     sys.exit(2)
 
-survived, stale = [], []
-print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
-
 # ── PARALLEL. A serial run is ~4 minutes per dozen mutants: each one recompiles and runs the whole
 # suite, and the suite is the slow part. Every mutant works in its OWN copy of src/test/config
 # (node_modules symlinked), so nothing shares a working tree and the real src/ is never touched —
 # which also removes the hazard that made the first version of this file destroy uncommitted work.
-import shutil, concurrent.futures, multiprocessing
+import shutil, concurrent.futures, multiprocessing, re
 PARALLEL = max(1, int(os.environ.get("MUTATION_JOBS", "0")) or min(multiprocessing.cpu_count(), len(MUTATIONS)))
 TSC_REL = "node_modules/typescript/bin/tsc"
 
-def run_one(idx, name, rel, find, repl):
+# Each mutant copy runs the suite with LOOM_TEST_JOBS=1 (no fork bomb: 46 mutants x 36 files).
+MUT_ENV = dict(os.environ, ELECTRON_RUN_AS_NODE="1", LOOM_TEST_JOBS="1")
+
+# ── THE BASELINE GATE ────────────────────────────────────────────────────────────────────────────
+# WHY THIS EXISTS, measured 2026-09-13. `run_one()` graded a mutant purely on `./test.sh`'s EXIT
+# CODE. But the suite that each mutant runs is the LOOM_TEST_JOBS=1 one, and in that mode the suite
+# was already RED at HEAD c0804c8 (448/449 — `naming: coordinator refuses to spawn/retire/delete
+# 'po'`, an order-dependent failure that only appears when all 36 files share one sandbox HOME).
+# A red baseline makes the exit code a constant: EVERY mutant "failed the suite", so every mutant was
+# reported caught — a no-op mutant would have been too. Every mutation score this project reported
+# that day was meaningless, including "46/46 caught".
+#
+# So: a mutant is caught only if a test that PASSES on the unmutated baseline FAILS on the mutant,
+# and the run names those tests. Exit codes are no longer evidence of anything on their own.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+PASS_RE = re.compile(r"^\s*✓\s+(\S.*?)\s*$")
+FAIL_RE = re.compile(r"^\s*✗\s+(\S.*?)\s*$")
+
+
+def parse_results(out):
+    """-> (set of test names that PASSED, set that FAILED), from run-tests.js's per-test lines."""
+    passed, failed = set(), set()
+    for line in ANSI_RE.sub("", out).splitlines():
+        m = FAIL_RE.match(line)
+        if m:
+            failed.add(m.group(1))
+            continue
+        m = PASS_RE.match(line)
+        if m:
+            passed.add(m.group(1))
+    return passed, failed
+
+
+def make_tree(idx):
+    """A throwaway copy of the project; node_modules is symlinked, never copied."""
     work = pathlib.Path(tempfile.mkdtemp(prefix=f"mut{idx}-"))
+    for item in ("src", "test", "package.json", "tsconfig.json", "test.sh"):
+        srcp = ROOT / item
+        if srcp.is_dir():
+            shutil.copytree(srcp, work / item)
+        else:
+            shutil.copy2(srcp, work / item)
+    (work / "node_modules").symlink_to(ROOT / "node_modules")
+    return work
+
+
+def build_and_run(work):
+    """-> (returncode, passed, failed) or (None, reason, None) if the tree does not compile."""
+    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=MUT_ENV)
+    if r.returncode != 0:
+        return (None, "does not compile", None)
+    r = subprocess.run(["./test.sh"], cwd=work, capture_output=True, text=True, env=MUT_ENV)
+    passed, failed = parse_results(r.stdout + r.stderr)
+    return (r.returncode, passed, failed)
+
+
+print("measuring the baseline (unmutated, LOOM_TEST_JOBS=1) — nothing can be graded against a red suite...")
+_base = make_tree("base")
+try:
+    base_rc, base_pass, base_fail = build_and_run(_base)
+finally:
+    shutil.rmtree(_base, ignore_errors=True)
+
+if base_rc is None:
+    print(f"\nREFUSING: the unmutated tree {base_pass}.")
+    sys.exit(2)
+if base_rc != 0 or base_fail:
+    print(f"\nREFUSING: the BASELINE suite is red ({len(base_pass)} passed, {len(base_fail)} failed, "
+          f"exit {base_rc}) — a red baseline cannot grade anything.\n"
+          f"Every mutant would inherit these failures and be scored 'caught' on the exit code alone.\n"
+          f"Fix these first, then re-run:\n")
+    for n in sorted(base_fail):
+        print(f"  - {n}")
+    if not base_fail:
+        print("  (non-zero exit with no named failure — the suite crashed; run ./test.sh to see it)")
+    sys.exit(2)
+print(f"baseline is green: {len(base_pass)} tests pass, and a mutant is 'caught' only by breaking one of them.\n")
+
+# A deliberate NO-OP mutant (find and replace are semantically identical). It MUST be reported
+# SURVIVED: if the harness calls it caught, the harness is broken and no score below is worth
+# reading — which is exactly the failure this whole baseline rewrite exists to make impossible.
+#
+# It inserts a free-standing `void Boolean(1);` STATEMENT rather than wrapping a condition. The first
+# attempt did the latter — `if (!role)` -> `if (Boolean(1) && !role)` in inVocabulary() — and it does
+# not compile under `strict`: that `if` is a narrowing guard, so burying it in a `&&` costs TypeScript
+# the control-flow narrowing and the `role.trim()` below it becomes TS18049 'role' is possibly 'null'.
+# A "no-op" that changes what the type-checker knows is not a no-op. Keep this one a plain statement.
+NOOP_SELFCHECK = ("SELF-CHECK: a no-op mutant must SURVIVE",
+                  "src/naming.ts",
+                  "  if (!r || ROLE_VOCABULARY.includes(r)) return r;",
+                  "  void Boolean(1);\n  if (!r || ROLE_VOCABULARY.includes(r)) return r;")
+
+survived, stale, ungraded = [], [], []
+print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
+
+
+def run_one(idx, name, rel, find, repl):
+    work = make_tree(idx)
     try:
-        for item in ("src", "test", "package.json", "tsconfig.json", "test.sh"):
-            srcp = ROOT / item
-            if srcp.is_dir(): shutil.copytree(srcp, work / item)
-            else: shutil.copy2(srcp, work / item)
-        (work / "node_modules").symlink_to(ROOT / "node_modules")
         p = work / rel
         src = p.read_text()
         n = src.count(find)
         if n != 1:
             return ("STALE", name, f"({rel}: pattern occurs {n} times, expected 1)")
         p.write_text(src.replace(find, repl))
-        env = dict(os.environ, ELECTRON_RUN_AS_NODE="1", LOOM_TEST_JOBS="1")   # no fork bomb: 33 mutants x 34 files
-        r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)
-        if r.returncode != 0:
+        rc, passed, failed = build_and_run(work)
+        if rc is None:
             return ("STALE", name, "(mutant does not compile)")
-        r = subprocess.run(["./test.sh"], cwd=work, capture_output=True, text=True, env=env)
-        if r.returncode == 0:
-            return ("SURVIVED", name, "")
-        return ("caught", name, f"({r.stdout.count('✗')} test(s) fail)")
+        # THE GRADE: only a test that passed on the baseline and fails here counts.
+        broke = sorted(failed & base_pass)
+        if broke:
+            shown = "; ".join(broke[:3]) + (f"; +{len(broke) - 3} more" if len(broke) > 3 else "")
+            return ("caught", name, f"({len(broke)} baseline-passing test(s) now fail: {shown})")
+        if rc != 0:
+            # Non-zero exit, but no test that was green on the baseline went red — so the exit code
+            # is telling us something other than "the suite noticed this defect". Not a catch.
+            return ("UNGRADED", name,
+                    f"(exit {rc} but no baseline-passing test failed; {len(failed)} failure(s) reported)")
+        return ("SURVIVED", name, "")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+
+def report(status, name, detail):
+    if status == "caught":
+        print(f"  caught    {name}\n            {detail}")
+    elif status == "SURVIVED":
+        print(f"  SURVIVED  {name}")
+        survived.append(name)
+    elif status == "UNGRADED":
+        print(f"  UNGRADED  {name}\n            {detail}")
+        ungraded.append(f"{name} {detail}")
+    else:
+        print(f"  STALE     {name}\n            {detail}")
+        stale.append(name)
+
+
 with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
     futures = [pool.submit(run_one, i, *m) for i, m in enumerate(MUTATIONS)]
+    selfcheck = pool.submit(run_one, "noop", *NOOP_SELFCHECK)
     for fut in concurrent.futures.as_completed(futures):
-        status, name, detail = fut.result()
-        if status == "caught":
-            print(f"  caught    {name}\n            {detail}")
-        elif status == "SURVIVED":
-            print(f"  SURVIVED  {name}"); survived.append(name)
-        else:
-            print(f"  STALE     {name}\n            {detail}"); stale.append(name)
+        report(*fut.result())
+    sc_status, sc_name, sc_detail = selfcheck.result()
 
 print()
-if survived or stale:
-    for s in survived: print(f"SURVIVED: {s}")
-    for s in stale:    print(f"STALE:    {s}")
-    print(f"\n{len(survived)} survived, {len(stale)} stale — those defects could return unnoticed")
+sc_ok = sc_status == "SURVIVED"
+if sc_ok:
+    print("self-check: the no-op mutant SURVIVED — the harness can tell a real defect from a no-op.")
+else:
+    print(f"SELF-CHECK FAILED: the no-op mutant was reported {sc_status} {sc_detail}\n"
+          f"  A mutation that changes NOTHING must survive. Until that holds, every score above is\n"
+          f"  unreadable — this is the 2026-09-13 defect (a red baseline made every mutant 'caught').")
+
+if survived or stale or ungraded or not sc_ok:
+    print()
+    for s in survived:
+        print(f"SURVIVED: {s}")
+    for s in stale:
+        print(f"STALE:    {s}")
+    for s in ungraded:
+        print(f"UNGRADED: {s}")
+    parts = [f"{len(survived)} survived", f"{len(stale)} stale", f"{len(ungraded)} ungraded"]
+    line = (f"\n{len(MUTATIONS) - len(survived) - len(stale) - len(ungraded)}/{len(MUTATIONS)} caught, "
+            + ", ".join(parts))
+    # Only claim a defect could return when one actually can. A failing SELF-CHECK with a clean
+    # scoreboard means the opposite: the scoreboard cannot be trusted to tell us either way.
+    if survived or stale or ungraded:
+        line += " — those defects could return unnoticed"
+    else:
+        line += " — but the SELF-CHECK above failed, so this scoreboard is not evidence of anything"
+    print(line)
     sys.exit(1)
 print(f"all {len(MUTATIONS)} mutations caught — every defect of that night now breaks the suite")

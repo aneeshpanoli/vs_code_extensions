@@ -10,7 +10,7 @@ import * as vscode from "vscode";
 import { Tracker } from "./tracker";
 import { isLocked } from "./locks";
 import { deleteSession } from "./deleter";
-import { roleToRepo } from "./registry";
+import { roleToRepo, boardRoles } from "./registry";
 import { isOwnerRole } from "./naming";
 
 // The owner test is naming.ts's `isOwnerRole`, NOT a literal set. Measured 2026-09-09: this file
@@ -89,9 +89,29 @@ export class Coordinator {
       `(Automatic close is disabled: over CDP it would close the whole editor window.)`);
   }
 
+  /**
+   * The roster THIS window's delete boundary is measured against: when the window is scoped to a
+   * project, THAT project's own board.json — never the global role→repo map.
+   *
+   * WHY, measured 2026-09-13: `roleToRepo()` folds every bus into ONE Map keyed by role name, so a
+   * role that exists in more than one project is kept only for whichever repo `readdirSync` returned
+   * LAST. That is not a rare edge: on this machine `developer1` is a role of six projects and
+   * `productowner` of seven, so the map resolves `developer1` to `vs_code_extensions` alone and a
+   * Lumen-scoped window could neither list nor delete its OWN `developer1` — the boundary refused
+   * with "not a role of Lumen". The suite caught it as an order-dependent failure of
+   * `naming: coordinator refuses to spawn/retire/delete 'po'`, whose control assertion ("developer is
+   * still deletable") only fails once another test file's fixture repo also declares a `developer`.
+   * The test was right and the lookup was wrong. tracker.ts:122 already takes this project's roster
+   * from `boardRoles(repoFilter)` for the same reason; the coordinator was the last global-map read.
+   */
+  private rosterEntries(): [string, string][] {
+    if (this.repo) return boardRoles(this.repo).map((role) => [role, this.repo!] as [string, string]);
+    return Array.from(roleToRepo().entries());   // unfiltered window: every project, best effort
+  }
+
   /** Roles of THIS project (from board.json) that are NOT owners/locked — candidates to delete. */
   deletableRoles(): string[] {
-    return Array.from(roleToRepo().entries())
+    return this.rosterEntries()
       .filter(([role, repo]) => (!this.repo || repo === this.repo) && !isOwnerRole(role) && !isLocked(this.repo || "", role))
       .map(([role]) => role).sort();
   }
@@ -107,7 +127,7 @@ export class Coordinator {
   async delete(role: string, repoRoot: string | null, stamp: string): Promise<string> {
     if (isOwnerRole(role)) throw new Error(`REFUSED: '${role}' is an orchestrator role — never deleted.`);
     if (isLocked(this.repo || "", role)) throw new Error(`REFUSED: '${role}' is LOCKED 🔒 — unlock it first to delete.`);
-    const inRoster = roleToRepo().get(role);
+    const inRoster = new Map(this.rosterEntries()).get(role);
     if (!inRoster || (this.repo && inRoster !== this.repo)) {
       throw new Error(`REFUSED: '${role}' is not a role of ${this.repo || "this project"} — nothing deleted.`);
     }
