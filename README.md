@@ -207,8 +207,20 @@ orchestrator is exempt twice over: explicitly, and structurally — it is never 
 tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
+**Per-handoff model:** above that floor the tier is the *orchestrator's* choice,
+per block. It writes `model: claude-sonnet-5` (or `claude-opus-5`) into the
+handoff's frontmatter and the tracker enforces it in both directions — down as
+well as up — idle-only, into that role's own frame. A spawned tab is put on its
+tier *before* `/loom` binds it, since the bind makes the composer busy. A role
+that reports `blocked` twice on one handoff while on Sonnet has that handoff
+raised to Opus automatically. Every block appends a line to
+`~/.claude/loom/<repo>/model-ledger.jsonl` so the rubric can be judged on
+evidence. A frontmatter the tracker cannot read — or that asks for the premium
+tier — changes nothing and says so in `tracker-debug.json`. Settings:
+`workerModels`, `modelAckMs`.
+
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 529 checks across 37 files, no test framework, run under VSCodium's bundled node since this
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 593 checks across 38 files, no test framework, run under VSCodium's bundled node since this
 machine has no npm. (Not quite dependency-free: the CDP fake needs `ws`, which the
 extension itself depends on.) Measured coverage **depends on the runner mode**, because
 `tools/coverage.py` unions each process's UNCOVERED ranges: the parallel default reports

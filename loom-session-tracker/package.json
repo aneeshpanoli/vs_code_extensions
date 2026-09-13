@@ -256,6 +256,22 @@
           "default": "claude-opus-5",
           "description": "Model id workers are switched to (passed to /model). The orchestrator is exempt."
         },
+        "loomSessionTracker.workerModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "claude-opus-5",
+            "claude-sonnet-5"
+          ],
+          "description": "The tiers a worker may be put on. A handoff chooses one per block by writing `model: <id>` into its inbox.md frontmatter; an id outside this list, or any premium id whatever this list says, is ignored and the worker stays on workerModel."
+        },
+        "loomSessionTracker.modelAckMs": {
+          "type": "number",
+          "default": 8000,
+          "description": "How long a freshly spawned tab is given to acknowledge its /model switch before it is bound anyway. The bind is never skipped; an unswitched worker is corrected on the next idle tick."
+        },
         "loomSessionTracker.premiumModels": {
           "type": "array",
           "items": {

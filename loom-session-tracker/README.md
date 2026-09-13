@@ -140,6 +140,71 @@ anything else, is switched to `orchestratorModel` (`claude-fable-5-1[1m]`) with 
 the same acknowledgement rule. Setting: `enforceOrchestratorModel`. Only the orchestrator is ever on
 the premium tier; nothing else is promoted.
 
+### Per-handoff model (MP-001)
+
+Workers do not all need the Opus tier. The **orchestrator judges difficulty as it writes a handoff**
+and records that judgement in the handoff's own frontmatter; the **tracker enforces it**; a
+**ledger** records what each choice actually cost, so the rubric can be judged on evidence rather
+than on feel. The orchestrator switching *itself* is not part of this — that is
+`enforceOrchestratorModel`, above, and it is unchanged.
+
+```markdown
+---
+id: MP-001
+from: productowner
+to: developer2
+model: claude-sonnet-5      # ← the only new field
+---
+```
+
+**The allowlist.** `workerModels` (default `["claude-opus-5", "claude-sonnet-5"]`) is the set of
+tiers a worker may be put on. Haiku is deliberately out. The **premium tier stays orchestrator-only
+whatever this setting says**: a premium id in a frontmatter is refused on the model table, not on the
+allowlist, so widening the setting cannot open the top tier to a worker.
+
+**A frontmatter the tracker cannot read changes nothing.** No inbox, no `---` block, a block that is
+never closed, no `model:` line, a `model:` line in the body rather than the frontmatter — each falls
+back to `workerModel`. The two cases that are a *request* rather than an absence — a premium id, an
+id outside the allowlist — are ignored **and say so** under `model.frontmatterIgnored` in
+`tracker-debug.json`. (An ignored request that is silent is indistinguishable from one that worked;
+see principle 16.)
+
+**Enforcement runs both ways.** A worker on Opus whose handoff asks for Sonnet is switched *down*; a
+worker on Sonnet whose handoff asks for Opus, or says nothing, is switched *up*. Same rules as the
+premium policy: only into an **idle** composer (a `/model` typed mid-turn queues as an ordinary
+message and never runs), only into that role's **own frame**, same growing backoff, same
+acknowledgement handling. A **target change restarts the backoff** — otherwise a role that had
+backed off to the 15-minute step would sit on the wrong tier for a quarter of an hour after its
+handoff asked for a new one.
+
+**A spawned tab is put on its tier before it is bound.** `serveOpenRequests` types
+`/model <desired>` into the new frame and waits, bounded by `modelAckMs` (8 s), for the session to
+acknowledge it — *then* types `/loom <role>`. The order is the whole point: the bind runs the inbox
+check, and from that moment the composer is busy, so a `/model` sent second would never execute.
+Nothing is typed when the handoff wants the configured default, since a fresh tab already starts
+there. **The bind is never conditional on the switch**: if the acknowledgement does not arrive the
+tab is bound anyway and the tier is left to the next idle tick — a worker on the wrong model gets
+corrected, a worker that was never bound just sits there.
+
+**Escalation.** A role that reports `blocked` — what the `/loom` skill has a worker write when it
+raises a loop-back — **twice on the same handoff** while on Sonnet has that handoff's `model:` line
+rewritten to `claude-opus-5` (atomically, that line only, and only while the file's `id:` still
+matches, so the *next* brief's deliberate Sonnet is never raised by the last one's loop-backs).
+R2's next idle tick performs the actual switch. A third loop-back does not rewrite again. A report is
+counted once: `status.json` is re-read every tick, so a new report means a new `updated_at`.
+
+**The ledger.** `~/.claude/loom/<repo>/model-ledger.jsonl`, append-only, one line per
+(role, handoff id), written when the handoff id changes or the role reports idle having handled it:
+
+```json
+{"id":"MP-108","role":"alpha","model":"claude-opus-5","chosenBy":"escalated","started":"…",
+ "finished":"…","loopBacks":2,"testsBefore":563,"testsAfter":592}
+```
+
+`chosenBy` is `frontmatter` (the orchestrator chose), `default` (it did not) or `escalated` (the
+tracker overrode it). A line that cannot be completed is written **with nulls, not skipped** — a
+missing line is invisible, and the gap would bias exactly the comparison the ledger exists to make.
+
 ### Orchestrator context memory
 
 The orchestrator is the session that actually fills up: it runs for days across every role. Left
@@ -513,6 +578,8 @@ All under `loomSessionTracker.`.
 | `workingWarnThreshold` | `5` | Digest warning for roles working across all projects |
 | `autoResumeAfterLimit` / `resumeMessage` | `true` / built-in | Resume a session when its usage limit lifts |
 | `enforceWorkerModel` / `workerModel` / `premiumModels` | `true` / `claude-opus-5` / Fable, Mythos | Reserve the expensive tier for the orchestrator |
+| `workerModels` | `claude-opus-5`, `claude-sonnet-5` | The tiers a handoff may ask for in its `model:` frontmatter (premium is refused whatever this says) |
+| `modelAckMs` | `8000` | How long a spawned tab may take to acknowledge its `/model` before it is bound anyway |
 | `enforceOrchestratorModel` / `orchestratorModel` | `true` / `claude-fable-5-1[1m]` | Put the tagged orchestrator back on it when a restore drops it to the pin |
 | `showStartupDigest` / `staleBusDays` / `digestUnbankedCheck` | `true` / `30` / `true` | The attention summary |
 | `contextMemory` | `true` | Run the bank → clear → restore cycle |
@@ -612,7 +679,7 @@ the whole extension, and had no test of its own.
 
 ```bash
 npx tsc -p .                                   # build to out/
-./test.sh                                      # 529 checks, 37 files, no test framework
+./test.sh                                      # 593 checks, 38 files, no test framework
 ./test.sh notifier                             # filter by name
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 ./live.sh                                      # invariants against the live editor
