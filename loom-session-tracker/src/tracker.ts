@@ -73,6 +73,20 @@ export class Tracker {
    *  project's info in this window. null = track all (e.g. a windowless standalone run). */
   constructor(private repoFilter: string | null = null) {}
 
+  /** This window's workspace folder name (`workspaceFolders[0].name`). Set by the extension; tests set
+   *  it directly. With it, a frame whose window is a DIFFERENT folder is skipped outright — not a
+   *  worker, not a candidate, not a declared owner — unless that folder is one of this project's
+   *  roles (a worktree window of the same project). See cdp.Frame.windowRoot. */
+  windowRoot: string | null = null;
+  setWindowRoot(name: string | null): void { this.windowRoot = name || null; }
+
+  /** Is this frame in a window that belongs to this project? Legacy reads (no parentId) pass. */
+  inMyWindow(f: { windowRoot: string | null; windowKnown: boolean }, roster: Set<string>): boolean {
+    if (!this.repoFilter || !this.windowRoot || !f.windowKnown) return true;
+    if (!f.windowRoot) return false;                                 // a window with no folder is nobody's
+    return f.windowRoot === this.windowRoot || f.windowRoot === this.repoFilter || roster.has(f.windowRoot);
+  }
+
   /** Switch between this project only and every project. Clears the model so nothing leaks across. */
   setFilter(repo: string | null): void {
     if (repo === this.repoFilter) return;
@@ -136,6 +150,9 @@ export class Tracker {
     const now0 = Date.now();
     for (const f of frames) {
       if (!f.webviewId) continue;
+      // WINDOW FIRST. Whatever a panel prints, it is in exactly one window, and one project per
+      // window is the convention: a frame from another folder's window is not this project's.
+      if (!this.inMyWindow(f, validRoles)) continue;
       // 0) THE BOARD WINS. A frame the board names as the orchestrator's is the orchestrator, even
       //    when its text reads exactly like a worker's (it quotes their sign-offs).
       const decl = declaredBy.get(f.webviewId);

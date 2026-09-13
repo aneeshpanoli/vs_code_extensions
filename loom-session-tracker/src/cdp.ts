@@ -10,6 +10,14 @@ import WebSocket from "ws";
 
 export interface Frame {
   webviewId: string | null; url: string; text: string;
+  /** The workspace folder of the WINDOW this panel lives in, parsed from its parent page's title
+   *  (`<active tab> - <folder> - VSCodium`), or null for a window with no folder. `windowKnown` is
+   *  false only when CDP gave no parentId at all (older Chromium), in which case callers must not
+   *  filter on it. One project per window is the user's convention, so this is the one identity a
+   *  panel cannot fake by what it prints: measured 2026-09-12, ReciEats' window adopted Lumen's
+   *  `developer1` (frame 9e4e718c, parentId of the Lumen window) because both rosters carry the name
+   *  and the frame's text said nothing decisive. Its window did. */
+  windowRoot: string | null; windowKnown: boolean;
   /** The panel's OWN "% context used", read off the compact button's title attribute. null when the
    *  button is absent — which the shipped webview does deliberately below 50% used (see CONTEXT_RE). */
   contextPct: number | null;
@@ -70,6 +78,12 @@ const DEEP_READ =
   "return JSON.stringify({t:g(document,4),c:p(document,4)});})()";
 
 /** The reader's payload. A plain string (no envelope) is still accepted as text with no percentage. */
+/** `<active tab> - <folder> - VSCodium` -> folder. Two segments (no folder open) -> null. */
+export function windowRootFromTitle(title: string | null | undefined): string | null {
+  const parts = String(title || "").split(" - ").map((x) => x.trim()).filter(Boolean);
+  return parts.length >= 3 ? parts[parts.length - 2] : null;
+}
+
 export function parseRead(value: string): { text: string; contextPct: number | null } {
   if (value.charCodeAt(0) === 123 /* { */) {
     try {
@@ -107,6 +121,17 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
     if (!wsUrl) return [];
     ws = await connect(wsUrl, deadline);
     if (!ws) return [];
+    // Window of each panel: /json/list exposes `parentId` on iframe targets (the owning page), and
+    // the page's title names the folder. Best-effort — a missing list leaves every frame unknown.
+    const pageTitle = new Map<string, string>();
+    const parentByUrl = new Map<string, string>();
+    try {
+      const list = await httpJson(host, port, "/json/list", 3000);
+      if (Array.isArray(list)) {
+        for (const t of list) if (t && t.type === "page" && t.id) pageTitle.set(String(t.id), String(t.title || ""));
+        for (const t of list) if (t && t.url && t.parentId) parentByUrl.set(String(t.url), String(t.parentId));
+      }
+    } catch { /* unknown windows */ }
 
     let idCtr = 1;
     const sessions = new Map<string, any>();   // sessionId -> targetInfo
@@ -197,8 +222,11 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
     for (const [sid, info] of sessions) {
       const url = (info && info.url) || "";
       const read = text.get(sid);
+      const parent = parentByUrl.get(url);
       frames.push({ webviewId: webviewId(url), url, text: read ? read.text : "",
-                    contextPct: read ? read.contextPct : null });
+                    contextPct: read ? read.contextPct : null,
+                    windowRoot: parent ? windowRootFromTitle(pageTitle.get(parent)) : null,
+                    windowKnown: !!parent });
     }
     return frames;
   } catch {

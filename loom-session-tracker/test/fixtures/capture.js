@@ -142,6 +142,7 @@ function behaviour(text, repos) {
     fs.writeFileSync(path.join(dir, `${id}.txt`), red);
     manifest.frames.push({
       id, webviewId: f.webviewId, contextPct: f.contextPct ?? null,
+      windowRoot: f.windowRoot ?? null, windowKnown: !!f.windowKnown,
       // MEASURED from the live frame, not asserted by hand — and identical in the fixture, which is
       // what the check above proves. The test asserts the TRACKER's per-window decisions on top.
       measured: before,

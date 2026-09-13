@@ -176,6 +176,11 @@ MUTATIONS = [
   '        "If a role\'s tab did NOT come back, do not wait for a person and do not hold its lane: write " +',
   '        "" +'),
 
+ ("a frame from another window is claimed as this project's worker (the Lumen/ReciEats developer1)",
+  "src/tracker.ts",
+  "      if (!this.inMyWindow(f, validRoles)) continue;",
+  "      if (!this.inMyWindow(f, validRoles) && Boolean(0)) continue;"),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",
@@ -185,45 +190,63 @@ MUTATIONS = [
 def sh(cmd):
     return subprocess.run(cmd, shell=True, cwd=ROOT, capture_output=True, text=True)
 
-def restore():
-    sh("git checkout -- src/")
-    sh(TSC)
-
 # REFUSE TO RUN OVER UNCOMMITTED WORK. This script restores each mutant with `git checkout -- src/`,
 # which cannot tell a mutation from work in progress: on 2026-09-09 it silently destroyed an hour of
 # uncommitted changes to registry.ts, roles.ts, tracker.ts and statusView.ts. Commit (or stash) first;
 # the whole point of the tool is to run against the code you are about to trust.
 dirty = sh("git status --porcelain -- src/").stdout.strip()
 if dirty:
-    print("REFUSING: src/ has uncommitted changes — this script reverts src/ between mutants and would\n"
-          "          destroy them. Commit or stash first.\n")
+    print("REFUSING: src/ has uncommitted changes — mutants are copies of what is committed-and-built,\n"
+          "          and a run over a dirty tree would report on code that is not what you will ship.\n")
     print(dirty)
     sys.exit(2)
 
 survived, stale = [], []
 print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
-try:
-    for name, rel, find, repl in MUTATIONS:
-        p = ROOT / rel
+
+# ── PARALLEL. A serial run is ~4 minutes per dozen mutants: each one recompiles and runs the whole
+# suite, and the suite is the slow part. Every mutant works in its OWN copy of src/test/config
+# (node_modules symlinked), so nothing shares a working tree and the real src/ is never touched —
+# which also removes the hazard that made the first version of this file destroy uncommitted work.
+import shutil, concurrent.futures, multiprocessing
+PARALLEL = max(1, min(int(os.environ.get("MUTATION_JOBS", "0")) or (multiprocessing.cpu_count() // 4), 10))
+TSC_REL = "node_modules/typescript/bin/tsc"
+
+def run_one(idx, name, rel, find, repl):
+    work = pathlib.Path(tempfile.mkdtemp(prefix=f"mut{idx}-"))
+    try:
+        for item in ("src", "test", "package.json", "tsconfig.json", "test.sh"):
+            srcp = ROOT / item
+            if srcp.is_dir(): shutil.copytree(srcp, work / item)
+            else: shutil.copy2(srcp, work / item)
+        (work / "node_modules").symlink_to(ROOT / "node_modules")
+        p = work / rel
         src = p.read_text()
         n = src.count(find)
         if n != 1:
-            print(f"  STALE     {name}\n            ({rel}: pattern occurs {n} times, expected 1)")
-            stale.append(name); continue
+            return ("STALE", name, f"({rel}: pattern occurs {n} times, expected 1)")
         p.write_text(src.replace(find, repl))
-        if sh(TSC).returncode != 0:
-            print(f"  STALE     {name}\n            (mutant does not compile)")
-            stale.append(name); restore(); continue
-        r = sh("./test.sh")
+        env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+        r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            return ("STALE", name, "(mutant does not compile)")
+        r = subprocess.run(["./test.sh"], cwd=work, capture_output=True, text=True, env=env)
         if r.returncode == 0:
-            print(f"  SURVIVED  {name}")
-            survived.append(name)
+            return ("SURVIVED", name, "")
+        return ("caught", name, f"({r.stdout.count('✗')} test(s) fail)")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+    futures = [pool.submit(run_one, i, *m) for i, m in enumerate(MUTATIONS)]
+    for fut in concurrent.futures.as_completed(futures):
+        status, name, detail = fut.result()
+        if status == "caught":
+            print(f"  caught    {name}\n            {detail}")
+        elif status == "SURVIVED":
+            print(f"  SURVIVED  {name}"); survived.append(name)
         else:
-            fails = r.stdout.count("✗")
-            print(f"  caught    {name}\n            ({fails} test(s) fail)")
-        restore()
-finally:
-    restore()
+            print(f"  STALE     {name}\n            {detail}"); stale.append(name)
 
 print()
 if survived or stale:

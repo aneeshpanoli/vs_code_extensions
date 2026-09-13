@@ -47,6 +47,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Publish the owner alias contract so loom_cdp.py reads the same set this extension enforces.
     publishNaming();
     const tracker = new Tracker(repo);
+    tracker.setWindowRoot(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
     const maxActive = () => Number(cfg().get("maxActiveSessions", MAX_ACTIVE_TOTAL)) || MAX_ACTIVE_TOTAL;
     const coord = new Coordinator(tracker, repo, maxActive());
     // THIS project's roster, read from ITS board — not from the global {role: repo} map, which is
