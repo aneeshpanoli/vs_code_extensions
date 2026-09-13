@@ -381,7 +381,10 @@ export function activate(context: vscode.ExtensionContext) {
       wakePending = false;
       injectTo({ role: orch.role, webviewId: orch.webviewId, repo },
         "[loom-restart] The editor was restarted and your role sessions were reopened with their memory. " +
-        "Re-read your inbox, the board and each role's status.json, then continue the work where it stood.",
+        "Re-read your inbox, the board and each role's status.json, then continue the work where it stood. " +
+        "If a role's tab did NOT come back, do not wait for a person and do not hold its lane: write " +
+        "~/.claude/loom/<repo>/open-requests.json {\"roles\":[...],\"requestedAt\":\"<iso>\"} and the tab is " +
+        "opened for you within seconds, with its webviewId written back into the file (playbook §15).",
         "restart-debug.json");
     };
 

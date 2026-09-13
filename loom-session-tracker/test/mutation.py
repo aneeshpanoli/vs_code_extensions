@@ -166,6 +166,16 @@ MUTATIONS = [
   "    if (c) open.push(c); else spawn.push(role);",
   '    if (c) open.push(c); else refused.push({ role: raw, reason: "no transcript" });'),
 
+ ("the post-/clear restore no longer tells the orchestrator it can open its own roles",
+  "src/memory.ts",
+  "    ` If any role's tab is missing, do not ask a person and do not park its work: write ` +",
+  "    ` ` +"),
+
+ ("the restart wake no longer tells the orchestrator it can open its own roles",
+  "src/extension.ts",
+  '        "If a role\'s tab did NOT come back, do not wait for a person and do not hold its lane: write " +',
+  '        "" +'),
+
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",

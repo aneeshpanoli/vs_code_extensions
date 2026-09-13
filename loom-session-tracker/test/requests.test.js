@@ -115,3 +115,19 @@ suite("requests: the result names the frame each tab came up in", () => {
   eq(back.opened[0].webviewId, "wid-new-1", "the orchestrator can ring it directly");
   eq(back.opened[1].from, "spawned"); eq(back.opened[1].bound, true, "and knows the bind landed");
 });
+
+suite("requests: every message the extension sends an orchestrator tells it how to open its own roles", () => {
+  // 2026-09-12: ReciEats' PO wrote "Lane A's tab did not come back. That costs nothing: A is held with
+  // no block in flight" — and held it. The channel existed; nothing had ever told the PO. A capability
+  // an orchestrator is never told about does not exist for it.
+  const { restoreMessage } = load("memory.js");
+  const restore = restoreMessage("/x/memory.md", "ReciEats", "productowner");
+  ok(/open-requests\.json/.test(restore), "the post-/clear restore names the channel");
+  ok(/§15/.test(restore), "and points at the playbook section");
+  ok(/do not ask a person/.test(restore), "and says not to wait for a human");
+  const fs = require("fs"), path = require("path");
+  const ext = fs.readFileSync(path.join(__dirname, "..", "out", "extension.js"), "utf8");
+  const wake = ext.slice(ext.indexOf("[loom-restart]"), ext.indexOf("[loom-restart]") + 900);
+  ok(/open-requests\.json/.test(wake), "the restart wake names the channel too");
+  ok(/do not wait for a person/.test(wake), "and says not to wait");
+});

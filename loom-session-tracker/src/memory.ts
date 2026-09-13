@@ -172,7 +172,10 @@ export function restoreMessage(memoryFile: string, repo: string, role: string): 
     `  3. the project docs (CLAUDE.md and docs/) for anything the memory asserts.\n` +
     `Reconcile them: where the memory disagrees with the docs or the board, the docs and the board win — ` +
     `correct ${memoryFile} on the spot so it stays the accurate account. Then continue from the next step ` +
-    `it names, and keep updating it as you work.`;
+    `it names, and keep updating it as you work.` +
+    ` If any role's tab is missing, do not ask a person and do not park its work: write ` +
+    `~/.claude/loom/${repo}/open-requests.json {"roles":[...],"requestedAt":"<iso>"} — the tab is ` +
+    `opened within seconds and its webviewId written back for you to ring (playbook §15).`;
 }
 
 // ── the decision ────────────────────────────────────────────────────────────────────────────
