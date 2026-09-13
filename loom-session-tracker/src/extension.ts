@@ -20,6 +20,8 @@ import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, strandedRoles, resumableFrom, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
+import { frameWatcher, openAndIdentify } from "./newframe";
+import { rebindFrame, RebindLog } from "./rebind";
 import { planOpen, writeResult, strandedNote, Opened } from "./requests";
 import { planFocus } from "./focus";
 import { readFrames } from "./cdp";
@@ -54,6 +56,7 @@ export function activate(context: vscode.ExtensionContext) {
     publishNaming();
     const tracker = new Tracker(repo);
     tracker.setWindowRoot(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
+    tracker.setWindowCwd(windowCwd);
     setSenderWindow(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
     const maxActive = () => Number(cfg().get("maxActiveSessions", MAX_ACTIVE_TOTAL)) || MAX_ACTIVE_TOTAL;
     const coord = new Coordinator(tracker, repo, maxActive());
@@ -347,14 +350,35 @@ export function activate(context: vscode.ExtensionContext) {
       if (stranded.length) debugLog({ restartStranded: stranded.map((s) => `${s.role}<-${s.sessionId.slice(0, 8)} @ ${s.cwd || "?"}`) });
       if (!todo.length) return;
       // Snapshot the blank shells BEFORE opening anything: only these are ever closable, and only
-      // if they are still blank afterwards. See blanks.ts for why each clause matters.
+      // if they are still blank afterwards. See blanks.ts for why each clause matters. The SAME read
+      // seeds the frame watcher, so identifying the reopened tabs costs no extra CDP round trip.
       let before: string[] = [];
-      try { before = blankShells(await readFrames()); } catch { /* no read, no closing */ }
-      let n = 0;
-      for (const m of todo) {
-        try { await vscode.commands.executeCommand("claude-vscode.editor.open", m.sessionId, undefined, undefined); n++; }
-        catch (e: any) { debugLog({ restartReopenFailed: m.role, error: String(e && e.message || e) }); }
-      }
+      const watcher = frameWatcher(readFrames);
+      let seeded = false;
+      try { const snap = await readFrames(); before = blankShells(snap); watcher.seedFrom(snap); seeded = true; }
+      catch { /* no read, no closing */ }
+      if (!seeded) await watcher.seed();
+      const reopenBinds: RebindLog[] = [];
+      const ambiguous: string[] = [];
+      // ONE AT A TIME, and each one's frame is written back to the bus. Belt and braces with the
+      // tracker's session-id match: a panel that has only just been asked to open may not be able to
+      // answer what session it is running for a tick or two, and this path knows the answer without
+      // asking — it opened that tab, from that role's transcript, and watched exactly one frame
+      // appear. Ambiguity (0 or ≥2 new frames) writes NOTHING and leaves the healing to the tracker.
+      const n = await openAndIdentify(todo, (sessionId) =>
+        vscode.commands.executeCommand("claude-vscode.editor.open", sessionId, undefined, undefined),
+        watcher, {
+        identified: (role, wid) => {
+          // frameText null: we have not read this panel, and not reading it is not evidence against
+          // whatever guard string its id file carries. See rebind.rebindFrame.
+          const log = rebindFrame(repo, role, wid, null, false);
+          if (log) reopenBinds.push(log);
+        },
+        failed: (role, error) => debugLog({ restartReopenFailed: role, error }),
+        ambiguous: (role) => ambiguous.push(role),
+      });
+      if (reopenBinds.length) debugLog({ restartRebound: reopenBinds });
+      if (ambiguous.length) debugLog({ restartReopenAmbiguous: ambiguous });
       // NO CLOSING HERE. 0.26.0 closed the blank shells once their sessions were back, through CDP
       // `/json/close` on the webview target — and that closes the OWNING WINDOW, not the tab. Three
       // windows (Gaming, funisland, shwab_docker) were lost on the next restart. The shells are
@@ -381,16 +405,10 @@ export function activate(context: vscode.ExtensionContext) {
       try {
         const opened: Opened[] = [];
         // Frames before, so each new tab can be told apart and its id handed back to the orchestrator.
-        const seen = new Set<string>();
-        try { for (const f of await readFrames()) if (f.webviewId) seen.add(f.webviewId); } catch { /* no diff */ }
-        const newFrame = async (): Promise<string | null> => {
-          await new Promise((r) => setTimeout(r, 2500));
-          try {
-            const now = (await readFrames()).filter((f) => f.webviewId && !seen.has(f.webviewId)).map((f) => String(f.webviewId));
-            for (const w of now) seen.add(w);
-            return now.length === 1 ? now[0] : null;          // ambiguous -> report nothing rather than a guess
-          } catch { return null; }
-        };
+        // Shared with the restart path — see newframe.ts.
+        const watcher = frameWatcher(readFrames);
+        await watcher.seed();
+        const newFrame = () => watcher.next();
         for (const c of plan.open) {
           try {
             await vscode.commands.executeCommand("claude-vscode.editor.open", c.sessionId, undefined, undefined);
@@ -444,6 +462,10 @@ export function activate(context: vscode.ExtensionContext) {
         tracker.setFilter(showAll ? null : repo);
         tree.setRepo(showAll ? null : repo);
         const r = await tracker.tick();
+        // A bus record moved because a SESSION ID said so — the only rewrite the tracker is licensed
+        // to make (see rebind.ts). Logged with old→new so a rewrite is never silent: this is the file
+        // a person reads when `reach_po.py @<repo>/<role>.id` starts reaching somebody new.
+        if (r.rebinds.length) debugLog({ reboundBySessionId: r.rebinds });
         // STAMP THE RUNNING VERSION. Each editor window keeps the code it loaded at its last
         // reload, so "deployed" and "running" drift silently and every symptom looks like a bug that
         // was already fixed. Measured 2026-09-10 00:27: 0.21.1 was registered while a window was

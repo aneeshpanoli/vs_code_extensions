@@ -21,6 +21,26 @@ export interface Frame {
   /** The panel's OWN "% context used", read off the compact button's title attribute. null when the
    *  button is absent — which the shipped webview does deliberately below 50% used (see CONTEXT_RE). */
   contextPct: number | null;
+  /** The CLAUDE SESSION id this panel is running, read off the inner `#active-frame`'s URL
+   *  (`…/index.html?id=<webviewId>&…&session=<uuid>`). null when the frame cannot answer — a sidebar
+   *  view, a panel with no conversation, an unreadable frame. NEVER a guess.
+   *
+   *  WHY THIS IS THE ADDRESS AND THE webviewId IS NOT. The webviewId is the `?id=` UUID VSCodium mints
+   *  per webview INSTANCE: every IDE restart mints new ones, so `bindings.json`, `board.json`
+   *  `webview_id`, `<role>.id` and `orchestrator.json` all hold dead ids until a human re-binds by
+   *  hand. The Claude session id is stable across restarts. Measured 2026-09-13 on 12 live panels in
+   *  5 windows: 11 of the 12 are conversation panels and every one carried a `session=` that mapped
+   *  straight to a `board.json` `session_id`; the 12th (1a5824c4) is the SIDEBAR (`purpose=webviewView`),
+   *  which correctly carried none.
+   *
+   *  THE URL, NOT THE BOOTSTRAP STATE. The panel's inline bootstrap state also carries
+   *  `{"isFullEditor":true,"sessionID":"<uuid>"}`, and it is written at LOAD time and not updated
+   *  afterwards — so it goes stale exactly when it matters. Measured the same day on
+   *  ReciEats/productowner's panel (9b71432a): the URL said `e868c82c` (that session ran 18:26 → 20:54,
+   *  live at the time of reading) while the state still said `cee5d24f` (a session that ENDED at 16:06,
+   *  before a `/clear`). Across the 12 panels the state was present on 6 and never once present where
+   *  the URL was absent, so it adds no coverage and can be confidently wrong. We read the URL only. */
+  claudeSessionId: string | null;
 }
 
 /** Timing overrides. Defaults are the production constants; tests drive the protocol fast. */
@@ -54,6 +74,19 @@ function httpJson(host: string, port: number, path: string, timeoutMs: number): 
   });
 }
 
+/** A Claude session id in a frame URL: `…?id=<webviewId>&…&session=<uuid>`. Anchored to the full
+ *  UUID shape on purpose — the webviewId is a UUID too and sits in the same query string, so a loose
+ *  pattern would happily return the wrong one. */
+const SESSION_RE = /[?&]session=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+/** The same pattern, as source, for the in-page evaluate below. */
+const SESSION_RE_JS = "/[?&]session=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\b/i";
+
+/** The Claude session id in a frame URL, or null. Never throws, never guesses. */
+export function sessionIdFromUrl(url: string | null | undefined): string | null {
+  const m = SESSION_RE.exec(String(url || ""));
+  return m ? m[1].toLowerCase() : null;
+}
+
 // Recursive innerText grab, descending into #active-frame and nested same-process iframes (depth 4) —
 // the OOPIF conversation lives there, NOT in the empty webview shell body.
 //
@@ -75,7 +108,15 @@ const DEEP_READ =
   "if(k>0&&d&&d.querySelectorAll){var f=d.querySelectorAll('iframe');" +
   "for(var i=0;i<f.length;i++){try{var c=f[i].contentDocument;" +
   "if(c){var r=p(c,k-1);if(r!==null)return r;}}catch(e){}}}return null;}" +
-  "return JSON.stringify({t:g(document,4),c:p(document,4)});})()";
+  // s(): the first `session=<uuid>` in this document's URL or any same-process descendant's. The
+  // conversation's inner `#active-frame` is one level down from the webview shell; depth 4 matches
+  // the text walk. Any frame we cannot reach is skipped, never guessed at.
+  "function s(d,w,k){try{var m=" + SESSION_RE_JS + ".exec((w&&w.location&&w.location.href)||'');" +
+  "if(m)return m[1];}catch(e){}" +
+  "if(k>0&&d&&d.querySelectorAll){var f=d.querySelectorAll('iframe');" +
+  "for(var i=0;i<f.length;i++){try{var c=f[i].contentDocument,cw=f[i].contentWindow;" +
+  "if(c&&cw){var r=s(c,cw,k-1);if(r)return r;}}catch(e){}}}return null;}" +
+  "return JSON.stringify({t:g(document,4),c:p(document,4),s:s(document,window,4)});})()";
 
 /** The reader's payload. A plain string (no envelope) is still accepted as text with no percentage. */
 /** `<active tab> - <folder> - VSCodium` -> folder. Two segments (no folder open) -> null. */
@@ -84,16 +125,19 @@ export function windowRootFromTitle(title: string | null | undefined): string | 
   return parts.length >= 3 ? parts[parts.length - 2] : null;
 }
 
-export function parseRead(value: string): { text: string; contextPct: number | null } {
+export function parseRead(value: string): { text: string; contextPct: number | null; sessionId: string | null } {
   if (value.charCodeAt(0) === 123 /* { */) {
     try {
       const o = JSON.parse(value);
       if (o && typeof o === "object" && typeof o.t === "string") {
-        return { text: o.t, contextPct: typeof o.c === "number" && isFinite(o.c) ? o.c : null };
+        return { text: o.t, contextPct: typeof o.c === "number" && isFinite(o.c) ? o.c : null,
+                 // A session id only ever arrives as the full UUID the page matched; anything else
+                 // is a malformed envelope and yields null rather than a partial id.
+                 sessionId: typeof o.s === "string" ? sessionIdFromUrl("?session=" + o.s) : null };
       }
     } catch { /* not our envelope — treat it as text */ }
   }
-  return { text: value, contextPct: null };
+  return { text: value, contextPct: null, sessionId: null };
 }
 
 const WEBVIEW_ID_RE = /[?&]id=([0-9a-f][0-9a-f-]+)/i;
@@ -136,7 +180,7 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
     let idCtr = 1;
     const sessions = new Map<string, any>();   // sessionId -> targetInfo
     const armed = new Set<string>();
-    const text = new Map<string, { text: string; contextPct: number | null }>();   // sessionId -> best read
+    const text = new Map<string, { text: string; contextPct: number | null; sessionId: string | null }>();   // CDP sessionId -> best read
     const socket = ws;
 
     const send = (method: string, params?: any, sessionId?: string): number => {
@@ -211,10 +255,15 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
       const prev = text.get(sid);
       // Longest text wins (a partial render must not beat a full one), but a percentage seen on
       // EITHER pass is kept: the button can be missing from one read and present in the next.
+      // The Claude session id is kept from EITHER pass for the same reason as the percentage: the
+      // inner frame can be mid-navigation on one read and settled on the next.
       if (!prev || read.text.length > prev.text.length) {
-        text.set(sid, { text: read.text, contextPct: read.contextPct ?? (prev ? prev.contextPct : null) });
-      } else if (prev.contextPct === null && read.contextPct !== null) {
-        text.set(sid, { ...prev, contextPct: read.contextPct });
+        text.set(sid, { text: read.text, contextPct: read.contextPct ?? (prev ? prev.contextPct : null),
+                        sessionId: read.sessionId ?? (prev ? prev.sessionId : null) });
+      } else {
+        if (prev.contextPct === null && read.contextPct !== null) text.set(sid, { ...prev, contextPct: read.contextPct });
+        const cur = text.get(sid)!;
+        if (cur.sessionId === null && read.sessionId !== null) text.set(sid, { ...cur, sessionId: read.sessionId });
       }
     }
 
@@ -225,6 +274,9 @@ export async function readFrames(host = "127.0.0.1", port = cdpPort(), opts: Rea
       const parent = parentByUrl.get(url);
       frames.push({ webviewId: webviewId(url), url, text: read ? read.text : "",
                     contextPct: read ? read.contextPct : null,
+                    // The in-page read first; then the target's own URL, for a frame that IS the
+                    // inner document (attached as its own target) and so carries `session=` directly.
+                    claudeSessionId: (read && read.sessionId) || sessionIdFromUrl(url),
                     windowRoot: parent ? windowRootFromTitle(pageTitle.get(parent)) : null,
                     windowKnown: !!parent });
     }

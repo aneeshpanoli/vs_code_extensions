@@ -161,6 +161,43 @@ believe it over anything written here.
     lowercasing in GC-004 and the S3 live check in GC-002 — the third and fourth time now: when a
     guard turns out to be redundant, retarget at the point that decides; never add another copy.
 
+18. **The session id is the address; the webviewId is a cache the tracker refreshes** (0.34.0,
+    RB-001, 2026-09-13). A `webviewId` is minted per webview INSTANCE, so every restart invalidated
+    every id the bus had recorded — `bindings.json`, `board.json`, `<role>.id`, `orchestrator.json` —
+    and the only repair was a human re-running `/loom` and a nonce ring per tab. The Claude session
+    id survives restarts and is readable off each panel's inner `#active-frame` URL
+    (`…?id=<webviewId>&…&session=<uuid>`), from the shell frame's own `Runtime.evaluate`. Measured on
+    12 live panels in 5 windows: 11 conversation panels, every one mapping to a `board.json`
+    `session_id`; the 12th was the sidebar (`purpose=webviewView`) and had none.
+
+    **Read the URL, never the bootstrap state.** The panel's inline
+    `{"isFullEditor":true,"sessionID":"…"}` is written at LOAD and not updated, so it is wrong
+    precisely after a `/clear` — ReciEats' orchestrator read URL `e868c82c` (live 18:26 → 20:54)
+    against state `cee5d24f` (ended 16:06). The state appeared on 6 of 12 panels and never once
+    where the URL was missing: no coverage gained, a confident wrong answer risked.
+
+    So a frame carrying a role's session id IS that role, above content and above a declaration
+    naming a dead frame, and `rebind.ts` then rewrites every place the bus records that frame.
+    This narrows "the tracker NEVER writes bindings.json" by exactly one clause — a binding DERIVED
+    FROM A SESSION-ID MATCH — and by no other. Content still rewrites nothing; a tracker that cannot
+    read the session id changes nothing at all. Corollaries, each of which cost a test:
+
+    * **Ambiguity refuses**, as everywhere else here: two roles claiming one session id is a drop,
+      not a tiebreak, and an open that yields 0 or ≥2 new frames attributes nothing.
+    * **Heal the spelling the board actually uses.** The extension reads `webviewId`; the boards the
+      Loom skill writes carry `webview_id` (this project's own `productowner` entry has only the
+      snake form). Writing just the camel field would leave a correct value beside a stale one and
+      look fixed. Same shape as the guard-that-does-not-decide in principle 17: find the field the
+      readers read, do not add another copy.
+    * **Not reading something is not evidence against it.** The restart path knows which frame it
+      just opened without having read a word of it, so it passes `frameText === null` and the id
+      file's line-2 guard is KEPT — the same judgement as "a guard is inconclusive on a busy tab",
+      and the same family as principle 16.
+    * The transcript fallback is scoped to a role's OWN worktree, never the window's cwd. RB-001
+      asked for both; the owner role typically has no worktree, so windowCwd would have mapped every
+      ad-hoc tab a person opens to the orchestrator, at binding authority and injectable as it. The
+      narrowing is deliberate and is stated in `rebind.ts` where someone would otherwise re-widen it.
+
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
 `~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§17 (§17: no watchers in an orchestrator session).
