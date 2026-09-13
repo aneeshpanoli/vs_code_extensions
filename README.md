@@ -222,12 +222,16 @@ tier — changes nothing and says so in `tracker-debug.json`. Settings:
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
 (optionally with a name-substring filter, e.g. `./test.sh notifier`) — 623 checks across 39 files, no test framework, run under VSCodium's bundled node since this
 machine has no npm. (Not quite dependency-free: the CDP fake needs `ws`, which the
-extension itself depends on.) Measured coverage **depends on the runner mode**, because
-`tools/coverage.py` unions each process's UNCOVERED ranges: the parallel default reports
-**38.9% of lines** and `LOOM_TEST_JOBS=1` reports **70.8%** (both measured 2026-09-13 at
-0.33.0). The higher figure is the honest one for "what the suite exercises"; the lower one
-is an artefact of one process per test file. An older **95.3%** claim here was not
-reproducible by either route
+extension itself depends on.) Measured coverage is **93.1% of lines** (5641/6060,
+measured 2026-09-13 at 0.34.0). It no longer depends on the runner mode: `tools/coverage.py`
+used to *union* each process's UNCOVERED ranges, so a line counted as uncovered if any one of
+the per-file processes missed it and the figure fell as cores rose — the same run read 73.4% at
+`LOOM_TEST_JOBS=1` and 38.4% at the default 32. It now intersects, since a line is uncovered only
+if *no* process covered it, and `LOOM_TEST_JOBS=4` and `=32` agree to the line.
+`LOOM_TEST_JOBS=1` reports 93.3%, 12 lines higher: that path gives all 39 test files one shared
+`HOME` instead of one each, and the leakage reaches a `gc.ts` branch needing two buses to declare
+the same frame — accidental coverage no isolated process can reproduce and no test asks for. The
+parallel number is the honest one
 — `rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3
 ../tools/coverage.py /tmp/cov out` prints the per-module table (a line counts as
 covered unless every non-whitespace byte on it is inside a zero-count V8 range;

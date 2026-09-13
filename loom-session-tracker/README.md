@@ -689,7 +689,9 @@ Tests run under the editor's bundled node (no npm needed) and force `HOME` to a 
 directory, so they can never touch the real bus. The CDP layer is driven against a fake DevTools
 server, so the reader's nesting, two-pass and timeout behaviour is tested without a browser.
 
-A note on what the suite is *for*. It sits around 95% of lines, and it caught none of the four
+A note on what the suite is *for*. It sits at 93.1% of lines (5641/6060, measured 2026-09-13 at
+0.34.0; `LOOM_TEST_JOBS=1` reads 93.3%, the 12 extra lines being state leaked between test files
+that share one `HOME`), and it caught none of the four
 defects found on 2026-09-08/09 — every fixture in it was written from the same model of the world as
 the code, so where the model was wrong, the tests agreed. Coverage tells you which lines ran, never
 which realities you considered. `live.sh` and measuring the real system are the other half;
