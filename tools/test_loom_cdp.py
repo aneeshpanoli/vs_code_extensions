@@ -115,5 +115,14 @@ with tempfile.TemporaryDirectory() as home:
     check("a session in worktrees/developer1 is tfg_ua/developer1 @ its id file",
           (snd or {}).get("role"), "developer1")
     check("…and knows its frame", (snd or {}).get("wid", "")[:8], "abcdef12")
-    check("no cwd identity and no --from is still SENT, but visibly unidentified",
-          m.return_address(None, None).startswith("[from unidentified sender"), True)
+    # PIN THE CWD (CH-002). This assertion is about having NO cwd identity, and it read the real
+    # os.getcwd() — so it passed from ~/.claude/loom, which is not a repo, and FAILED from any git
+    # worktree, including the one a developer runs it in. It is red on main today for that reason
+    # alone. A test that asserts "no identity" must SUPPLY the cwd that has none.
+    _prev = os.getcwd()
+    os.chdir(home)                        # a temp dir, never a git repo
+    try:
+        check("no cwd identity and no --from is still SENT, but visibly unidentified",
+              m.return_address(None, None).startswith("[from unidentified sender"), True)
+    finally:
+        os.chdir(_prev)
