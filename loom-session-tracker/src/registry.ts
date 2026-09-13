@@ -16,6 +16,12 @@ export interface Agent {
   repo: string;
   webviewId: string;
   lastSeen: number;   // epoch ms this agent was last confidently detected
+  /** The panel's own "% context used" (its compact button), as of that detection. null below ~50 %,
+   *  where the button is not rendered at all — so a NUMBER here always means at least half full, and
+   *  null means either "comfortable" or "not read". Owners have carried this since the memory cycle;
+   *  workers carry it since CH-001, where the ledger records where a handoff FINISHED and §19's size
+   *  rule is judged on exactly that. Optional, so nothing that builds an Agent by hand has to know. */
+  contextPct?: number | null;
 }
 
 function loadWidMap(repo: string, file: string): Map<string, string> {

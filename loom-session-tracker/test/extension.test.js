@@ -1188,3 +1188,143 @@ suite("MP-001 R4/R5 wiring: the tick escalates a twice-blocked role and closes i
     eq(lines[0].testsAfter, 601);
   } finally { off(); }
 });
+
+// ── CH-001 R2: §19's disjointness rule, enforced on the path that OPENS tabs ─────────────────────
+// Driven through activate() -> tick -> serveOpenRequests, per the owner's rule that a planner
+// assertion proves nothing about a path whose whole job is to open a tab. The counter-test matters
+// as much as the refusal: a guard that refuses everything would pass a one-sided test.
+
+/** A handoff with a `files:` line, for the overlap guard. */
+function putFilesHandoff(repo, role, id, files) {
+  const f = busPath(repo, role, "inbox.md");
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, `---\nid: ${id}\nfrom: productowner\nfiles: ${files}\n---\n# ${id}\n\nthe brief\n`);
+}
+/** How many tabs the extension actually opened. */
+const opensSoFar = () => vscode._executed.filter((e) => e.id === "claude-vscode.editor.open").length;
+/** The result the orchestrator reads back out of open-requests.json. */
+const served = (repo) => readJson(busPath(repo, "open-requests.json")) || {};
+
+suite("CH-001 R2: a handoff overlapping a WORKING role's is refused, and no tab is opened", async () => {
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "ch-ov-refuse");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putFilesHandoff(repo, "alpha", "CH-200", "src/models.ts, src/requests.ts");
+  putFilesHandoff(repo, "beta", "CH-201", "README.md, loom-session-tracker/src/models.ts");
+  setStatus(repo, "alpha", { status: "working", current: "CH-200", updated_at: "T1" });
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["beta"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const off = await activate([poFrame("wid-po", repo)], LOGGING_CDP);
+  try {
+    await settle(600);
+    eq(opensSoFar(), 0, "not one tab: " + JSON.stringify(vscode._executed.map((e) => e.id)));
+    // nothing was typed into a WORKER's frame. The orchestrator's own promotion to the premium tier
+    // is a different mechanism and fires here as it does on every tick; it is not this guard's doing.
+    eq(injectLog().filter((l) => !/--webview-id wid-po\b/.test(l)), [],
+       "and nothing was typed into a worker: " + JSON.stringify(injectLog()));
+    const r = served(repo);
+    eq((r.opened || []).length, 0, "nothing opened: " + JSON.stringify(r));
+    eq((r.refused || []).map((x) => x.reason),
+       ["overlaps alpha on loom-session-tracker/src/models.ts"],
+       "and the orchestrator can read WHY, and against whom: " + JSON.stringify(r.refused));
+  } finally { off(); }
+});
+
+suite("CH-001 R2: ONE request naming two colliding briefs opens the first and refuses the second", async () => {
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "ch-ov-pair");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putFilesHandoff(repo, "alpha", "CH-202", "src/models.ts");
+  putFilesHandoff(repo, "beta", "CH-203", "src/*.ts");            // a glob over the same directory
+  // NEITHER is working: only the in-flight half of the guard can catch this pair.
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["alpha", "beta"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const po = poFrame("wid-po", repo);
+  const tabs = [frame("wid-n1", "fresh tab\n" + footer("Opus 5")), frame("wid-n2", "fresh tab\n" + footer("Opus 5"))];
+  const off = await activate(() => [po, ...tabs.slice(0, opensSoFar())], LOGGING_CDP);
+  try {
+    await settle(6000);
+    eq(opensSoFar(), 1, "exactly one tab: " + JSON.stringify(vscode._executed.map((e) => e.id)));
+    const r = served(repo);
+    eq((r.opened || []).map((o) => o.role), ["alpha"], "the first one opened: " + JSON.stringify(r.opened));
+    eq((r.refused || []).map((x) => x.reason), ["overlaps alpha on src/*.ts"],
+       "the second refused against it: " + JSON.stringify(r.refused));
+    ok(injectLog().some((l) => /--message \/loom alpha\b/.test(l)), "alpha was bound");
+    ok(!injectLog().some((l) => /--message \/loom beta\b/.test(l)), "beta was never bound: " + JSON.stringify(injectLog()));
+  } finally { off(); }
+});
+
+suite("CH-001 R2: file-DISJOINT handoffs both open — the guard refuses collisions, not work", async () => {
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "ch-ov-ok");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putFilesHandoff(repo, "alpha", "CH-204", "src/models.ts, src/requests.ts");
+  putFilesHandoff(repo, "beta", "CH-205", "tools/coverage.py, docs/README.md");   // CH-002's real package
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["alpha", "beta"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const po = poFrame("wid-po", repo);
+  const tabs = [frame("wid-n1", "fresh tab\n" + footer("Opus 5")), frame("wid-n2", "fresh tab\n" + footer("Opus 5"))];
+  const off = await activate(() => [po, ...tabs.slice(0, opensSoFar())], LOGGING_CDP);
+  try {
+    await settle(8000);
+    eq(opensSoFar(), 2, "both tabs opened: " + JSON.stringify(vscode._executed.map((e) => e.id)));
+    const r = served(repo);
+    eq((r.opened || []).map((o) => o.role).sort(), ["alpha", "beta"], "both served: " + JSON.stringify(r.opened));
+    eq((r.refused || []).filter((x) => /overlaps/.test(x.reason)), [],
+       "and neither was refused for overlap: " + JSON.stringify(r.refused));
+  } finally { off(); }
+});
+
+suite("CH-001 R2: an ALREADY-BOUND role that overlaps a working one is warned about, not stopped", async () => {
+  // A bound role is rung through reach_po.py, which is off-git and outside this extension: there is
+  // nothing to intercept, so the honest surface is a warning. It must not type, open or write.
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "ch-ov-warn");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putFilesHandoff(repo, "alpha", "CH-206", "src/models.ts");
+  putFilesHandoff(repo, "beta", "CH-207", "src/models.ts, src/other.ts");
+  setStatus(repo, "alpha", { status: "working", current: "CH-206", updated_at: "T1" });
+  clearInjectLog();
+  const off = await activate([poFrame("wid-po", repo),
+                             frame("wid-b", "w" + marker("beta") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    ok(vscode._statusMessages.some((m) => /beta's handoff overlaps alpha on src\/models\.ts/.test(m)),
+       "the collision is on the status bar: " + JSON.stringify(vscode._statusMessages));
+    ok(vscode._statusMessages.some((m) => /one handoff is one merge/.test(m)), "with the rule it comes from");
+    const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
+    ok(JSON.stringify((dbg || {}).handoffOverlap || []).includes("beta overlaps alpha"),
+       "and on the record: " + JSON.stringify((dbg || {}).handoffOverlap));
+    eq(opensSoFar(), 0, "warn ONLY — nothing was opened");
+    // a second tick must not warn again about the same pair; a 15s tick would be a spam machine
+    const before = vscode._statusMessages.filter((m) => /overlaps alpha/.test(m)).length;
+    await vscode._commands["loomSessionTracker.refresh"]();
+    await settle(300);
+    eq(vscode._statusMessages.filter((m) => /overlaps alpha/.test(m)).length, before,
+       "once per colliding pair, not once per tick");
+  } finally { off(); }
+});
+
+suite("CH-001 R2: a role whose handoff declares NOTHING is opened as before — no refusal on absence", async () => {
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "ch-ov-silent");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putFilesHandoff(repo, "alpha", "CH-208", "src/models.ts");
+  // beta's brief predates the `files:` convention entirely
+  fs.mkdirSync(busPath(repo, "beta"), { recursive: true });
+  fs.writeFileSync(busPath(repo, "beta", "inbox.md"), "---\nid: CH-209\nfrom: productowner\n---\n# CH-209\n");
+  setStatus(repo, "alpha", { status: "working", current: "CH-208", updated_at: "T1" });
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["beta"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const po = poFrame("wid-po", repo);
+  const off = await activate(() =>
+    opensSoFar() ? [po, frame("wid-n1", "fresh tab\n" + footer("Opus 5"))] : [po], LOGGING_CDP);
+  try {
+    await settle(6000);
+    eq(opensSoFar(), 1, "it was opened: " + JSON.stringify(vscode._executed.map((e) => e.id)));
+    const r = served(repo);
+    eq((r.refused || []).filter((x) => /overlaps/.test(x.reason)), [],
+       "making the `files:` line compulsory by stealth would break every bus that has not adopted it");
+    eq(vscode._statusMessages.filter((m) => /overlaps/.test(m)), [], "and nothing was warned about either");
+  } finally { off(); }
+});

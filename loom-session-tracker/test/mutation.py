@@ -672,6 +672,90 @@ MUTATIONS = [
   "src/models.ts",
   "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)) return;",
   "      if (same(cur.pending, st.pending)) return;"),
+
+ # ── CH-001, 2026-09-13: §19's chunking rules — the tracker ENFORCES disjointness and MEASURES size ─
+ # Each of R1-R4 gets one, plus one per new ledger field, and each names the test that must die with it.
+
+ # R1 — killed by "CH-001 R1: `files:` is read comma- OR space-separated, and normalised". §19's own
+ # example writes commas; every handoff a human types writes spaces. Splitting on commas alone turns
+ # `files: src/a.ts src/b.ts` into ONE declared path called "src/a.ts src/b.ts", which collides with
+ # nothing that exists — so the guard silently has no opinion on exactly the briefs it should refuse.
+ ("`files:` is comma-separated only — a space-separated line declares one impossible path",
+  "src/models.ts",
+  "  for (const piece of raw.split(/[,\\s]+/)) {",
+  "  for (const piece of raw.split(/,/)) {"),
+
+ # R2 — killed by "CH-001 R2: the suffix match is anchored on a path SEGMENT, not on characters".
+ # Dropping the anchor makes the comparison a plain substring test, so `src/models.ts` collides with
+ # `xsrc/models.ts` and `other/src/mymodels.ts`. A guard that refuses a disjoint package is worse than
+ # none: the orchestrator is told its own plan is illegal and the lane sits empty.
+ ("the path comparison is an unanchored substring — disjoint files read as the same file",
+  "src/overlap.ts",
+  "  return new RegExp(`(?:^|/)${body}$`);",
+  "  return new RegExp(body);"),
+
+ # R2 — killed by "CH-001 R2: a handoff that collides with a WORKING role's is refused, naming both"
+ # (its final assertion). Without the self-deletion every working role with a `files:` line overlaps
+ # ITSELF, so the moment a role starts work the tracker refuses to ever reopen it.
+ ("a role is compared against itself — every working role blocks its own tab",
+  "src/overlap.ts",
+  "  others.delete(role);                               // a role never overlaps itself",
+  "  void role;"),
+
+ # R2 — killed by "CH-001 R2: ONE request naming two colliding briefs opens the first and refuses the
+ # second". The bus-status half only sees roles that are ALREADY working, and a role being spawned in
+ # this same breath is not working yet: one open-requests.json naming two colliding briefs would spawn
+ # both and the disjointness rule would never be consulted at all — the exact case §19 is most about.
+ ("roles opened in the same request are not counted as live — two colliding briefs spawn together",
+  "src/requests.ts",
+  "    const ov = overlapFor(repo, role, [...open.map((c) => c.role), ...spawn]);",
+  "    const ov = overlapFor(repo, role, []);"),
+
+ # R3 contextPctAtFinish — killed by "CH-001 R3: every new field is NULL rather than guessed when it
+ # cannot be read". `Number(null)` is 0, so without the absence guard a role below ~50 % context —
+ # where the panel renders no percentage at all — lands in the ledger as "finished at 0 % context".
+ # §19 reads under-30 % as "that handoff was too small", so every unreadable block would be scored as
+ # the smallest possible one. The same hole was open under `testsBefore`.
+ ("an unreadable number is 0 rather than null — a role below 50% context is logged as 0%",
+  "src/models.ts",
+  '  if (v === null || v === undefined || v === "") return null;',
+  "  void 0;"),
+
+ # R3 wallMinutes — killed by "CH-001 R3: filesDeclared, statusUpdates, wallMinutes and
+ # contextPctAtFinish are recorded" (its 72-minute assertion). A units slip is invisible in every
+ # null-case test and in the shape test, and §19's calibration is stated in MINUTES ("about an hour
+ # on Opus"): sixty times too large reads as every handoff being wildly oversized.
+ ("wallMinutes is computed in seconds — every handoff reads 60x too long",
+  "src/models.ts",
+  "  return Math.round(((b - a) / 60_000) * 10) / 10;",
+  "  return Math.round(((b - a) / 1_000) * 10) / 10;"),
+
+ # R3 filesDeclared — killed by "CH-001 R3: filesDeclared, statusUpdates, wallMinutes and
+ # contextPctAtFinish are recorded". A constant 0 is indistinguishable from the honest "declared
+ # nothing", so the one field that could tell whether §19's split-at-file-boundaries rule is being
+ # followed would read as "nobody has ever declared a file" for ever.
+ ("filesDeclared is always zero — the size rule can never be scored",
+  "src/models.ts",
+  "                    filesDeclared: handoffFiles(this.repo, role).length,",
+  "                    filesDeclared: 0,"),
+
+ # R3 statusUpdates — killed by "CH-001 R3: statusUpdates counts REPORTS, not the ticks that re-read
+ # them". status.json is re-read every 15 seconds, so counting reads makes this a measure of how long
+ # the WINDOW was open rather than how many turns the block took — principle 19's "count reports, not
+ # reads", which is the same defect R4's escalation counting had.
+ ("statusUpdates counts every tick's re-read — it measures uptime, not turns",
+  "src/models.ts",
+  "      if (seen && seen !== cur.seenUpdatedAt) {",
+  "      if (seen) {"),
+
+ # R4 — killed by "CH-001 R4: a record whose ledger line could NOT be written SURVIVES". The prune is
+ # safe ONLY because it is gated on the append having landed; the append is deliberately swallowed so
+ # a full disk cannot break a tick. Swallowing it and pruning anyway destroys BOTH copies of "this
+ # block was escalated after two loop-backs" — the durable record and the working one.
+ ("the escalation record is pruned even when the ledger write FAILED — both copies are lost",
+  "src/models.ts",
+  "    } catch { return false; }                               // a ledger write must never break a tick",
+  "    } catch { /* a ledger write must never break a tick */ }"),
 ]
 
 def sh(cmd):

@@ -170,7 +170,11 @@ export class Tracker {
       .filter((d) => isOwnerRole(d.role)).map((d) => d.webviewId));
     // role -> best frame. `priority`: 2 = authoritative /loom binding (always wins), else the classify purity.
     const best = new Map<string, { webviewId: string; priority: number; len: number; repo: string;
-                                   text: string; signed: boolean; viaSession: boolean }>();
+                                   text: string; signed: boolean; viaSession: boolean;
+                                   /** The panel's own "% context used", carried through so a WORKER's
+                                    *  context is knowable too and not only an owner's: CH-001's ledger
+                                    *  records where a handoff FINISHED, and §19 judges size by it. */
+                                   contextPct: number | null }>();
     const now0 = Date.now();
     /** Owner roles matched by session id this tick (owners are not tracked agents, so they cannot
      *  ride in `best`, but their frame still has to be written back to the bus). */
@@ -202,7 +206,8 @@ export class Tracker {
         const prev = best.get(role);
         if (!prev || prev.priority < P_SESSION)
           best.set(role, { webviewId: f.webviewId, priority: P_SESSION, len: f.text.length,
-                           repo: this.repoFilter, text: f.text, signed: true, viaSession: true });
+                           repo: this.repoFilter, text: f.text, signed: true, viaSession: true,
+                           contextPct: f.contextPct ?? null });
         continue;
       }
       // WINDOW FIRST. Whatever a panel prints, it is in exactly one window, and one project per
@@ -220,7 +225,8 @@ export class Tracker {
         const prev = best.get(role);
         if (!prev || prev.priority < 2)
           best.set(role, { webviewId: f.webviewId, priority: 2, len: f.text.length,
-                           repo: this.repoFilter, text: f.text, signed: true, viaSession: false });
+                           repo: this.repoFilter, text: f.text, signed: true, viaSession: false,
+                           contextPct: f.contextPct ?? null });
         continue;
       }
       if (ownerFrames.has(f.webviewId)) {
@@ -296,14 +302,16 @@ export class Tracker {
       const prev = best.get(role);
       if (!prev || priority > prev.priority || (priority === prev.priority && f.text.length > prev.len))
         best.set(role, { webviewId: f.webviewId, priority, len: f.text.length, repo, text: f.text,
-                         signed: priority >= 1.2, viaSession: false });   // marker (1.2) or authoritative binding (1.5)
+                         signed: priority >= 1.2, viaSession: false,
+                         contextPct: f.contextPct ?? null });   // marker (1.2) or authoritative binding (1.5)
     }
 
     const now = Date.now();
     this.limits = new Map();
     this.models = new Map();
     for (const [role, b] of best) {
-      this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now });
+      this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now,
+                              contextPct: b.contextPct });
       // No injection gate here (tried 0.17.1, removed the same night): resumes MUST reach a worker
       // whose sign-off scrolled off — measured, that was every limited funisland role after the
       // restart. Cross-project misroutes are stopped by the attribution rule above instead.

@@ -24,6 +24,7 @@ import { blankShells, closableShells } from "./blanks";
 import { frameWatcher, openAndIdentify } from "./newframe";
 import { rebindFrame, RebindLog } from "./rebind";
 import { planOpen, writeResult, strandedNote, Opened } from "./requests";
+import { overlapFor, overlapReason } from "./overlap";
 import { planFocus } from "./focus";
 import { readFrames } from "./cdp";
 import { isOwnerRole } from "./naming";
@@ -88,11 +89,17 @@ export function activate(context: vscode.ExtensionContext) {
     // exists to prevent.
     let modelNote: Record<string, any> | undefined;
     const noteModel = (k: string, v: any) => { modelNote = { ...(modelNote || {}), [k]: v }; };
+    // And the same for CH-001's overlap warnings, for the same reason and it cost the same test
+    // cycle: `runOverlapWarning` runs mid-tick, and `computeMissing`, `serveOpenRequests` and the
+    // blank-shell note all debugLog AFTER it. A collision recorded on its own call is overwritten
+    // within the tick that found it — the third time this file has learned that.
+    let overlapNote: string[] | undefined;
     const debugLog = (obj: any) => {
       try {
         fs.writeFileSync(path.join(os.homedir(), ".claude", "loom", "tracker-debug.json"),
           JSON.stringify({ repo, ...(stampNote ? { stamp: stampNote } : {}),
-                           ...(modelNote ? { model: modelNote } : {}), ...obj }, null, 2));
+                           ...(modelNote ? { model: modelNote } : {}),
+                           ...(overlapNote ? { handoffOverlap: overlapNote } : {}), ...obj }, null, 2));
       } catch { /* ignore */ }
     };
     const notifier = new Notifier(repo);
@@ -112,6 +119,34 @@ export function activate(context: vscode.ExtensionContext) {
           `Loom: ${ev.role} has been "${ev.status}" for ${ev.staleHours.toFixed(1)}h with no status update — possibly stuck.`);
         if (orch) healthWatcher.alert(ev, orch.role, () => { /* logged to stall-debug.json */ });
       }
+    };
+    // CH-001 R2, the half the tracker cannot refuse. The spawn path REFUSES an overlapping handoff
+    // (requests.ts), because there the tab does not exist yet and withholding it costs nothing. A
+    // role that is ALREADY BOUND is rung by the orchestrator through reach_po.py — off-git, no part
+    // of this extension, nothing to intercept — so the only honest move is to say so, once per
+    // colliding pair, and let the human read it. Warn only; the handoff's own words.
+    //
+    // Deliberately NOT gated behind a setting: it writes nothing, types nothing and opens nothing,
+    // and a warning a project can switch off is one nobody sees the day it matters.
+    const overlapWarned = new Set<string>();
+    const runOverlapWarning = () => {
+      if (!repo) return;
+      const notes: string[] = [];
+      for (const role of boardRoles(repo)) {
+        if (isOwnerRole(role)) continue;
+        let ov = null;
+        try { ov = overlapFor(repo, role); } catch { continue; }   // a half-written bus is not a warning
+        if (!ov) continue;
+        // One warning per colliding PAIR, not per direction and not per tick: two working roles each
+        // see the other, and the tick runs every 15 seconds.
+        const key = [role, ov.other].sort().join("|");
+        if (overlapWarned.has(key)) continue;
+        overlapWarned.add(key);
+        vscode.window.setStatusBarMessage(
+          `Loom: ${role}'s handoff ${overlapReason(ov)}, which is working — one handoff is one merge (§19)`, 15000);
+        notes.push(`${role} ${overlapReason(ov)}`);
+      }
+      if (notes.length) { overlapNote = [...(overlapNote || []), ...notes]; debugLog({}); }
     };
     // Keep the expensive tier for the orchestrator only: workers found on a premium model get
     // switched back with `/model <default>`, the same way `/loom <role>` binds a session.
@@ -139,6 +174,10 @@ export function activate(context: vscode.ExtensionContext) {
       const live = new Set(eligibleTargets(tracker.view(), busy, "command", repo).map((t) => t.role));
       const idleModels = new Map(Array.from(tracker.modelState()).filter(([r]) => live.has(r)));
       const frameOf = new Map(tracker.view().map((a) => [a.role, a.webviewId] as [string, string]));
+      // R3 (CH-001): the ledger records where a block FINISHED in the worker's context, and that
+      // number exists only on the panel — it is CDP data, so the tick has to hand it in. null below
+      // ~50 %, where the panel renders no compact button at all; models.ts says why that is honest.
+      const pctOf = new Map(tracker.view().map((a) => [a.role, a.contextPct ?? null] as [string, number | null]));
       // R4/R5 run over every role the bus knows, not only the idle ones: a loop-back is reported by
       // a role that has just STOPPED, and a ledger line must close for a role whose tab has gone.
       if (repo) for (const role of boardRoles(repo)) {
@@ -150,7 +189,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showInformationMessage(
               `Loom: ${esc.role} has looped back twice on ${esc.id} — raising that handoff to ${esc.to}.`);
           }
-          modelPolicy.ledgerTick(role, target, allow);
+          modelPolicy.ledgerTick(role, target, allow, new Date(), pctOf.get(role) ?? null);
         } catch { /* a tick must survive a half-written bus */ }
       }
       for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium, Date.now(),
@@ -619,6 +658,7 @@ export function activate(context: vscode.ExtensionContext) {
         runNotifier();
         runLimitWatcher();
         runModelPolicy();
+        runOverlapWarning();
         runHealth();
         runContextMemory();
         try { computeMissing(); wakeOrchestrator(); } catch { /* a reopen offer must never break a tick */ }
