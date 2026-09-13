@@ -11,14 +11,15 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.33.0)
 
-**Version 0.33.0** is merged and pushed. The deployed copy on this machine is still **0.32.1**, so
-every window needs `../deploy.sh loom-session-tracker` + a reload before it is actually running
-0.33.0 — do not read "0.33.0" here as "0.33.0 is what the editor is executing". **529 tests** green
-in BOTH modes (`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **72/72 mutations caught** under
-the baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
-`./live.sh` is clean except the warnings under open threads and the expected "windows are running an
-OLD build" failure until that deploy + reload. Read this section, then `README.md`, then run
-`./live.sh` and believe it over anything written here.
+**Version 0.33.0** is merged and pushed. The deployed copy on this machine is what `ls
+~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
+needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
+"0.33.0" here as "0.33.0 is what the editor is executing". **546 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **85/85 mutations caught** under the
+baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving. `./live.sh`
+is clean except the warnings under open threads and the expected "windows are running an OLD build"
+failure until that deploy + reload. Read this section, then `README.md`, then run `./live.sh` and
+believe it over anything written here.
 
 ### The principles the code now rests on (each was learned from a live failure)
 1. **Names are a contract** (`src/naming.ts`): one owner test `isOwnerRole()`, aliases on the bus in
@@ -110,6 +111,20 @@ OLD build" failure until that deploy + reload. Read this section, then `README.m
     asked AGAIN at apply time against the live roster, because the plan is read by a person who then
     clicks. A lease timestamp in the future is expired, not fresh — a clock step must not create a
     claim nothing can break.
+16. **A read that cannot answer must say so, not return nothing** (0.33.0, GC-004 — the second
+    review, and every finding in it was this one sentence). `readJson` → `null` → an empty set is
+    indistinguishable from "there is nothing", and every guard downstream reads "nothing" as
+    permission: a TORN `running-versions.json` (ten windows rewrite it every 15 s) meant an empty
+    keep-set and archiving the build nine windows were running; a reference sweep that hit its file
+    budget or skipped an oversize file meant "no bus references this transcript". Both now refuse
+    their whole tier with a note (`RunningVersions.readable`, `ReferenceSweep.truncated`), the same
+    shape as `Measured.truncated`. Two supply-side corollaries: the version stamp is keyed by
+    **windowId**, not by repo — two windows on one project shared a slot and every folderless window
+    collapsed into `(no project)`, so a window's build could be invisible — and it is written
+    tmp+rename; and the live roster fed to a MACHINE-WIDE pass cannot come from `tracker.view()`,
+    which is scoped to one project by design, so `busLiveRoles()` reads every
+    `<repo>/<role>/status.json` touched in the last 30 minutes (the file's mtime, not its
+    `updated_at`, which measurably lies).
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),

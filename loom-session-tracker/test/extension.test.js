@@ -6,6 +6,7 @@ const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJs
   require("./harness");
 const fs = require("fs");
 const os = require("os");
+const { execFileSync } = require("child_process");
 const path = require("path");
 
 const ext = load("extension.js");
@@ -569,8 +570,10 @@ suite("gc wiring: the digest offers Collect garbage with the real counts", async
     // The count must be the REAL one, and this sandbox is shared with every suite above, so the
     // expected number is the planner's own answer rather than a literal that drifts with fixtures.
     const gc = load("gc.js");
+    // The same roster the extension feeds the planner: machine-wide from the bus (R4). With an empty
+    // set the expectation drifts by whatever roles other suites left writing status in this sandbox.
     const expect = gc.planGc({ now: Date.now(), cfg: gc.DEFAULT_GC_CONFIG, currentVersion: "0.33.0",
-                               liveRoles: new Set(), repoRoots: {} });
+                               liveRoles: gc.busLiveRoles(Date.now()).roles, repoRoots: {} });
     const n = expect.tier1.length + expect.tier2.length;
     ok(n >= 3, `the fixture really is collectable (${n}: two builds and a transcript at least)`);
     match(offered.m, new RegExp(`${n} collectable`), "with the real count: " + offered.m);
@@ -729,5 +732,129 @@ suite("gc wiring: gcEnabled=false collects nothing and says so", async () => {
     await settle(40);
     match(vscode._messages.info.join("\n"), /garbage collection is disabled/, "and the command explains why");
     ok(fs.existsSync(doomed), "still there");
+  } finally { off(); }
+});
+
+// ── GC-004 · what the extension FEEDS the collector ─────────────────────────────────────────
+// gc.ts is only as good as its inputs, and both of these were wrong in a way no gc.ts test could
+// see: the version stamp was keyed so two windows shared a slot, and the live roster handed to a
+// machine-wide pass was filtered to one project.
+
+suite("gc R2 wiring: the version stamp is keyed by WINDOW and carries the repo as a field", async () => {
+  const repo = makeRepo({ roles: {} }, "gcR2w");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  try { fs.rmSync(GC_STATE); } catch { /* fine */ }
+  const stampFile = path.join(LOOM, "running-versions.json");
+  try { fs.rmSync(stampFile); } catch { /* fine */ }
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  try {
+    await settle(60);
+    const stamp = readJson(stampFile);
+    ok(stamp, "the stamp was written");
+    const keys = Object.keys(stamp);
+    eq(keys.length, 1, "one window, one entry");
+    ok(!keys.includes(repo), `keyed by window, not by project (${keys[0]})`);
+    match(keys[0], /^\d+:/, "and a windowId looks like <pid>:<nonce>");
+    eq(stamp[keys[0]].repo, repo, "the project is carried as a field, so live.sh can still name it");
+    eq(stamp[keys[0]].version, "0.33.0", "with the build this window is running");
+  } finally { off(); }
+});
+
+suite("gc R2 wiring: the version stamp is written atomically (tmp + rename)", async () => {
+  // Not a style point. Ten windows rewrite this file every 15 seconds, and since R1 a torn read
+  // makes garbage collection refuse the whole extension tier — so a plain writeFileSync would
+  // routinely disable collection AND, before R1, would have archived a build live windows were on.
+  // The observable fact is that the destination is reached by rename, never written in place.
+  const repo = makeRepo({ roles: {} }, "gcR2atomic");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  const stampFile = path.join(LOOM, "running-versions.json");
+  try { fs.rmSync(stampFile); } catch { /* fine */ }
+  const realWrite = fs.writeFileSync, realRename = fs.renameSync;
+  const writes = [], renames = [];
+  fs.writeFileSync = function (f, ...rest) { writes.push(String(f)); return realWrite.call(fs, f, ...rest); };
+  fs.renameSync = function (a, b, ...rest) { renames.push([String(a), String(b)]); return realRename.call(fs, a, b, ...rest); };
+  let off;
+  try {
+    off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+    await settle(60);
+  } finally {
+    fs.writeFileSync = realWrite;
+    fs.renameSync = realRename;
+    if (off) off();
+  }
+  ok(!writes.includes(stampFile), "the destination itself is never written in place");
+  ok(writes.some((w) => w.startsWith(stampFile + ".tmp.")), "a temp file beside it is: " + writes.filter((w) => w.includes("running-versions")));
+  ok(renames.some(([, b]) => b === stampFile), "and it is renamed over the destination in one step");
+  eq(readJson(stampFile).__proto__ === Object.prototype, true, "leaving a complete, parseable file");
+});
+
+suite("gc R2 wiring: a second window does not overwrite the first window's entry", async () => {
+  const repo = makeRepo({ roles: {} }, "gcR2w2");
+  const stampFile = path.join(LOOM, "running-versions.json");
+  try { fs.rmSync(stampFile); } catch { /* fine */ }
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  const off = await activateAsVersion([poFrame("wid-po", repo)], "0.33.0");
+  await settle(60);
+  off();
+  const first = Object.keys(readJson(stampFile))[0];
+  // a second window, same project, still on the old build it loaded
+  vscode._reset();
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  notDue();
+  const off2 = await activateAsVersion([poFrame("wid-po", repo)], "0.29.0");
+  try {
+    await settle(60);
+    const stamp = readJson(stampFile);
+    eq(Object.keys(stamp).length, 2, "two windows, two entries — a repo key would have held only one");
+    eq(stamp[first].version, "0.33.0", "the first window's build is still recorded");
+    const other = Object.keys(stamp).find((k) => k !== first);
+    eq(stamp[other].version, "0.29.0",
+       "and so is the build the second window is actually running — which is what stops gc archiving it");
+  } finally { off2(); }
+});
+
+suite("gc R4 wiring: the collector is given the roster of EVERY project, not just this window's", async () => {
+  const mine = makeRepo({ roles: { local: {} } }, "gcR4mine");
+  // another project entirely, with a role that is writing status right now
+  const other = makeRepo({ roles: { remote: {} } }, "gcR4other");
+  writeJson(busPath(other, "remote", "status.json"), { status: "working", session_id: "remotese-0300" });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-r4-"));
+  // that other project's worktree, orphaned + clean + merged: collectable unless the role reads live
+  execFileSync("git", ["-C", root, "init", "-q", "-b", "main"]);
+  execFileSync("git", ["-C", root, "config", "user.email", "t@example.com"]);
+  execFileSync("git", ["-C", root, "config", "user.name", "t"]);
+  fs.writeFileSync(path.join(root, "README"), "x\n");
+  execFileSync("git", ["-C", root, "add", "-A"]);
+  execFileSync("git", ["-C", root, "commit", "-qm", "base"]);
+  const wt = path.join(root, ".claude", "worktrees", "remote");
+  fs.mkdirSync(path.dirname(wt), { recursive: true });
+  execFileSync("git", ["-C", root, "worktree", "add", "-q", "-b", "worktree-remote", wt, "main"]);
+
+  openProject(mine);
+  setOrchestrator(mine, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.gcEnabled"] = true;
+  notDue();
+  const off = await activateAsVersion([poFrame("wid-po", mine)], "0.33.0");
+  try {
+    // The extension's own supply of the roster is what is being tested, so ask gc for the same
+    // answer the extension would compute and require the other project's live role to be in it.
+    const gcmod = load("gc.js");
+    const bus = gcmod.busLiveRoles(Date.now());
+    ok(bus.roles.has(`${other}/remote`),
+       "tracker.view() is scoped to this window's project; the bus is not, and the automatic pass " +
+       "is machine-wide — without this every other project's worktrees lose their live protection");
+    ok(bus.sessionIds.has("remotese-0300"), "and its session id travels with it");
+    // and the plan built from that roster leaves the other project's live worktree alone
+    const plan = gcmod.planGc({ now: Date.now(), cfg: { ...gcmod.DEFAULT_GC_CONFIG, enabled: true },
+                                currentVersion: "0.33.0", liveRoles: bus.roles, repoRoots: { [other]: root } });
+    eq(plan.tier2.filter((i) => i.label === `${other}/remote`).length, 0,
+       "so it is never offered for removal");
   } finally { off(); }
 });

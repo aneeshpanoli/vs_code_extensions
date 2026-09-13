@@ -246,7 +246,9 @@ export function loomDirs(): string[] {
 /** A session id as Claude Code writes it: 36 characters of UUID. */
 const SESSION_ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 /** Bounds on the universal sweep, so a huge bus cannot stall a tick. */
-const SCAN_MAX_FILE_BYTES = 2_000_000;
+// 8 MB: a banked handover or a fat board is routinely over 2 MB, and skipping one silently was
+// how a referenced session id went missing from the sweep.
+const SCAN_MAX_FILE_BYTES = 8_000_000;
 const SCAN_MAX_FILES = 4000;
 const SCAN_MAX_DEPTH = 4;
 
@@ -263,9 +265,17 @@ const SCAN_MAX_DEPTH = 4;
  * Our OWN log is excluded: `gc-debug.json` records what we archived, and letting that count as a
  * reference would make the collector protect its own leavings forever.
  */
-export function referencedSessionIds(): Set<string> {
+export interface ReferenceSweep {
+  ids: Set<string>;
+  /** True when the sweep gave up early — its `ids` are then a LOWER BOUND, not an answer. */
+  truncated: boolean;
+}
+
+export function referencedSessions(): ReferenceSweep {
   const out = new Set<string>();
-  const add = (v: any) => { if (typeof v === "string" && v) out.add(v); };
+  let truncated = false;
+  // Session ids are written in both cases across the buses; compare in one.
+  const add = (v: any) => { if (typeof v === "string" && v) out.add(v.toLowerCase()); };
 
   for (const repo of loomDirs()) {
     const src = boardRolesObject(repo);
@@ -291,14 +301,18 @@ export function referencedSessionIds(): Set<string> {
   let budget = SCAN_MAX_FILES;
   const sweep = (dir: string, depth: number) => {
     for (const name of readdir(dir)) {
-      if (budget <= 0) return;
+      if (budget <= 0) { truncated = true; return; }
       if (NON_BUS_DIRS.has(name) || name === "gc-debug.json") continue;
       const p = path.join(dir, name);
       const st = statOf(p);
       if (!st) continue;
-      if (st.isDirectory()) { if (depth > 0) sweep(p, depth - 1); continue; }
+      if (st.isDirectory()) {
+        if (depth > 0) sweep(p, depth - 1);
+        else truncated = true;              // there was more below than we agreed to look at
+        continue;
+      }
       if (!/\.(json|md)$/i.test(name)) continue;
-      if (st.size > SCAN_MAX_FILE_BYTES) continue;
+      if (st.size > SCAN_MAX_FILE_BYTES) { truncated = true; continue; }
       budget--;
       let text: string;
       try { text = fs.readFileSync(p, "utf8"); } catch { continue; }
@@ -308,13 +322,44 @@ export function referencedSessionIds(): Set<string> {
     }
   };
   sweep(LOOM_ROOT(), SCAN_MAX_DEPTH);
-  return out;
+  return { ids: out, truncated };
+}
+
+/** How recently a role's `status.json` must have been written for that role to count as live. */
+export const BUS_LIVE_WINDOW_MS = 30 * 60_000;
+
+/**
+ * The live roster AS THE BUS SEES IT, across every project. `tracker.view()` is filtered to the
+ * window's own repo by design, so a window driving the automatic pass knows nothing about any other
+ * project's live roles — and the automatic pass is machine-wide. A role whose `status.json` was
+ * written in the last half hour is a session that is running, whichever window it belongs to.
+ */
+export function busLiveRoles(now: number, withinMs = BUS_LIVE_WINDOW_MS):
+    { roles: Set<string>; sessionIds: Set<string> } {
+  const roles = new Set<string>();
+  const sessionIds = new Set<string>();
+  for (const repo of loomDirs()) {
+    for (const role of readdir(path.join(LOOM_ROOT(), repo))) {
+      const f = path.join(LOOM_ROOT(), repo, role, "status.json");
+      const st = statOf(f);
+      // The file's mtime, not its `updated_at`: measured, a status file is rewritten by things that
+      // do not maintain that field (health.ts, DRIFT_HOURS), so the timestamp inside lies and the
+      // one the filesystem keeps does not.
+      if (!st || !st.isFile() || now - st.mtimeMs > withinMs) continue;
+      roles.add(`${repo}/${role}`);
+      const d = readJson(f);
+      for (const v of [d && d.session_id, d && d.sessionId]) {
+        if (typeof v === "string" && v) sessionIds.add(v.toLowerCase());
+      }
+    }
+  }
+  return { roles, sessionIds };
 }
 
 /** The session ids belonging to roles that have a LIVE tab right now, from board and status.json. */
 export function liveSessionIdsOf(liveRoles: Set<string>): Set<string> {
   const out = new Set<string>();
-  const add = (v: any) => { if (typeof v === "string" && v) out.add(v); };
+  const add = (v: any) => { if (typeof v === "string" && v) out.add(v.toLowerCase()); };
   for (const key of liveRoles) {
     const i = key.indexOf("/");
     if (i <= 0) continue;
@@ -382,19 +427,39 @@ export function planGc(input: GcInput): GcPlan {
 const SEMVER_RE = /^\d+\.\d+\.\d+([-+].*)?$/;
 
 /** Versions stamped in `running-versions.json` recently enough to be a window that is still open. */
-export function runningVersions(now: number, withinMs: number): Set<string> {
-  const out = new Set<string>();
+export interface RunningVersions {
+  versions: Set<string>;
+  /** False when the stamp file is missing, unparseable, or not an object. */
+  readable: boolean;
+}
+
+/**
+ * Which builds windows are actually running, from `running-versions.json`.
+ *
+ * THIS READ FAILS CLOSED. The first version returned an empty Set for an absent or torn file, and an
+ * empty keep-set is indistinguishable from "no window is running anything" — so a single interrupted
+ * write (ten windows rewrite this file every 15 s) would have made 0.29.0, the build nine windows
+ * were on, look collectable. `readable: false` refuses the whole extension tier instead.
+ *
+ * TWO KEY SHAPES, unioned. Entries used to be keyed by REPO, which is wrong twice over: two windows
+ * open on one project share a slot (so the one that ticks second hides the other's build), and every
+ * folderless window collapses into a single "(no project)". They are keyed by windowId now, carrying
+ * `repo` as a field. Mixed builds will write both shapes for a while and both are read: any version
+ * any entry stamps inside the interval is a version some window may still be running.
+ */
+export function runningVersions(now: number, withinMs: number): RunningVersions {
+  const versions = new Set<string>();
   const d = readJson(RUNNING_VERSIONS());
-  if (!d || typeof d !== "object" || Array.isArray(d)) return out;
+  if (!d || typeof d !== "object" || Array.isArray(d)) return { versions, readable: false };
   for (const v of Object.values<any>(d)) {
     if (!v || typeof v !== "object") continue;
     const at = Date.parse(String(v.at || ""));
     // A stamp with no readable timestamp is kept rather than dismissed: an unparseable date is not
     // evidence that the window is gone.
     if (Number.isFinite(at) && now - at > withinMs) continue;
-    if (typeof v.version === "string" && v.version) out.add(v.version);
+    if (typeof v.version === "string" && v.version) versions.add(v.version);
   }
-  return out;
+  return { versions, readable: true };
 }
 
 /**
@@ -429,13 +494,21 @@ function planExtensions(plan: GcPlan, input: GcInput): void {
     const id = e && e.identifier && e.identifier.id;
     if (id !== "local.loom-session-tracker") continue;
     const loc = e.location && (e.location.fsPath || e.location.path);
+    // BOTH, not either: `location` says which directory is registered and `version` says which
+    // version is, and a registry mid-rewrite can disagree with itself. Keeping both keeps the build
+    // the editor will actually load, whichever field is the stale one.
     if (typeof loc === "string" && loc) registered.add(path.basename(loc));
-    else if (e.version) registered.add(`${EXT_PREFIX}${e.version}`);
+    if (e.version) registered.add(`${EXT_PREFIX}${e.version}`);
   }
 
   const running = runningVersions(input.now, Math.max(1, input.cfg.intervalHours) * HOUR_MS);
+  if (!running.readable) {
+    plan.notes.push("running-versions.json is missing or unreadable — no deployed build is " +
+      "collectable this run (an empty keep-set would archive the build live windows are on)");
+    return;
+  }
   const keep = new Set<string>([`${EXT_PREFIX}${input.currentVersion}`, ...registered]);
-  for (const v of running) keep.add(`${EXT_PREFIX}${v}`);
+  for (const v of running.versions) keep.add(`${EXT_PREFIX}${v}`);
 
   for (const n of names.sort()) {
     if (keep.has(n)) continue;
@@ -444,7 +517,7 @@ function planExtensions(plan: GcPlan, input: GcInput): void {
       tier: 1, kind: "extension", label: n.slice(EXT_PREFIX.length),
       detail: `no window is running it (this window ${input.currentVersion}; registered ` +
         `${Array.from(registered).map((r) => r.slice(EXT_PREFIX.length)).join(", ") || "none"}; ` +
-        `running ${Array.from(running).sort().join(", ") || "none"})`,
+        `running ${Array.from(running.versions).sort().join(", ") || "none"})`,
       bytes: dirBytes(src), src, dest: path.join(archiveDir(input.now, "extensions"), n),
     });
   }
@@ -454,15 +527,23 @@ function planExtensions(plan: GcPlan, input: GcInput): void {
 function planTranscripts(plan: GcPlan, input: GcInput, liveSessions: Set<string>): void {
   const { items, newestPerDir } = transcriptCandidates();
   if (!items.length) return;
-  const referenced = referencedSessionIds();
+  const sweep = referencedSessions();
+  if (sweep.truncated) {
+    plan.notes.push("the reference sweep over ~/.claude/loom gave up early (too many files, too " +
+      "deep, or a file over the size bound) — no transcript is collectable this run, because an " +
+      "id it did not reach is indistinguishable from one nothing references");
+    return;
+  }
+  const referenced = sweep.ids;
   const cutoff = input.now - input.cfg.transcriptDays * DAY_MS;
   for (const t of items) {
     if (t.mtimeMs >= cutoff) continue;                        // young enough to still be somebody's
     // A LIVE role's session is never garbage, board or no board. Its transcript can be old — an
     // orchestrator that has been idle for weeks still has the tab open — and losing it strands the
     // one thing "reopen this session" can use.
-    if (liveSessions.has(t.sid)) continue;
-    if (referenced.has(t.sid)) continue;                      // something on the bus points at it
+    const sid = t.sid.toLowerCase();
+    if (liveSessions.has(sid)) continue;
+    if (referenced.has(sid)) continue;                        // something on the bus points at it
     if (newestPerDir.get(t.projectDir) === t.file) continue;  // the freshest in its dir IS that dir's session
     // A session's own artifacts move together: the jsonl and, when it exists, `<sid>/` (its subagents).
     const companion = path.join(PROJECTS_ROOT(), t.projectDir, t.sid);
@@ -536,7 +617,13 @@ function planWorktrees(plan: GcPlan, input: GcInput): void {
       if (!w.orphaned || canon.has(canonical)) continue;
       // A near-miss of a real role name is somebody's typo, not a dead worktree. Measured
       // 2026-09-13: `Gaming/protyping` (one letter off `prototyping`) was being offered for removal.
-      const near = names.find((r) => r.length >= 5 && editDistance(canonicalRole(repo, r), canonical) <= 2);
+      // The radius has to scale with the name. At distance 2, `po` matches `qa` and `dev` matches
+      // `doc` — every short role name is "a typo" of every other, which would park real garbage in
+      // tier 3 forever. At distance 1 on a two-letter name it is still a genuine near-miss.
+      const near = names.find((r) => {
+        const d = editDistance(canonicalRole(repo, r), canonical);
+        return r.length >= 5 ? d <= 2 : d <= 1 && d > 0;
+      });
       // Every one of these is a way removal could destroy something git cannot give back. They
       // duplicate removeWorktree()'s own refusals on purpose: the plan must not OFFER what the
       // applier will refuse, and the applier still refuses independently.
@@ -676,6 +763,14 @@ export interface ApplyOptions {
   liveRoles?: Set<string>;
   /** Session ids of those live roles, right now. */
   liveSessionIds?: Set<string>;
+  /** Called between items so a long pass can keep its cross-window claim alive. Moving 700 MB takes
+   *  longer than the five-minute lease, and a lease that expires under its own holder is how two
+   *  windows end up moving the same files. Throttled here, so the callback may be naive. */
+  refresh?: () => void;
+  /** How often `refresh` may actually fire, ms. Defaults to half the lease. Injectable because a
+   *  test that moves three small files in a millisecond can never reach a 150-second throttle, and a
+   *  callback no test can observe is a callback that can be silently unwired. */
+  refreshEveryMs?: number;
 }
 
 /** Ensure a directory exists AND is writable. Returns a reason string when it is not. */
@@ -781,7 +876,14 @@ export function applyGc(plan: GcPlan, tiers: number[], opts: ApplyOptions = {}):
     ...(result.tiers.includes(1) ? plan.tier1 : []),
     ...(result.tiers.includes(2) ? plan.tier2 : []),
   ];
+  let lastRefresh = Date.now();
+  const refreshEvery = opts.refreshEveryMs ?? LEASE_MS / 2;
   for (const item of items) {
+    // Half-life, not every item: `refresh` writes a file, and tier 1 can be hundreds of items.
+    if (opts.refresh && Date.now() - lastRefresh >= refreshEvery) {
+      lastRefresh = Date.now();
+      try { opts.refresh(); } catch { /* a refresh must never fail the pass */ }
+    }
     let reason: string | null = null;
     try {
       if (item.kind === "worktree") {
@@ -913,10 +1015,18 @@ export function refreshLease(state: GcState, windowId: string, now: number): GcS
   return { ...state, ownerAt: now };
 }
 
-/** Release the claim and record the outcome. Always called after a claimed run, success or not. */
-export function finishAuto(state: GcState, now: number, result: GcResult | null, note: string): GcState {
+/**
+ * Release the claim and record the outcome. Always called after a claimed run, success or not.
+ * The release is CONDITIONAL: if our lease went stale mid-pass and another window took the claim,
+ * clearing `owner` here would hand that window's in-flight pass to a third. We record what we did
+ * and leave the claim to whoever holds it.
+ */
+export function finishAuto(state: GcState, now: number, result: GcResult | null, note: string,
+                           windowId?: string): GcState {
+  const ours = windowId === undefined || state.owner === undefined || state.owner === windowId;
+  const release = ours ? { owner: undefined, ownerAt: undefined } : {};
   return {
-    ...state, owner: undefined, ownerAt: undefined, lastRunAt: now, lastNote: note,
+    ...state, ...release, lastRunAt: now, lastNote: note,
     lastResult: result
       ? { date: result.date, done: result.done.length, skipped: result.skipped.length, bytesFreed: result.bytesFreed }
       : state.lastResult,
