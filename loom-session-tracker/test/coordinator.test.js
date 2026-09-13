@@ -70,6 +70,36 @@ suite("coordinator: a LOCKED role is protected from retire and delete", async ()
   eq(c.deletableRoles(), ["alpha"], "offered again once unlocked");
 });
 
+suite("coordinator: a role name shared by two projects stays deletable in BOTH", async () => {
+  // Measured 2026-09-13. `roleToRepo()` folds every bus into one Map keyed by role NAME, so a role
+  // declared by more than one project survives only for whichever repo readdirSync returned last.
+  // On this machine that is not hypothetical: `developer1` is a role of six projects and
+  // `productowner` of seven, so a Lumen-scoped window could neither list nor delete its own
+  // `developer1` — the boundary refused it as "not a role of Lumen".
+  //
+  // It first showed up as an ORDER-DEPENDENT failure: `naming: coordinator refuses to spawn/retire/
+  // delete 'po'` passed alone and failed once all 36 files shared one sandbox HOME and another
+  // fixture repo declared a `developer`. That made the whole serial suite red at HEAD, which in turn
+  // made every mutant read as "caught" (see test/mutation.py's baseline gate).
+  //
+  // Asserting BOTH directions is what makes this test independent of readdirSync order: under the
+  // old global-map lookup exactly one of the two repos below loses the key, whichever order they
+  // come back in, so one half always fails.
+  const a = makeRepo({ roles: { developer1: {}, solo_a: {} } }, "collide-alpha");
+  const b = makeRepo({ roles: { developer1: {}, solo_b: {} } }, "collide-beta");
+  for (const [repo, mine, theirs] of [[a, "solo_a", "solo_b"], [b, "solo_b", "solo_a"]]) {
+    const c = new Coordinator(trackerOf([]), repo);
+    ok(c.deletableRoles().includes("developer1"), `${repo} offers its own developer1 for deletion`);
+    ok(c.deletableRoles().includes(mine), `${repo} still offers its unshared role ${mine}`);
+    eq(c.deletableRoles().includes(theirs), false, `${repo} never offers the OTHER project's ${theirs}`);
+    // ...and the boundary agrees with the list: the shared name is not refused as a foreign role.
+    await rejects(() => c.delete(theirs, null, "stamp"), /not a role of/, `${repo} refuses ${theirs}`);
+    let msg = null;
+    try { await c.delete("developer1", null, "stamp"); } catch (e) { msg = String(e && e.message || e); }
+    eq(/not a role of/.test(msg || ""), false, `${repo} does not disown its own developer1 (got: ${msg})`);
+  }
+});
+
 suite("coordinator: retire NEVER closes anything — it names the tab for a person to close", async () => {
   // 2026-09-12: closing a webview over CDP closed its whole editor WINDOW; three windows were lost.
   // Retire now stops at identifying the frame. If this test ever sees closeWebview called, the
