@@ -13,7 +13,7 @@ mutation that SURVIVES means that defect could return unnoticed, and this script
 
     ELECTRON_RUN_AS_NODE=1 codium ... -- run via: python3 test/mutation.py
 """
-import subprocess, sys, os, pathlib
+import subprocess, sys, os, pathlib, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CODIUM = os.environ.get("CODIUM", "/usr/share/codium/codium")
@@ -209,7 +209,7 @@ print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
 # (node_modules symlinked), so nothing shares a working tree and the real src/ is never touched —
 # which also removes the hazard that made the first version of this file destroy uncommitted work.
 import shutil, concurrent.futures, multiprocessing
-PARALLEL = max(1, min(int(os.environ.get("MUTATION_JOBS", "0")) or (multiprocessing.cpu_count() // 4), 10))
+PARALLEL = max(1, int(os.environ.get("MUTATION_JOBS", "0")) or min(multiprocessing.cpu_count(), len(MUTATIONS)))
 TSC_REL = "node_modules/typescript/bin/tsc"
 
 def run_one(idx, name, rel, find, repl):
@@ -226,7 +226,7 @@ def run_one(idx, name, rel, find, repl):
         if n != 1:
             return ("STALE", name, f"({rel}: pattern occurs {n} times, expected 1)")
         p.write_text(src.replace(find, repl))
-        env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+        env = dict(os.environ, ELECTRON_RUN_AS_NODE="1", LOOM_TEST_JOBS="1")   # no fork bomb: 33 mutants x 34 files
         r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             return ("STALE", name, "(mutant does not compile)")
