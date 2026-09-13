@@ -30,6 +30,9 @@ import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrches
          MemoryConfig, Step } from "./memory";
 import { injectTo, setSenderWindow } from "./inject";
 import { DEFAULT_WINDOW_TOKENS, pct, transcriptFor } from "./context";
+import { planGc, applyGc, renderGc, gcSummary, fmtBytes, loadGcState, saveGcState, dueForAuto,
+         finishAuto, refreshLease, liveSessionIdsOf, GcConfig, GcPlan, ApplyOptions,
+         DEFAULT_GC_CONFIG } from "./gc";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -501,8 +504,105 @@ export function activate(context: vscode.ExtensionContext) {
     const schedule = () => {
       if (timer) clearInterval(timer);
       const ms = Math.max(5000, Number(cfg().get("intervalMs", 15000)) || 15000);
-      timer = setInterval(runTick, ms);
+      // The automatic pass rides the interval, not just activation: a window left open for a week
+      // would otherwise collect exactly once, at the moment it started. dueForAuto() makes every
+      // other tick a single small JSON read.
+      timer = setInterval(() => { runTick().then(() => runAutoGc()).catch(() => { /* never break the tick */ }); }, ms);
       context.subscriptions.push({ dispose: () => timer && clearInterval(timer) });
+    };
+
+    // ── garbage collection across projects ─────────────────────────────────────────────────
+    // Nothing else in this extension looks ACROSS projects at what has stopped being used, and the
+    // cost of that is not disk: an orphan worktree or a dead board id feeds straight back into an
+    // orchestrator's context every time it reads a board or lists worktrees (gc.ts). Tier 1 is
+    // automatic because every one of its actions is a move into `_archive/`; tier 2 needs a click
+    // because it removes a directory; tier 3 is never acted on at all.
+    const gcConfig = (): GcConfig => ({
+      enabled: cfg().get<boolean>("gcEnabled", DEFAULT_GC_CONFIG.enabled) === true,
+      intervalHours: Math.max(1, Number(cfg().get("gcIntervalHours", 24)) || 24),
+      transcriptDays: Math.max(1, Number(cfg().get("gcTranscriptDays", 14)) || 14),
+      backupDays: Math.max(1, Number(cfg().get("gcBackupDays", 7)) || 7),
+      staleBusDays: Number(cfg().get("staleBusDays", DEFAULT_GC_CONFIG.staleBusDays)) || DEFAULT_GC_CONFIG.staleBusDays,
+    });
+    /** repo id -> checkout root. Only THIS window's project is known for certain; every other bus
+     *  is probed at the conventional `~/Containers/<repo>` and accepted only if it is a git repo.
+     *  A repo with no root here simply has no worktrees considered — the safe direction. */
+    const gcRepoRoots = (): Record<string, string> => {
+      const out: Record<string, string> = {};
+      const root = repoRoot();
+      if (repo && root) out[repo] = root;
+      for (const r of busRepos()) {
+        if (out[r]) continue;
+        const guess = path.join(os.homedir(), "Containers", r);
+        try { if (fs.statSync(path.join(guess, ".git")).isDirectory()) out[r] = guess; } catch { /* not there */ }
+      }
+      return out;
+    };
+    const gcLiveRoles = (): Set<string> =>
+      new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => `${a.repo}/${a.role}`));
+    /** The world AS IT IS at apply time — read fresh, never carried over from planning. Without the
+     *  live roster here, `health.removeWorktree`'s live refusal could never fire from gc at all. */
+    const gcApplyOptions = (): ApplyOptions => {
+      const live = gcLiveRoles();
+      return { repoRoots: gcRepoRoots(), liveRoles: live, liveSessionIds: liveSessionIdsOf(live) };
+    };
+    const computeGcPlan = (): GcPlan | null => {
+      if (!gcConfig().enabled) return null;
+      try {
+        return planGc({ now: Date.now(), cfg: gcConfig(), currentVersion: VERSION,
+                        liveRoles: gcLiveRoles(), repoRoots: gcRepoRoots() });
+      } catch { return null; }         // planning must never break a tick
+    };
+    /** The once-per-machine-per-interval tier-1 pass, behind the cross-window lease. */
+    const runAutoGc = () => {
+      const c = gcConfig();
+      const state = loadGcState();
+      const decision = dueForAuto(state, windowId, Date.now(), c);
+      if (!decision.run) { debugLog({ gc: decision.note }); return; }
+      saveGcState(decision.next);                       // claim it before doing any work
+      let result = null;
+      let note = decision.note;
+      try {
+        const plan = computeGcPlan();
+        // Planning walks every project directory and can outlast the lease on its own; refresh the
+        // claim before the moves start, or the pass expires under its own holder mid-run.
+        const mid = refreshLease(loadGcState(), windowId, Date.now());
+        if (mid) saveGcState(mid);
+        if (plan) {
+          result = applyGc(plan, [1], gcApplyOptions());
+          note = `tier 1: ${result.done.length} collected (${fmtBytes(result.bytesFreed)}), ${result.skipped.length} skipped`;
+          if (result.done.length) {
+            vscode.window.setStatusBarMessage(
+              `Loom: collected ${result.done.length} item(s), ${fmtBytes(result.bytesFreed)} — archived under _archive/${plan.date}.`, 8000);
+          }
+        } else note = "collection is off";
+      } catch (e: any) { note = `aborted: ${String(e && e.message || e).slice(0, 80)}`; }
+      saveGcState(finishAuto(loadGcState(), Date.now(), result, note));
+      debugLog({ gc: note });
+    };
+    /** Tiers 1+2, after a confirmation that names the counts. */
+    const collectGarbage = async (): Promise<void> => {
+      const plan = computeGcPlan();
+      if (!plan) { vscode.window.showInformationMessage("Loom: garbage collection is disabled (gcEnabled)."); return; }
+      const n1 = plan.tier1.length, n2 = plan.tier2.length;
+      if (!n1 && !n2) {
+        vscode.window.showInformationMessage(
+          "Loom: nothing to collect." + (plan.tier3.length ? ` ${plan.tier3.length} item(s) need your decision — see the digest.` : ""));
+        return;
+      }
+      const answer = await vscode.window.showWarningMessage(
+        `Loom: collect ${n1} tier-1 item(s) (archived) and ${n2} tier-2 item(s) (worktrees removed, ` +
+        "branches kept; board entries marked dead)? Nothing is deleted — everything moves to " +
+        `_archive/${plan.date} or keeps its branch.`, "Collect", "Cancel");
+      if (answer !== "Collect") { vscode.window.setStatusBarMessage("Loom: nothing collected.", 4000); return; }
+      const result = applyGc(plan, [1, 2], gcApplyOptions());
+      saveGcState(finishAuto(loadGcState(), Date.now(), result, "manual tiers 1+2"));
+      vscode.window.setStatusBarMessage(
+        `Loom: collected ${result.done.length} item(s), ${fmtBytes(result.bytesFreed)}; ${result.skipped.length} skipped.`, 8000);
+      if (result.skipped.length) {
+        vscode.window.showInformationMessage(
+          "Loom: skipped —\n" + result.skipped.map((s) => `• ${s.item.label}: ${s.note}`).join("\n"), { modal: true });
+      }
     };
 
     // ── startup digest: what needs the user, computed once at activation and on demand ──────
@@ -515,6 +615,7 @@ export function activate(context: vscode.ExtensionContext) {
       stallMinutes: Number(cfg().get("stallMinutes", 45)) || 45,
       workingWarnAt: Number(cfg().get("workingWarnThreshold", 5)) || 5,
       checkUnbanked: cfg().get<boolean>("digestUnbankedCheck", true),
+      gcPlan: computeGcPlan(),
     });
 
     /** Offer to reopen roles whose session evaporated. Always an explicit click — never automatic. */
@@ -544,10 +645,20 @@ export function activate(context: vscode.ExtensionContext) {
       if (!d) return;
       debugLog({ digest: renderDigest(d) });
       if (!force && (!d.actionable || !cfg().get<boolean>("showStartupDigest", true))) return;
-      if (!d.actionable) { vscode.window.showInformationMessage("Loom: nothing needs your attention."); return; }
+      // Garbage is machine-wide housekeeping, not this project's business, so it never makes an
+      // otherwise-clear project look like it needs you — it rides along once the digest is up.
+      const gcN = d.gc ? d.gc.tier1.length + d.gc.tier2.length : 0;
+      if (!d.actionable) {
+        const clear = "Loom: nothing needs your attention." +
+          (gcN ? ` ${gcN} item(s) of garbage could be collected across projects.` : "");
+        const c = await vscode.window.showInformationMessage(clear, ...(gcN ? ["Collect garbage"] : []));
+        if (c === "Collect garbage") await collectGarbage();
+        return;
+      }
       const actions = ["Details"];
       if (!d.orchestratorTagged) actions.push("Tag orchestrator");
       if (d.missingSessions.length) actions.push("Reopen sessions");
+      if (gcN) actions.push("Collect garbage");
       const headline =
         [d.awaitingPickup.length && `${d.awaitingPickup.length} response(s) waiting`,
          d.blocked.length && `${d.blocked.length} blocked on a decision`,
@@ -555,11 +666,13 @@ export function activate(context: vscode.ExtensionContext) {
          d.premium.length && `${d.premium.length} on the premium model`,
          d.unbanked.length && `${d.unbanked.length} with unbanked work`,
          d.missingSessions.length && `${d.missingSessions.length} session(s) not open`,
+         gcN && `${gcN} collectable`,
          !d.orchestratorTagged && "no orchestrator tagged"].filter(Boolean).join(" · ");
       const choice = await vscode.window.showInformationMessage(`Loom (${d.repo}): ${headline}`, ...actions);
       if (choice === "Details") vscode.window.showInformationMessage(renderDigest(d), { modal: true });
       else if (choice === "Tag orchestrator") await vscode.commands.executeCommand("loomSessionTracker.tagOrchestrator");
       else if (choice === "Reopen sessions") await reopenMissing(d);
+      else if (choice === "Collect garbage") await collectGarbage();
     };
 
     // a tree node (from a context-menu command) carries {agent:{role,repo}}; fall back to a QuickPick.
@@ -571,6 +684,21 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand("loomSessionTracker.refresh", runTick),
       vscode.commands.registerCommand("loomSessionTracker.digest", () => showDigest(true)),
+      // Garbage collection: the plan is always shown first; acting is a separate, confirmed pick.
+      vscode.commands.registerCommand("loomSessionTracker.collectGarbage", async () => {
+        const plan = computeGcPlan();
+        if (!plan) { vscode.window.showInformationMessage("Loom: garbage collection is disabled (gcEnabled)."); return; }
+        const pick = await vscode.window.showQuickPick(
+          [{ label: "Show plan", description: gcSummary(plan) },
+           { label: "Run tiers 1+2", description: "archive superseded builds/transcripts/backups; remove merged orphan worktrees" }],
+          { placeHolder: `Loom garbage collection — ${gcSummary(plan)}` });
+        if (!pick) return;
+        if (pick.label === "Show plan") {
+          vscode.window.showInformationMessage(renderGc(plan) || "Loom: nothing to collect.", { modal: true });
+          return;
+        }
+        await collectGarbage();
+      }),
       // Cross-project view: show every project's roles in this window, or just this one.
       vscode.commands.registerCommand("loomSessionTracker.toggleAllProjects", async () => {
         const now = cfg().get<boolean>("showAllProjects", false) === true;
@@ -745,7 +873,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // First pass immediately, then the startup digest once the roster is known.
-    runTick().then(() => showDigest(false)).catch(() => { /* never break activation */ });
+    runTick().then(() => showDigest(false)).then(() => runAutoGc()).catch(() => { /* never break activation */ });
     // Restored tabs render slowly; measured, blank shells are still filling in during the first tick.
     setTimeout(() => { restartReopen().catch(() => { /* never break activation */ }); }, 30_000);
     schedule();    // then on interval

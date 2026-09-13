@@ -17,6 +17,7 @@ import { execFileSync } from "child_process";
 import { boardRoles, busRepos } from "./registry";
 import { getOrchestrator } from "./orchestrator";
 import { checkHealth, StallFinding, ConformFinding, scanWorktrees, WorktreeFinding, readWorking } from "./health";
+import { GcPlan, renderGc } from "./gc";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 const HOUR_MS = 3_600_000;
@@ -46,6 +47,11 @@ export interface Digest {
   workingNow: number;
   workingWarnAt: number;
   orchestratorTagged: boolean;
+  /** What garbage collection would do across every project, or null when it is off. NOT counted in
+   *  `actionable`, for the same reason staleBuses and duplicateRoles are not: this digest is about
+   *  what THIS project needs from you, and machine-wide housekeeping is not that. It is always
+   *  rendered, always offered as an action once the digest is up, and has its own command. */
+  gc: GcPlan | null;
   /** Hygiene, across every bus: long-dead buses and role names claimed by more than one. */
   staleBuses: { repo: string; days: number }[];
   duplicateRoles: { role: string; repos: string[] }[];
@@ -109,6 +115,9 @@ export interface DigestInput {
   checkUnbanked?: boolean;
   stallMinutes?: number;
   workingWarnAt?: number;
+  /** Computed by the caller (it needs this window's build version and repo roots), so the digest
+   *  stays a pure assembly of things already known. */
+  gcPlan?: GcPlan | null;
 }
 
 export function buildDigest(repo: string | null, input: DigestInput): Digest | null {
@@ -127,6 +136,7 @@ export function buildDigest(repo: string | null, input: DigestInput): Digest | n
     workingNow: working ? working.total : 0,
     workingWarnAt: input.workingWarnAt ?? 5,
     orchestratorTagged: !!getOrchestrator(repo),
+    gc: input.gcPlan ?? null,
     staleBuses: [], duplicateRoles: [], actionable: 0,
   };
 
@@ -212,6 +222,10 @@ export function renderDigest(d: Digest): string {
   if (d.missingSessions.length) {
     L.push(`Roles with no live session (${d.missingSessions.length}):`);
     for (const m of d.missingSessions) L.push(`   • ${m.role} — ${m.sessionId.slice(0, 8)}`);
+  }
+  if (d.gc) {
+    const g = renderGc(d.gc);
+    if (g) L.push(g);
   }
   if (d.orphanWorktrees.length) {
     L.push(`Orphaned worktrees (${d.orphanWorktrees.length}): ` +

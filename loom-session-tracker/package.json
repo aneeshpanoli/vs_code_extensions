@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.32.1",
+  "version": "0.33.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -86,6 +86,10 @@
         "command": "loomSessionTracker.digest",
         "title": "Loom Sessions: What Needs Me? (startup digest)",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "loomSessionTracker.collectGarbage",
+        "title": "Loom Sessions: Collect Garbage (across projects)"
       },
       {
         "command": "loomSessionTracker.toggleAllProjects",
@@ -374,6 +378,26 @@
           "type": "boolean",
           "default": true,
           "description": "Let this project's orchestrator open its own role sessions by writing ~/.claude/loom/<repo>/open-requests.json ({\"roles\":[...]}). Only roles on this project's roster, never an orchestrator, never one already live, never past the active-session cap, and a request older than 30 minutes is ignored. The file is replaced with the outcome."
+        },
+        "loomSessionTracker.gcEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Collect garbage across projects. OFF for 0.33.0 on purpose: the first pass on a machine that has never had one moves hundreds of megabytes unattended, so run \"Collect Garbage (across projects)\" \u2192 Show plan \u2192 Run tiers 1+2 once by hand first. Once on: tier 1 (superseded extension builds no window is running, unreferenced transcripts older than gcTranscriptDays, backup files older than gcBackupDays) runs automatically every gcIntervalHours and only ever MOVES things into ~/.claude/loom/_archive/<date>/. Tier 2 (orphaned clean merged worktrees, board entries whose session has no transcript) needs your click. Tier 3 is only ever listed. Nothing is deleted, at any tier."
+        },
+        "loomSessionTracker.gcIntervalHours": {
+          "type": "number",
+          "default": 24,
+          "description": "How often the automatic tier-1 pass runs, per MACHINE. One window at a time takes a lease in ~/.claude/loom/gc-state.json, so seven open windows do not each run it."
+        },
+        "loomSessionTracker.gcTranscriptDays": {
+          "type": "number",
+          "default": 14,
+          "description": "A transcript is collectable only when it is older than this AND no bus references it (no board session_id, no context-state sessionId) AND it is not the newest transcript in its project directory. Measured 2026-09-13: 931 of 2.4 GB of transcripts had been untouched for 14 days."
+        },
+        "loomSessionTracker.gcBackupDays": {
+          "type": "number",
+          "default": 7,
+          "description": "Archive *.bak-<epoch> files under ~/.claude/loom older than this many days."
         }
       }
     }

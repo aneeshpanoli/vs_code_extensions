@@ -34,6 +34,7 @@ const { isBusy } = require(path.join(OUT, "sessions.js"));
 const { boardSessionId, transcriptFor, readTranscriptContext } = require(path.join(OUT, "context.js"));
 const memory = require(path.join(OUT, "memory.js"));
 const { scanWorktrees } = require(path.join(OUT, "health.js"));
+const { planGc, gcSummary, DEFAULT_GC_CONFIG } = require(path.join(OUT, "gc.js"));
 
 const results = [];
 const record = (level, name, detail) => results.push({ level, name, detail });
@@ -390,6 +391,24 @@ const info = (n, d) => record("INFO", n, d);
     const wrong = found.filter((w) => w.orphaned && roster.has(w.role));
     if (wrong.length) fail(`${repo}: worktree roster`, `${wrong.map((w) => w.role).join(", ")} on the board but flagged orphaned`);
     else pass(`${repo}: worktree roster`, `${found.length} worktree(s), ${found.filter((w) => w.orphaned).length} orphaned, none rostered`);
+  }
+
+  // ── 6b. what garbage collection would do, DRY RUN ─────────────────────────────────────────
+  // Read-only: planGc() writes nothing. Reported so the plan can be read before anyone clicks
+  // "Collect garbage", and so a plan that has gone wrong (a live role's worktree in tier 2, say)
+  // is visible against the REAL buses rather than only against fixtures.
+  try {
+    const roots = {};
+    for (const repo of repos) {
+      const root = path.join(process.env.HOME, "Containers", repo);
+      try { if (fsx.statSync(path.join(root, ".git")).isDirectory()) roots[repo] = root; } catch { /* no checkout */ }
+    }
+    const version = JSON.parse(fsx.readFileSync(path.join(__dirname, "package.json"), "utf8")).version;
+    const plan = planGc({ now: Date.now(), cfg: DEFAULT_GC_CONFIG, currentVersion: version,
+                          liveRoles: new Set(), repoRoots: roots });
+    record("INFO", "gc dry-run", gcSummary(plan) + (plan.notes.length ? ` · notes: ${plan.notes.join("; ")}` : ""));
+  } catch (e) {
+    warn("gc dry-run", `planGc threw: ${String((e && e.message) || e).slice(0, 90)}`);
   }
 
   // ── 7. what is offerable, for the record ──────────────────────────────────────────────────
