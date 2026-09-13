@@ -16,9 +16,18 @@
 // fourteen times in one night against a stale copy of a transcript sitting in Gaming's directory
 // (see context.ts `transcriptFor`). Garbage here is not waste, it is misinformation.
 //
-// THE ONE RULE THIS FILE OBEYS: nothing is ever deleted. Every action is a MOVE into
-// `~/.claude/loom/_archive/<date>/`, a `git worktree remove` that keeps the branch and its commits,
-// or a field added to a board entry. Everything has a written way back, in `gc-debug.json`.
+// THE ONE RULE THIS FILE OBEYS: every action has a written way back, in `gc-debug.json`. Almost
+// every action is a MOVE into `~/.claude/loom/_archive/<date>/` or a field added to a board entry,
+// and those are reversible by copying the file back.
+//
+// ONE PATH IS NOT, and saying "nothing is ever deleted" hid it for two versions: tier 2's
+// `kind: "worktree"` calls `health.removeWorktree`, which runs `git worktree remove` — the BRANCH
+// and its commits survive (with the restore command recorded in `worktree-removals.json`), but the
+// working DIRECTORY is gone, and with it anything git was never told about. That is why that path
+// refuses on dirty trees, on detached HEADs, on gitignored files git cannot restore, on unmerged
+// branches, on near-miss role names, and on liveness judged by the WIDEST rule in this file
+// (`WORKTREE_LIVE_WINDOW_MS`): over-keeping a worktree costs a directory listing, and the mistake
+// in the other direction cannot be undone.
 //
 // THE SECOND RULE: a plan is a guess about a moment that has passed. Every safeguard in the planner
 // is CHECKED AGAIN in the applier against the world as it is when the move happens — a session can
@@ -333,6 +342,8 @@ export const BUS_LIVE_WINDOW_MS = 30 * 60_000;
  * window's own repo by design, so a window driving the automatic pass knows nothing about any other
  * project's live roles — and the automatic pass is machine-wide. A role whose `status.json` was
  * written in the last half hour is a session that is running, whichever window it belongs to.
+ *
+ * NOT the guard for the worktree tier, despite looking like one — see `planWorktrees`.
  */
 export function busLiveRoles(now: number, withinMs = BUS_LIVE_WINDOW_MS):
     { roles: Set<string>; sessionIds: Set<string> } {
@@ -355,6 +366,7 @@ export function busLiveRoles(now: number, withinMs = BUS_LIVE_WINDOW_MS):
   }
   return { roles, sessionIds };
 }
+
 
 /** The session ids belonging to roles that have a LIVE tab right now, from board and status.json. */
 export function liveSessionIdsOf(liveRoles: Set<string>): Set<string> {
@@ -454,9 +466,17 @@ export function runningVersions(now: number, withinMs: number): RunningVersions 
   for (const v of Object.values<any>(d)) {
     if (!v || typeof v !== "object") continue;
     const at = Date.parse(String(v.at || ""));
-    // A stamp with no readable timestamp is kept rather than dismissed: an unparseable date is not
-    // evidence that the window is gone.
-    if (Number.isFinite(at) && now - at > withinMs) continue;
+    // An entry that cannot say WHEN it was written is not evidence of anything. The first version
+    // kept it — "an unparseable date is not evidence that the window is gone" — but that reasoning
+    // has no end to it: there is no later moment at which such an entry ages out, so one damaged
+    // entry pins its version in the keep-set for the life of the file and that build is never
+    // collectable again. Dropping it is bounded and self-correcting in one tick: any window
+    // actually running that build re-stamps within 15 seconds, with a timestamp.
+    //
+    // This is NOT the torn-FILE case and does not weaken it. When the file itself will not parse we
+    // can see no entries at all, so we cannot tell an empty keep-set from a real one and the whole
+    // tier is refused (`readable: false`). Here the file parsed and the other entries are readable.
+    if (!Number.isFinite(at) || now - at > withinMs) continue;
     if (typeof v.version === "string" && v.version) versions.add(v.version);
   }
   return { versions, readable: true };
@@ -600,7 +620,31 @@ function rosterOf(repo: string): { canon: Set<string>; names: string[] } {
   return { canon: new Set(names.map((r) => canonicalRole(repo, r))), names };
 }
 
-/** TIER 2 (clean + merged) / TIER 3 (anything else) — worktrees belonging to no board role. */
+/**
+ * TIER 2 (clean + merged) / TIER 3 (anything else) — worktrees belonging to no board role.
+ *
+ * THIS IS THE ONE TIER THAT DELETES. Everything else in this file moves a file into `_archive/` or
+ * adds a field to a board entry; tier 2 hands a finding to `health.removeWorktree`, which runs
+ * `git worktree remove`. The branch and its commits survive and the restore line is recorded, but
+ * the working directory does not, and neither does anything git was never told about.
+ *
+ * THE GUARD THAT ACTUALLY DECIDES IS THE ROSTER, NOT LIVENESS — worth stating plainly, because the
+ * code reads as though `input.liveRoles` were the thing standing between a worktree and `rm -rf`,
+ * and a GC-006 review reasonably concluded exactly that and proposed widening the 30-minute window.
+ * It is not: `scanWorktrees` marks a worktree orphaned only when its name is absent from
+ * `boardRoles(repo)`, and that roster is the board UNION every role owning a MAILBOX on the bus —
+ * any directory holding a `status.json`, `inbox.md` or `outbox.md`, at ANY age. So a role whose
+ * session wrote status six hours ago, or six months ago, is still on the roster and its worktree is
+ * never a candidate; the liveness window never gets a say. Widening that window would have added a
+ * strictly narrower test (a status.json is a mailbox) inside a guard that already passed — an
+ * unreachable safeguard that reads as load-bearing, which is worse than none.
+ *
+ * What that leaves collectable is the real target: a worktree named for a role with NO board entry
+ * and NO mailbox anywhere on its project's bus — funisland's 72, measured 2026-09-13. Everything
+ * that survives the roster still has to be clean, on a branch, fully merged, free of gitignored
+ * files git cannot restore and not a near-miss of a real role name, or it goes to tier 3, where a
+ * person decides. That is where an irreversible act belongs.
+ */
 function planWorktrees(plan: GcPlan, input: GcInput): void {
   for (const [repo, root] of Object.entries(input.repoRoots)) {
     if (!root) continue;
@@ -763,14 +807,21 @@ export interface ApplyOptions {
   liveRoles?: Set<string>;
   /** Session ids of those live roles, right now. */
   liveSessionIds?: Set<string>;
-  /** Called between items so a long pass can keep its cross-window claim alive. Moving 700 MB takes
-   *  longer than the five-minute lease, and a lease that expires under its own holder is how two
-   *  windows end up moving the same files. Throttled here, so the callback may be naive. */
-  refresh?: () => void;
+  /** Called BEFORE and AFTER each item so a long pass can keep its cross-window claim alive. Moving
+   *  700 MB takes longer than the five-minute lease, and a lease that expires under its own holder
+   *  is how two windows end up moving the same files. Throttled here, so the callback may be naive.
+   *  Returns whether it actually WROTE the claim: `refreshLease` declines while the claim is still
+   *  young, and a decline must not reset the throttle (see `applyGc`). */
+  refresh?: () => boolean | void;
   /** How often `refresh` may actually fire, ms. Defaults to half the lease. Injectable because a
    *  test that moves three small files in a millisecond can never reach a 150-second throttle, and a
    *  callback no test can observe is a callback that can be silently unwired. */
   refreshEveryMs?: number;
+  /** The clock the throttle reads. Injectable for the same reason `refreshEveryMs` is: the bug this
+   *  parameter exists to make visible — the throttle advancing on a refresh that wrote nothing —
+   *  only shows up as a difference in WHEN attempts happen, and a test cannot see that without
+   *  owning the clock. Defaults to `Date.now`. */
+  nowMs?: () => number;
 }
 
 /** Ensure a directory exists AND is writable. Returns a reason string when it is not. */
@@ -876,23 +927,37 @@ export function applyGc(plan: GcPlan, tiers: number[], opts: ApplyOptions = {}):
     ...(result.tiers.includes(1) ? plan.tier1 : []),
     ...(result.tiers.includes(2) ? plan.tier2 : []),
   ];
-  let lastRefresh = Date.now();
+  const now = opts.nowMs ?? Date.now;
   const refreshEvery = opts.refreshEveryMs ?? LEASE_MS / 2;
+  // The last moment the claim was actually WRITTEN — not the last moment we thought about writing
+  // it. The first version reset this clock on every attempt, including the ones where `refreshLease`
+  // declined because the claim was still young: each decline pushed the next attempt another
+  // half-lease out from a moment at which nothing had been written, so a slow pass could drift a
+  // full lease between writes and expire under its own holder.
+  let lastWrite = now();
+  /** Half-life, not every item: `refresh` writes a file, and tier 1 can be hundreds of items. */
+  const tryRefresh = (): void => {
+    if (!opts.refresh || now() - lastWrite < refreshEvery) return;
+    let wrote: boolean | void;
+    try { wrote = opts.refresh(); } catch { return; /* a refresh must never fail the pass */ }
+    // `false` is the callback saying it wrote nothing. A callback that returns nothing at all tells
+    // us nothing, and the safe reading of silence is "it wrote" — the alternative calls it on every
+    // single item.
+    if (wrote !== false) lastWrite = now();
+  };
   for (const item of items) {
-    // Half-life, not every item: `refresh` writes a file, and tier 1 can be hundreds of items.
-    if (opts.refresh && Date.now() - lastRefresh >= refreshEvery) {
-      lastRefresh = Date.now();
-      try { opts.refresh(); } catch { /* a refresh must never fail the pass */ }
-    }
+    tryRefresh();
     let reason: string | null = null;
     try {
       if (item.kind === "worktree") {
         const root = item.repo ? repoRoots[item.repo] : undefined;
         if (!root) reason = "no checkout for that project in this window";
         else {
-          // The LIVE set matters here: scanWorktrees stamps `live` onto the finding, and that is the
-          // flag removeWorktree refuses on. Passing an empty set (as the first version did) made that
-          // refusal structurally unreachable from gc — the safeguard existed and could never fire.
+          // scanWorktrees is re-run HERE, against the world as it is now — which is what re-checks
+          // the roster, the guard that actually decides: a role that gained a mailbox between the
+          // plan and this moment is no longer orphaned, and removeWorktree refuses it. The live set
+          // is passed for defence in depth (it is the flag removeWorktree's third refusal reads),
+          // though a live role always owns a mailbox and so never reaches that refusal from here.
           const live = new Set(Array.from(liveRoles)
             .filter((k) => k.startsWith(item.repo + "/")).map((k) => k.slice(item.repo!.length + 1)));
           const f = scanWorktrees(item.repo!, root, live).find((w) => w.role === item.role);
@@ -918,6 +983,13 @@ export function applyGc(plan: GcPlan, tiers: number[], opts: ApplyOptions = {}):
     if (reason) result.skipped.push({ item, ok: false, note: reason });
     else { result.done.push({ item, ok: true, note: item.dest ? `moved to ${item.dest}` : "applied" });
            result.bytesFreed += item.bytes; }
+    // AFTER the item as well as before it. One cross-device copy of a 700 MB transcript directory
+    // can outlast the whole five-minute lease on its own, and refreshing only at the top of the loop
+    // means the claim is renewed just BEFORE the long wait and not again until the next item has
+    // also finished. This does not protect the inside of a single long item — nothing here can; the
+    // guards for that are `finishAuto`'s conditional release and the fact that every safeguard is
+    // re-checked against the world at the moment of the move.
+    tryRefresh();
   }
   logGc(result);
   return result;

@@ -546,12 +546,33 @@ suite("gc S1: a running-versions stamp older than the interval no longer protect
   ok(mine(plan, "8.40").length, "a stamp 40h old in a 24h interval is a window that is gone");
 });
 
-suite("gc S1: a stamp with an unreadable timestamp still protects its build", () => {
+// This suite used to assert the opposite — "an unparseable date is not evidence that the window is
+// gone", so the entry was kept. True, and it has no end to it: nothing ever ages such an entry out,
+// so one damaged entry pinned its version in the keep-set for the life of the file and that build
+// became permanently uncollectable. GC-006 R3 bounds it in the one direction that is bounded.
+suite("gc R3: a stamp entry with an unreadable timestamp does not protect its build for ever", () => {
   deployExt("8.50.0");
   deployExt("8.51.0", "8.51.0");
   runningVersionsFile({ odd: { version: "8.50.0", at: "not a date" } });
   const plan = gc.planGc(input({ currentVersion: "8.51.0" }));
-  eq(mine(plan, "8.50"), [], "an unparseable date is not evidence that the window is gone");
+  eq(mine(plan, "8.50"), ["8.50.0"],
+     "an entry that cannot say WHEN it was written can never age out, and a keep-set entry with no " +
+     "expiry is permanent — any window actually on that build re-stamps within 15 seconds");
+});
+
+suite("gc R3: dropping one undated entry does not touch the dated ones beside it", () => {
+  deployExt("8.52.0");
+  deployExt("8.53.0");
+  deployExt("8.54.0", "8.54.0");
+  runningVersionsFile({
+    broken: { version: "8.52.0", at: "not a date" },
+    real: { version: "8.53.0", at: new Date(NOW - 60000).toISOString() },
+  });
+  const plan = gc.planGc(input({ currentVersion: "8.54.0" }));
+  eq(mine(plan, "8.53"), [], "the window that said when it stamped is still protected");
+  eq(mine(plan, "8.52"), ["8.52.0"], "and only the undated one is offered");
+  eq(gc.runningVersions(NOW, 86400000).readable, true,
+     "a parseable FILE stays readable — this is not the torn-file refusal, which needs the whole tier");
 });
 
 suite("gc S1: a non-semver current version refuses the whole extension tier", () => {
@@ -974,7 +995,7 @@ suite("gc R5: the default throttle is half the lease, not every item", () => {
   eq(refreshes, 0, "three small files take a millisecond; rewriting the lease file each time is waste");
 });
 
-suite("gc R5: a long pass refreshes its claim between items", () => {
+suite("gc R5: a long pass refreshes its claim BEFORE and AFTER every item", () => {
   const dir = "-home-t-applyRefresh";
   for (let i = 0; i < 3; i++) {
     writeAged(path.join(PROJECTS, dir, `refresh${i}-030${i}.jsonl`), "{}\n", 40);
@@ -989,7 +1010,10 @@ suite("gc R5: a long pass refreshes its claim between items", () => {
   const r = gc.applyGc({ ...plan, tier1: items, tier2: [], tier3: [] }, [1],
     { refresh: () => { refreshes++; }, refreshEveryMs: 0 });
   eq(r.done.length, items.length, "everything moved");
-  eq(refreshes, items.length, "and the claim was refreshed between every one of them");
+  // TWICE per item, not once. Refreshing only at the top of the loop renews the claim just BEFORE a
+  // long cross-device copy and then not again until the item AFTER it has also finished — and the
+  // last item in a pass is never followed by a refresh at all.
+  eq(refreshes, 2 * items.length, "the claim was refreshed on both sides of every one of them");
 });
 
 suite("gc R5: a refresh that throws never fails the pass", () => {
@@ -1072,4 +1096,103 @@ suite("gc R6: an UPPERCASE transcript FILENAME is matched against a lower-case r
   ok(gc.referencedSessions().ids.has(sid.toLowerCase()), `${repo}'s board names it in lower case`);
   eq(pick(gc.planGc(input()), 1, sid.slice(0, 8)).length, 0,
      "and the upper-case file on disk is recognised as the same session");
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// GC-006 — the writer side of "a read that cannot answer is a refusal", and the one tier that
+// deletes rather than moves.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+// ── R2 · what actually stands between an orphaned worktree and `git worktree remove` ─────────
+
+suite("gc R2: a role with only a MAILBOX and no board entry still owns its worktree", () => {
+  // THE GUARD THAT ACTUALLY DECIDES, and until now nothing tested it through this tier. A GC-006
+  // review read `input.liveRoles` (a 30-minute mtime window that returns two roles machine-wide) as
+  // the thing standing between an orphaned worktree and `git worktree remove`, and proposed widening
+  // it. It never gets a say: `scanWorktrees` calls a worktree orphaned only when its name is absent
+  // from `boardRoles(repo)`, which is the board UNION every role owning a mailbox on the bus, at ANY
+  // age. Six hours stale here, and with no board entry at all.
+  const repo = makeRepo({ roles: {} }, "gcR2mailbox");
+  const f = busPath(repo, "napping", "status.json");
+  writeJson(f, { status: "idle", session_id: "nappingg-0601" });
+  const t = (Date.now() - 6 * 3600000) / 1000;
+  fs.utimesSync(f, t, t);
+  const root = makeGitRepo("r2mailbox");
+  addWorktree(root, "napping", { commit: true, merge: true });   // clean, merged: otherwise collectable
+  const plan = gc.planGc(input({ repoRoots: { [repo]: root } }));   // liveRoles deliberately EMPTY
+  eq(pick(plan, 2, `${repo}/napping`).length, 0,
+     "clean, merged, no board entry, not live by any window — and still never offered for removal");
+  eq(pick(plan, 3, `${repo}/napping`).length, 0, "not even as a tier-3 decision: it is not orphaned");
+});
+
+suite("gc R2: a worktree with NO mailbox and no board entry IS collectable", () => {
+  // The other half of the same guard: over-keeping everything would be a different bug. funisland
+  // had 72 of these, 4.7 GB, measured 2026-09-13.
+  const repo = makeRepo({ roles: {} }, "gcR2nomailbox");
+  const root = makeGitRepo("r2nomailbox");
+  addWorktree(root, "nobody", { commit: true, merge: true });
+  const plan = gc.planGc(input({ repoRoots: { [repo]: root } }));
+  eq(labels(pick(plan, 2, `${repo}/nobody`)), [`${repo}/nobody`],
+     "no board entry, no status.json, no inbox, no outbox — nothing on this machine claims it");
+});
+
+suite("gc R2: the APPLIER re-checks the roster, not just the plan", () => {
+  // A plan is a guess about a moment that has passed, and this is the tier where acting on a stale
+  // guess deletes a working directory. The role appears on the bus AFTER the plan was made.
+  const repo = makeRepo({ roles: {} }, "gcR2apply");
+  const root = makeGitRepo("r2apply");
+  const wt = addWorktree(root, "later", { commit: true, merge: true });
+  const plan = gc.planGc(input({ repoRoots: { [repo]: root } }));
+  const mineOnly = pick(plan, 2, `${repo}/later`);
+  eq(labels(mineOnly), [`${repo}/later`], "the plan offers it");
+  writeJson(busPath(repo, "later", "status.json"), { status: "idle" });   // ...and only now, a mailbox
+  // Only this fixture's item: every suite here shares one world, and applying a whole accumulated
+  // plan would act on other suites' worktrees.
+  const r = gc.applyGc({ ...plan, tier1: [], tier2: mineOnly, tier3: [] }, [2],
+                       { repoRoots: { [repo]: root } });
+  eq(r.done.length, 0, "the applier refuses it");
+  match(r.skipped[0].note, /still on the board/, "naming the safeguard that fired");
+  ok(fs.existsSync(wt), "and the working directory is still there — this path cannot be undone");
+});
+
+// ── R4 · the claim is refreshed around each item, and a decline is not a refresh ─────────────
+
+suite("gc R4: a refresh that DECLINED to write does not reset the throttle", () => {
+  // The clock is injected because this defect is invisible without owning it: declining and
+  // refreshing look identical from outside except in WHEN the next attempt happens. `refreshLease`
+  // declines whenever the claim is younger than half the lease, so on a long pass the old code
+  // measured its next attempt from a moment at which nothing had been written, and the claim could
+  // drift a full lease between writes — expiring under its own holder mid-pass.
+  const dir = "-home-t-applyDecline";
+  for (let i = 0; i < 3; i++) writeAged(path.join(PROJECTS, dir, `declin${i}-070${i}.jsonl`), "{}\n", 40);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-dc.jsonl"), "{}\n", 0);
+  const plan = gc.planGc(input());
+  const items = plan.tier1.filter((i) => i.label.includes("declin"));
+  eq(items.length, 3, "three items to move");
+  // Every observation of the clock costs 60 ms, so time advances with the pass and with nothing else.
+  let clock = 0;
+  const nowMs = () => (clock += 60);
+  let calls = 0;
+  const r = gc.applyGc({ ...plan, tier1: items, tier2: [], tier3: [] }, [1],
+    { refresh: () => { calls++; return false; }, refreshEveryMs: 100, nowMs });
+  eq(r.done.length, 3, "everything moved");
+  eq(calls, 2 * items.length - 1,
+     "once a refresh declines, every later attempt point tries again: the throttle measures from " +
+     "the last WRITE, not the last attempt");
+});
+
+suite("gc R4: a refresh that DID write resets the throttle", () => {
+  const dir = "-home-t-applyWrote";
+  for (let i = 0; i < 3; i++) writeAged(path.join(PROJECTS, dir, `wrotee${i}-080${i}.jsonl`), "{}\n", 40);
+  writeAged(path.join(PROJECTS, dir, "zzzzzzzz-wr.jsonl"), "{}\n", 0);
+  const plan = gc.planGc(input());
+  const items = plan.tier1.filter((i) => i.label.includes("wrotee"));
+  let clock = 0;
+  const nowMs = () => (clock += 60);
+  let calls = 0;
+  const r = gc.applyGc({ ...plan, tier1: items, tier2: [], tier3: [] }, [1],
+    { refresh: () => { calls++; return true; }, refreshEveryMs: 100, nowMs });
+  eq(r.done.length, 3, "everything moved");
+  ok(calls > 0 && calls < 2 * items.length - 1,
+     `a claim that was actually written is not rewritten at the next opportunity (${calls} calls)`);
 });

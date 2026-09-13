@@ -72,10 +72,15 @@ export function activate(context: vscode.ExtensionContext) {
     status.show();
     context.subscriptions.push(status);
 
+    // Why the version stamp was NOT written this tick, or undefined when it was. Window state, not
+    // a property of one log line: several things call debugLog in a tick and the file is
+    // last-writer-wins, so a note attached to the tick's own call would be overwritten by the
+    // garbage-collection note a few lines later and the refusal would be invisible.
+    let stampNote: string | undefined;
     const debugLog = (obj: any) => {
       try {
         fs.writeFileSync(path.join(os.homedir(), ".claude", "loom", "tracker-debug.json"),
-          JSON.stringify({ repo, ...obj }, null, 2));
+          JSON.stringify({ repo, ...(stampNote ? { stamp: stampNote } : {}), ...obj }, null, 2));
       } catch { /* ignore */ }
     };
     const notifier = new Notifier(repo);
@@ -444,8 +449,7 @@ export function activate(context: vscode.ExtensionContext) {
         // was already fixed. Measured 2026-09-10 00:27: 0.21.1 was registered while a window was
         // still writing a targetmap only a pre-0.19.2 build produces. Now the bus says which build
         // each window is actually running, and `./live.sh` reports a window that is behind.
-        debugLog({ version: VERSION, repo, ok: r.ok, error: r.error, liveRoles: r.liveRoles,
-                   agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
+        stampNote = undefined;                   // this tick's answer, not the last one's
         try {
           // KEYED BY WINDOW, not by project. Two windows are routinely open on one project (a
           // worktree window resolves to its parent repo id) and would share a slot, so whichever
@@ -453,23 +457,65 @@ export function activate(context: vscode.ExtensionContext) {
           // "(no project)" entry. Garbage collection reads this to decide which builds are still in
           // use, so a hidden window is a build that looks collectable while an editor is running it.
           const stamp = path.join(os.homedir(), ".claude", "loom", "running-versions.json");
+          // A READ THAT CANNOT ANSWER IS NOT PERMISSION TO REWRITE — principle 16, on the WRITER's
+          // side of the file. The first version was `catch { /* first */ }`, which treats "there is
+          // no file" and "I could not read the file" as the same thing, and they are opposites.
+          // Starting from `{}` and then publishing ATOMICALLY erases every other window's entry, and
+          // gc reads the result as a perfectly readable file naming ONE version — so every other
+          // running build becomes collectable in tier 1, the unattended tier, for the ~15 s until
+          // the other windows re-stamp. The ways that read fails are ordinary: a torn file from any
+          // pre-0.33.0 window still rewriting this non-atomically every 15 s, EMFILE, a transient
+          // EACCES. Only ENOENT means "first".
           let all: any = {};
-          try { all = JSON.parse(fs.readFileSync(stamp, "utf8")) || {}; } catch { /* first */ }
-          if (!all || typeof all !== "object" || Array.isArray(all)) all = {};
-          all[windowId] = { version: VERSION, at: new Date().toISOString(), repo: repo || null };
-          // Prune entries no window has refreshed in a week, or the file grows a key per reload
-          // forever (a new pid and a new windowId every time).
-          const weekAgo = Date.now() - 7 * 86_400_000;
-          for (const [k, v] of Object.entries<any>(all)) {
-            const at = Date.parse(String(v && v.at || ""));
-            if (Number.isFinite(at) && at < weekAgo) delete all[k];
+          let raw: string | null = null;
+          try {
+            raw = fs.readFileSync(stamp, "utf8");
+          } catch (e: any) {
+            if (!e || e.code !== "ENOENT") stampNote = `read failed (${String(e && e.code || e)}) — not rewritten`;
           }
-          // ATOMIC: ten windows rewrite this every 15 s, and gc refuses to collect any build when it
-          // reads a torn file — so a plain write would routinely disable the extension tier.
-          const tmp = stamp + ".tmp." + process.pid;
-          fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
-          fs.renameSync(tmp, stamp);
-        } catch { /* a version stamp must never break a tick */ }
+          if (!stampNote && raw !== null) {
+            let parsed: any;
+            let broke = false;
+            try { parsed = JSON.parse(raw); } catch { broke = true; }
+            if (broke) stampNote = "unparseable — not rewritten";
+            else if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) stampNote = "not an object — not rewritten";
+            else all = parsed;
+          }
+          // NO SELF-HEAL on a file that exists and will not parse. The tempting repair — re-read
+          // after a moment and, if the bytes are identical, call it stably corrupt and start over —
+          // is not provably safe: an old build rewriting this file non-atomically can leave it
+          // truncated for longer than any re-read gap, so "unchanged" would license exactly the
+          // erasure this guard exists to prevent. Refusing is bounded and visible instead: gc's
+          // reader refuses the whole extension tier on the same file (over-keeping costs disk), the
+          // reason is in `tracker-debug.json` every tick, and `rm running-versions.json` is a repair
+          // a person can make in one line. A wedged stamp over-keeps builds; a confidently wrong one
+          // archives a build out from under a live editor.
+          if (!stampNote) {
+            all[windowId] = { version: VERSION, at: new Date().toISOString(), repo: repo || null };
+            // Prune entries no window has refreshed in a week, or the file grows a key per reload
+            // forever (a new pid and a new windowId every time). An entry whose `at` will not parse
+            // is pruned too: it can say neither that its window is alive nor when it last was, and
+            // while it stays it holds its version in gc's keep-set with nothing that can ever age it
+            // out. Every build writes ISO here, so an unparseable `at` is damage, not an older shape.
+            const weekAgo = Date.now() - 7 * 86_400_000;
+            for (const [k, v] of Object.entries<any>(all)) {
+              if (k === windowId) continue;
+              const at = Date.parse(String(v && v.at || ""));
+              if (!Number.isFinite(at) || at < weekAgo) delete all[k];
+            }
+            // ATOMIC: ten windows rewrite this every 15 s, and gc refuses to collect any build when
+            // it reads a torn file — so a plain write would routinely disable the extension tier.
+            const tmp = stamp + ".tmp." + process.pid;
+            fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
+            fs.renameSync(tmp, stamp);
+          }
+        } catch (e: any) {
+          // A version stamp must never break a tick. `stampNote` is already set for the refusals
+          // above; anything else that lands here is a write that failed.
+          if (!stampNote) stampNote = `write failed (${String(e && e.code || e && e.message || e)})`;
+        }
+        debugLog({ version: VERSION, repo, ok: r.ok, error: r.error, liveRoles: r.liveRoles,
+                   agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
         runNotifier();
         runLimitWatcher();
         runModelPolicy();
@@ -569,10 +615,9 @@ export function activate(context: vscode.ExtensionContext) {
       const roles = new Set<string>([...bus.roles, ...mine]);
       return { roles, sessionIds: new Set<string>([...bus.sessionIds, ...liveSessionIdsOf(mine)]) };
     };
-    const gcLiveRoles = (): Set<string> => gcLive().roles;
     /** The world AS IT IS at apply time — read fresh, never carried over from planning. Without the
      *  live roster here, `health.removeWorktree`'s live refusal could never fire from gc at all. */
-    const gcApplyOptions = (refresh?: () => void): ApplyOptions => {
+    const gcApplyOptions = (refresh?: () => boolean): ApplyOptions => {
       const live = gcLive();
       return { repoRoots: gcRepoRoots(), liveRoles: live.roles, liveSessionIds: live.sessionIds, refresh };
     };
@@ -580,7 +625,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!gcConfig().enabled) return null;
       try {
         return planGc({ now: Date.now(), cfg: gcConfig(), currentVersion: VERSION,
-                        liveRoles: gcLiveRoles(), repoRoots: gcRepoRoots() });
+                        liveRoles: gcLive().roles, repoRoots: gcRepoRoots() });
       } catch { return null; }         // planning must never break a tick
     };
     /** The once-per-machine-per-interval tier-1 pass, behind the cross-window lease. */
@@ -599,9 +644,13 @@ export function activate(context: vscode.ExtensionContext) {
         const mid = refreshLease(loadGcState(), windowId, Date.now());
         if (mid) saveGcState(mid);
         if (plan) {
-          const keepClaim = () => {
+          // Returns whether the claim was actually WRITTEN. `refreshLease` declines while the claim
+          // is younger than half the lease, and the applier must not treat a decline as a refresh —
+          // if it did, each decline would push the next attempt a further half-lease out from a
+          // moment at which nothing was written.
+          const keepClaim = (): boolean => {
             const r = refreshLease(loadGcState(), windowId, Date.now());
-            if (r) saveGcState(r);
+            return r ? saveGcState(r) : false;
           };
           result = applyGc(plan, [1], gcApplyOptions(keepClaim));
           note = `tier 1: ${result.done.length} collected (${fmtBytes(result.bytesFreed)}), ${result.skipped.length} skipped`;
