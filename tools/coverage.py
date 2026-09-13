@@ -18,8 +18,8 @@ The arithmetic of that is that coverage FALLS as you add cores: measured on this
 the same 623-test run read 73.4% at LOOM_TEST_JOBS=1 and 38.4% at the default 32, so the figure
 quoted in any doc was really a statement about how many cores the machine had. It was flagged in
 GC-005, MP-001 and RB-001 before it was fixed here. A line is uncovered only if NO process covered
-it — so the masks INTERSECT. Intersected, the same two dump sets read 93.3% and 93.1%, and
-LOOM_TEST_JOBS=4 and =32 agree to the line (5641/6060).
+it — so the masks INTERSECT. Intersected, the same two dump sets read 93.3% (5652/6060) and 93.1%
+(5640/6060), and LOOM_TEST_JOBS=4 and =32 agree to the line.
 
 The 12 lines still between them are NOT a merge artefact — they are a different execution. Each
 parallel child gets its own throwaway HOME; the single-process path gives all 39 test files ONE.
@@ -27,15 +27,45 @@ Sharing it lets state from one file leak into another and reach gc.js's `busFram
 which needs two buses declaring one webviewId — a collision no isolated process can produce and,
 tellingly, no test sets up on purpose. The parallel number is the honest one.
 """
-import json, os, sys, glob, collections
+import json, os, sys, glob, collections, bisect, urllib.parse
+
+
+def u16_starts(src):
+    """The UTF-16 code-unit offset at which each codepoint of `src` begins, plus the total.
+
+    V8 REPORTS SOURCE POSITIONS IN UTF-16 CODE UNITS; PYTHON INDEXES CODEPOINTS. Every astral
+    character — an emoji — shifts every later offset by one, and this codebase puts 🔒 in
+    user-facing strings. Measured 2026-09-13 on the real dumps: coordinator.js and statusView.js
+    carry two each, and for all 29 modules the largest endOffset equals the UTF-16 length exactly,
+    never len(src). Left unmapped the skew slides each range two characters right, which is how
+    coordinator.js:173 — a `throw` inside a zero-count range in EVERY observation — was scored
+    covered: the first two characters fell outside the shifted range, so the line no longer looked
+    wholly dead. Reporting a line covered that nothing ran is the one direction this tool must
+    never fail in. None means the file is pure BMP and the offsets already are codepoint indices."""
+    if all(ord(c) <= 0xFFFF for c in src):
+        return None
+    starts, u = [], 0
+    for ch in src:
+        starts.append(u)
+        u += 2 if ord(ch) > 0xFFFF else 1
+    starts.append(u)
+    return starts
+
+
+def to_cp(offset, starts):
+    """A UTF-16 offset as a codepoint index. Exact for any real range bound; an offset landing
+    inside a surrogate pair (which V8 does not emit) rounds to the next whole character."""
+    return offset if starts is None else bisect.bisect_left(starts, offset)
 
 
 def merge_dead(observations, length):
     """The dead-byte mask for one source file, given one zero-count range list PER OBSERVATION.
 
     An observation is a single script entry in a single process's dump. Bytes are dead only where
-    EVERY observation agrees they are dead: a process that never ran a module reports all of it
-    dead, and that is not evidence of anything except which test file that process was given.
+    EVERY observation agrees they are dead. A process that never LOADED a module omits it from its
+    dump entirely (measured: per-dump module counts run from 1 to 29 of 29), so it casts no vote at
+    all; what collapsed the old union was the process that loaded a module and barely exercised
+    it, contributing one enormous dead range that outvoted every process that ran the thing.
 
     No observations at all means no evidence, which is not the same as covered — the caller only
     reaches here for files some dump mentioned, and a file nothing mentions stays out of `seen`.
@@ -62,7 +92,10 @@ def read_dumps(covdir, outdir):
             url = s.get("url", "")
             if not url.startswith("file://"):
                 continue
-            p = url[7:]
+            # Node percent-encodes these URLs. Without unquote, a checkout under a path containing
+            # a space or a non-ASCII character never matches `outdir` and the module vanishes from
+            # the report entirely — no error, just a smaller denominator.
+            p = urllib.parse.unquote(url[7:])
             if os.path.realpath(os.path.dirname(p)) != os.path.realpath(outdir):
                 continue
             fns = s.get("functions", [])
@@ -82,7 +115,20 @@ def line_rows(observations):
     rows = []
     for p in sorted(observations):
         src = open(p, encoding="utf8", errors="replace").read()
-        dead = merge_dead(observations[p], len(src))
+        starts = u16_starts(src)
+        # THE DUMPS MUST DESCRIBE THIS EXACT FILE. If out/ was rebuilt after the run, every offset
+        # is measured against a source that no longer exists and min(length, b) would quietly clamp
+        # the mismatch away, reporting a confident wrong number. Fail loudly instead (principle 10:
+        # a result you cannot compare against anything is not evidence).
+        u16_len = starts[-1] if starts is not None else len(src)
+        biggest = max((b for ranges in observations[p] for _, b in ranges), default=0)
+        if biggest > u16_len:
+            raise SystemExit(
+                f"{os.path.basename(p)}: coverage dump ends at offset {biggest} but the file is "
+                f"{u16_len} UTF-16 units long — out/ was rebuilt after the run. Re-run the suite "
+                f"under NODE_V8_COVERAGE against THIS build.")
+        dead = merge_dead([[(to_cp(a, starts), to_cp(b, starts)) for a, b in ranges]
+                           for ranges in observations[p]], len(src))
         # a line counts as covered unless ALL its non-blank content is inside a zero-count range
         # tsc emits an __importStar/__createBinding prologue in every module; it is compiler output,
         # not code anyone wrote or can test, so it is excluded from the denominator.
