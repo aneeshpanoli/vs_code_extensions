@@ -51,7 +51,8 @@ actions are manual-only. Tag one role as orchestrator and it is auto-notified
 so it survives IDE restarts.
 
 It also monitors **simultaneous** Claude sessions editor-wide (all windows, not
-just this project): the status bar shows `Loom: n/3 · N open`, highlighting past
+just this project): the status bar shows `Loom: n/5 · N open` (the denominator is
+`maxActiveSessions`, default 5), highlighting past
 `sessionWarnThreshold` (default 5). Anthropic sets no cap on concurrent sessions
 but they share one usage pool, and its own guidance suggests 3-5 in parallel.
 The count is published to `~/.claude/loom/active-sessions.json` so the Loom
@@ -96,7 +97,7 @@ watchdog, and its worktree read as orphaned and removable.
 
 **Orchestrator context memory:** the orchestrator is the session that actually
 fills up — it runs for days across every role, and one live bus showed four
-auto-compactions at ~999k tokens. Past `contextThresholdPct` (default 50% of
+auto-compactions at ~999k tokens. Past `contextThresholdPct` (default 30% of
 `contextWindowTokens`, default 1,000,000 — the measured auto-compaction ceiling
 on this machine) it is asked to write its working memory to a file (default
 `~/.claude/loom/<repo>/<role>/memory.md`), then `/clear`, then a restore prompt
@@ -176,7 +177,8 @@ consulted, so there is nothing left to misidentify.
 
 **Global concurrency:** roles working simultaneously across *all* projects are
 counted and published to `~/.claude/loom/working-sessions.json`; the digest warns
-past `workingWarnThreshold` (default 5). The per-project cap is 3, but no single
+past `workingWarnThreshold` (default 5). The per-project cap is 5 (`maxActiveSessions`,
+raised from 3 on 2026-09-10 to make room for numbered role instances), but no single
 window can see the others, and every session draws on one usage pool.
 
 **Worktree cleanup:** `Loom Sessions: Worktree Cleanup Report` lists every
@@ -206,8 +208,14 @@ tracked agent, so it cannot be a target. Settings: `enforceWorkerModel`,
 `workerModel`, `premiumModels`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 349 checks across 22 files, zero dependencies, run under VSCodium's bundled node since this
-machine has no npm. Measured coverage: **95.3% of lines**, every module included
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 529 checks across 37 files, no test framework, run under VSCodium's bundled node since this
+machine has no npm. (Not quite dependency-free: the CDP fake needs `ws`, which the
+extension itself depends on.) Measured coverage **depends on the runner mode**, because
+`tools/coverage.py` unions each process's UNCOVERED ranges: the parallel default reports
+**38.9% of lines** and `LOOM_TEST_JOBS=1` reports **70.8%** (both measured 2026-09-13 at
+0.33.0). The higher figure is the honest one for "what the suite exercises"; the lower one
+is an artefact of one process per test file. An older **95.3%** claim here was not
+reproducible by either route
 — `rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3
 ../tools/coverage.py /tmp/cov out` prints the per-module table (a line counts as
 covered unless every non-whitespace byte on it is inside a zero-count V8 range;
