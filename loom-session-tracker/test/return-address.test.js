@@ -24,7 +24,11 @@ suite("return-address: every inject the extension performs carries --from", () =
     const src = fs.readFileSync(path.join(out, f), "utf8");
     const sites = (src.match(/"inject",\s*"--role"/g) || []).length;
     ok(sites >= 1, `${f} has an inject site`);
-    // tsc emits an imported call as `(0, inject_1.senderArgs)(...)`, a local one as `senderArgs(...)`.
-    ok(/senderArgs\)?\s*\(/.test(src), `${f}: its inject passes senderArgs (the return address)`);
+    // The CALL SITE, not the mere presence of the name: inject.js defines senderArgs, so a stripped
+    // call there still left the word in the file and a mutant survived. tsc emits an imported call as
+    // `(0, inject_1.senderArgs)(...)` and a local one as `senderArgs(...)`; either must follow the
+    // spread inside the argv array.
+    ok(/\.\.\.(?:\(0,\s*\w+\.)?senderArgs\)?\s*\(/.test(src),
+      `${f}: the inject argv spreads senderArgs(...) — the return address is actually passed`);
   }
 });
