@@ -2,7 +2,7 @@
 // startup digest is gated and acted on. Everything the components do individually is covered
 // elsewhere; this file exists because the composition was the last untested surface, and both real
 // bugs found in this extension so far lived in untested paths.
-const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJson, settle, LOOM } =
+const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJson, setStatus, settle, LOOM } =
   require("./harness");
 const fs = require("fs");
 const os = require("os");
@@ -26,11 +26,29 @@ function openProject(repo) {
   return dir;
 }
 
-/** Boot the extension with a scripted CDP read. Returns a disposer. */
-async function activate(frames = []) {
-  cdp.readFrames = async () => frames;
+/** A fake loom_cdp.py that APPENDS every injection's argv to LOOM/inject-log.txt, so a test can
+ *  assert what was typed, into which frame, and IN WHAT ORDER. The plain fake overwrites nothing,
+ *  and injectTo's own debug file keeps only the last call — which cannot answer "before or after". */
+const LOGGING_CDP =
+  "import sys, os\n" +
+  "p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'inject-log.txt')\n" +
+  "open(p, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n" +
+  "print(' '.join(sys.argv[1:]))\n";
+
+/** Every injection so far, in order, as argv strings. */
+function injectLog() {
+  try { return fs.readFileSync(path.join(LOOM, "inject-log.txt"), "utf8").split("\n").filter(Boolean); }
+  catch { return []; }
+}
+function clearInjectLog() { try { fs.unlinkSync(path.join(LOOM, "inject-log.txt")); } catch {} }
+
+/** Boot the extension with a scripted CDP read. Returns a disposer.
+ *  `frames` may be a function, so a test can make a tab APPEAR once editor.open has run. */
+async function activate(frames = [], cdpScript = null) {
+  cdp.readFrames = async () => (typeof frames === "function" ? frames() : frames);
   // never shell out to the real injector from a test
-  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), cdpScript ||
+    "import sys\nprint(' '.join(sys.argv[1:]))\n");
   const context = { subscriptions: [] };
   ext.activate(context);
   await settle();
@@ -193,7 +211,9 @@ suite("tick: the model policy runs — a worker on the premium model is switched
     const pending = readJson(busPath(repo, "model-policy.json")).pending;
     ok(pending && pending.alpha, "the violation was recorded by the tick");
     eq(pending.alpha.model, "Fable 5.1", "naming the premium model");
-    ok(vscode._messages.info.some((m) => /orchestrator-only tier/.test(m)), "and the user was told");
+    eq(pending.alpha.target, "claude-opus-5", "and the tier it is owed");
+    ok(vscode._messages.info.some((m) => /alpha is on Fable 5\.1 — it is owed claude-opus-5/.test(m)),
+       "and the user was told: " + JSON.stringify(vscode._messages.info));
   } finally { off(); }
 });
 
@@ -983,5 +1003,188 @@ suite("gc R1 writer: an entry whose timestamp will not parse is pruned on write"
     const stamp = readJson(STAMP);
     ok(!("1:undated" in stamp), "an entry that cannot say when it was written cannot age out, so it goes");
     eq(stamp["2:fresh"].version, "0.29.0", "and the one that can is untouched");
+  } finally { off(); }
+});
+
+// ── MP-001: the handoff chooses the tier, the tracker enforces it ───────────────────────────────
+// Every one of these drives activate() -> tick -> the injected command and asserts the EXACT text
+// and the EXACT frame, through the append-only inject log. A planner assertion would not have
+// caught the two bugs this project has actually had, both of which were in the typing path.
+
+/** Write a handoff into a role's inbox, with or without a `model:` line. */
+function putHandoff(repo, role, id, model) {
+  const f = busPath(repo, role, "inbox.md");
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, `---\nid: ${id}\nfrom: productowner\n` + (model ? `model: ${model}\n` : "") +
+                      `---\n# ${id}\n\nthe brief\n`);
+}
+const modelInjections = () => injectLog().filter((l) => /--message \/model /.test(l));
+
+suite("MP-001 R2: a worker on Opus whose handoff asks for Sonnet is switched DOWN — that frame only", async () => {
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "mp-down");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-100", "claude-sonnet-5");
+  putHandoff(repo, "beta", "MP-101", null);                 // beta is owed the default, and is on it
+  clearInjectLog();
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Opus 5")),
+                              frame("wid-b", "w" + marker("beta") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(300);
+    const inj = modelInjections();
+    eq(inj.length, 1, "exactly one /model was typed: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-sonnet-5\b/.test(inj[0]), "…the id the handoff asked for: " + inj[0]);
+    ok(/--role alpha\b/.test(inj[0]) && /--webview-id wid-a\b/.test(inj[0]), "…into alpha's own frame: " + inj[0]);
+    ok(!/wid-b/.test(inj[0]), "and nowhere near beta, which is already on its tier");
+    const pending = readJson(busPath(repo, "model-policy.json")).pending;
+    eq(pending.alpha.target, "claude-sonnet-5", "recorded with its target");
+    ok(!pending.beta, "beta is not pending at all");
+  } finally { off(); }
+});
+
+suite("MP-001 R2: a worker on Sonnet owed Opus is switched UP — the same mechanism, the other way", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-up");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-102", null);                // no `model:` -> the configured default
+  clearInjectLog();
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Sonnet 5"))], LOGGING_CDP);
+  try {
+    await settle(300);
+    const inj = modelInjections();
+    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-opus-5\b/.test(inj[0]) && /--webview-id wid-a\b/.test(inj[0]),
+       "switched UP, into alpha's frame: " + inj[0]);
+  } finally { off(); }
+});
+
+suite("MP-001 R2: a PREMIUM id in a handoff types nothing, and the refusal is logged", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-prem");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-103", "claude-fable-5-1[1m]");
+  clearInjectLog();
+  // alpha is ALREADY on the default tier, so honouring the frontmatter would be the only reason to type
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(300);
+    eq(modelInjections(), [], "nothing was typed: " + JSON.stringify(injectLog()));
+    const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
+    // window state, not one log line: it must SURVIVE the later debugLog calls of the same tick
+    ok(dbg && JSON.stringify((dbg.model || {}).frontmatterIgnored || []).includes("premium tier is orchestrator-only"),
+       "and the refusal is still in tracker-debug.json at the end of the tick: " + JSON.stringify(dbg && dbg.model));
+  } finally { off(); }
+});
+
+suite("MP-001 R2: a BUSY composer is withheld — nothing typed, and no attempt counted", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-busy");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-104", "claude-sonnet-5");
+  clearInjectLog();
+  const busy = "\nClaude is working\n";
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + busy + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(300);
+    eq(modelInjections(), [], "a /model into a busy composer would queue as a message and never run");
+    const st = readJson(busPath(repo, "model-policy.json"));
+    ok(!st || !st.pending || !st.pending.alpha,
+       "and it is not a violation either — no attempt, no backoff growth: " + JSON.stringify(st && st.pending));
+  } finally { off(); }
+});
+
+suite("MP-001 R3: the spawn path types /model BEFORE /loom, into the frame it watched appear", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-spawn");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-105", "claude-sonnet-5");
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["alpha"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const po = poFrame("wid-po", repo);
+  // the new tab exists only once editor.open has run, and it acknowledges the switch at once
+  const newTab = frame("wid-new", "You: /model claude-sonnet-5\nSet model to Sonnet 5 for this session only\n" + footer("Opus 5"));
+  const off = await activate(() =>
+    vscode._executed.some((e) => e.id === "claude-vscode.editor.open") ? [po, newTab] : [po], LOGGING_CDP);
+  try {
+    await settle(6000);                     // the spawn path waits 2.5s for the frame, then the ack
+    const mine = injectLog().filter((l) => /--webview-id wid-new\b/.test(l));
+    ok(mine.length >= 2, "both commands went to the new frame: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-sonnet-5\b/.test(mine[0]), "FIRST the tier: " + mine[0]);
+    ok(/--message \/loom alpha\b/.test(mine[1]), "THEN the bind: " + mine[1]);
+    ok(!/--message \/model/.test(mine[1]) && !/--message \/loom/.test(mine[0]), "and not the other way round");
+  } finally { off(); }
+});
+
+suite("MP-001 R3: a handoff on the DEFAULT tier types no /model — a fresh tab is already there", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-spawn-def");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-106", "claude-opus-5");     // == the configured workerModel
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["alpha"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const po = poFrame("wid-po", repo);
+  const newTab = frame("wid-new", "fresh tab\n" + footer("Opus 5"));
+  const off = await activate(() =>
+    vscode._executed.some((e) => e.id === "claude-vscode.editor.open") ? [po, newTab] : [po], LOGGING_CDP);
+  try {
+    await settle(5000);
+    const mine = injectLog().filter((l) => /--webview-id wid-new\b/.test(l));
+    eq(mine.filter((l) => /--message \/model/.test(l)).length, 0, "no /model: " + JSON.stringify(mine));
+    ok(mine.some((l) => /--message \/loom alpha\b/.test(l)), "but it was still bound: " + JSON.stringify(mine));
+  } finally { off(); }
+});
+
+suite("MP-001 R3: no acknowledgement within the bound still BINDS — an unbound tab is the worse loss", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-spawn-noack");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.modelAckMs"] = 200;
+  putHandoff(repo, "alpha", "MP-107", "claude-sonnet-5");
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["alpha"], requestedAt: new Date().toISOString() });
+  clearInjectLog();
+  const po = poFrame("wid-po", repo);
+  const newTab = frame("wid-new", "a tab that never answers\n" + footer("Opus 5"));   // no "Set model to"
+  const off = await activate(() =>
+    vscode._executed.some((e) => e.id === "claude-vscode.editor.open") ? [po, newTab] : [po], LOGGING_CDP);
+  try {
+    await settle(5000);
+    const mine = injectLog().filter((l) => /--webview-id wid-new\b/.test(l));
+    ok(mine.some((l) => /--message \/model claude-sonnet-5\b/.test(l)), "it did try: " + JSON.stringify(mine));
+    ok(mine.some((l) => /--message \/loom alpha\b/.test(l)), "and bound anyway: " + JSON.stringify(mine));
+    const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
+    ok(/no acknowledgement/.test(String(((dbg || {}).model || {}).spawn?.result || "")),
+       "the unacknowledged switch is on the record: " + JSON.stringify((dbg || {}).model));
+  } finally { off(); }
+});
+
+suite("MP-001 R4/R5 wiring: the tick escalates a twice-blocked role and closes its ledger line", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp-esc");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-108", "claude-sonnet-5");
+  setStatus(repo, "alpha", { status: "blocked", current: "MP-108", updated_at: "T1" });
+  const inboxOf = () => fs.readFileSync(busPath(repo, "alpha", "inbox.md"), "utf8");
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Sonnet 5"))]);
+  try {
+    await settle(200);
+    ok(/model: claude-sonnet-5/.test(inboxOf()), "one loop-back changes nothing");
+    // a SECOND loop-back, then a tick
+    setStatus(repo, "alpha", { status: "blocked", current: "MP-108", updated_at: "T2" });
+    await vscode._commands["loomSessionTracker.refresh"]();
+    await settle(200);
+    ok(/model: claude-opus-5/.test(inboxOf()), "the second escalates the handoff itself: " + inboxOf());
+    ok(vscode._messages.info.some((m) => /looped back twice on MP-108/.test(m)), "and the human is told");
+    // finish it: the ledger line closes, and says it was escalated
+    setStatus(repo, "alpha", { status: "idle", last_handled: "MP-108", updated_at: "T3", tests_after: 601 });
+    await vscode._commands["loomSessionTracker.refresh"]();
+    await settle(200);
+    const lines = fs.readFileSync(busPath(repo, "model-ledger.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    eq(lines.length, 1, "one line: " + JSON.stringify(lines));
+    eq(lines[0].id, "MP-108");
+    eq(lines[0].role, "alpha");
+    eq(lines[0].chosenBy, "escalated");
+    eq(lines[0].model, "claude-opus-5");
+    eq(lines[0].loopBacks, 2);
+    eq(lines[0].testsAfter, 601);
   } finally { off(); }
 });

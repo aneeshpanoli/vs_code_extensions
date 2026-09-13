@@ -161,6 +161,46 @@ believe it over anything written here.
     lowercasing in GC-004 and the S3 live check in GC-002 — the third and fourth time now: when a
     guard turns out to be redundant, retarget at the point that decides; never add another copy.
 
+18. **The orchestrator chooses the tier per handoff; the tracker enforces; the ledger judges**
+    (0.34.0, MP-001, 2026-09-13). Workers do not all need Opus. Nothing about "which model" belongs
+    in a setting that is true for a whole project for a month: difficulty is a property of the
+    BLOCK, and the only session that has read the block before anyone works on it is the
+    orchestrator writing the handoff. So the choice lives in the handoff's own frontmatter
+    (`model: claude-sonnet-5`), the tracker does the typing, and every block appends a line to
+    `<repo>/model-ledger.jsonl` — because a rubric nobody can score is a preference, and in a month
+    the only way to know whether the Sonnet blocks looped back more is to have written it down at
+    the time. Four things worth keeping in mind:
+
+    **The floor is not the allowlist.** `workerModels` is a setting, and settings get widened; the
+    premium tier being orchestrator-only is a rule. So a premium id in a frontmatter is refused
+    against the model TABLE, before the allowlist is consulted at all — widening the setting cannot
+    open the top tier to a worker. A guard that can be turned off by editing a config is not the
+    guard you thought you had.
+
+    **Principle 16, pointed the other way.** A frontmatter the tracker cannot read changes NOTHING —
+    but the two cases that are a *request* rather than an absence (a premium id, an unknown id) are
+    ignored **and say so** in `tracker-debug.json`. An ignored `model:` line that is silent is
+    indistinguishable from one that worked, and the orchestrator would go on writing it.
+    Note the trap that cost a test cycle here: `debugLog` is last-writer-wins within a tick, and its
+    own comment says so. A note attached to one call is overwritten by the next; these had to become
+    WINDOW state (`modelNote`, beside `stampNote`) to survive to the end of the tick.
+
+    **Order is a correctness property, not a style one.** On the spawn path `/model` must be typed
+    BEFORE `/loom <role>`: the bind runs the inbox check, and from that moment the composer is busy,
+    so a `/model` sent second queues as an ordinary message and never executes (dispatch.ts). Both
+    commands are still sent either way, so every count-based assertion passes and the tab silently
+    stays on the wrong tier. Only an assertion on the ORDER catches it — hence the append-only
+    inject log in `extension.test.js` rather than `spawn-debug.json`, which keeps only the last call
+    and therefore cannot answer "before or after". The bind is deliberately NOT conditional on the
+    switch: an unbound tab is a worse loss than a mistuned one, and R2's next idle tick fixes the
+    tier anyway.
+
+    **Count reports, not reads.** Escalation counts a worker's loop-backs, and `status.json` is
+    re-read every tick — so "blocked" is true for hundreds of ticks on one report. Counting reads
+    instead of reports escalates on the FIRST loop-back within seconds, and the judgement the whole
+    rubric is meant to measure never gets made. The same shape as the ledger's closed-line marker:
+    a transition must be recognised once, not once per observation of the state it left behind.
+
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
 `~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§17 (§17: no watchers in an orchestrator session).
@@ -282,7 +322,7 @@ ways. Three things now exist so that cannot repeat quietly:
   tests run with HOME sandboxed and frames alone are half a world. It caught two of its own bugs on the
   first run: filled `·` separators broke the model footer, and a trailing-slash-only path pattern erased
   `worktrees/developer`.
-- `test/mutation.py` — reintroduces 72 measured defects (2026-09-09 onward) and requires a test that
+- `test/mutation.py` — reintroduces 102 measured defects (2026-09-09 onward) and requires a test that
   PASSED on the unmutated baseline to FAIL on each; see principle 9.
   Run it after any change to classification, dispatch or limits. It found a real gap immediately: the
   source-ranking rule (a sign-off outranks path evidence) had NO test that failed without it, because
@@ -349,7 +389,7 @@ Coverage says which lines ran. It cannot say which realities were considered. So
 ```bash
 cd /home/aneesh/vs_code_extensions/loom-session-tracker
 npx tsc -p .        # or: ELECTRON_RUN_AS_NODE=1 /usr/share/codium/codium node_modules/typescript/bin/tsc -p ./
-./test.sh           # 529 checks; ./test.sh <filter> to narrow
+./test.sh           # 592 checks; ./test.sh <filter> to narrow
 ./live.sh           # invariants against the live editor (read-only)
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 cd .. && ./deploy.sh loom-session-tracker    # then reload the window

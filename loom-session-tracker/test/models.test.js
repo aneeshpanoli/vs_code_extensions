@@ -75,11 +75,46 @@ suite("policy: the ORCHESTRATOR keeps the expensive model", () => {
   eq(v, [], "the orchestrator is exempt and the worker is compliant");
 });
 
-suite("policy: workers on cheaper models are left alone", () => {
+// Superseded by MP-001 (2026-09-13): the policy no longer merely forbids the premium tier, it
+// enforces the tier the HANDOFF asked for, in both directions. A worker on Sonnet with no
+// frontmatter is owed the configured default and is switched UP — which this suite used to assert
+// was left alone. What survives is the part that was never about the premium floor: a worker
+// already ON its desired tier is not typed into.
+suite("policy: a worker already on its desired tier is left alone, whichever tier that is", () => {
   const repo = makeRepo({ w1: {}, w2: {} });
   const p = new ModelPolicy(repo);
-  eq(p.check(new Map([["w1", info("Opus 5")], ["w2", info("Sonnet 5")]]), "po", new Set(["w1", "w2"])), [],
-    "policy only forbids the premium tier, it does not force one model");
+  const want = (role) => ({ model: role === "w2" ? "claude-sonnet-5" : "claude-opus-5", chosenBy: "frontmatter", note: null });
+  eq(p.check(new Map([["w1", info("Opus 5")], ["w2", info("Sonnet 5")]]), "po", new Set(["w1", "w2"]),
+             DEFAULT_PREMIUM, Date.now(), new Map(), null, want), [],
+    "each is on the model its own handoff asked for");
+});
+
+suite("policy: the desired tier is enforced in BOTH directions (MP-001 R2)", () => {
+  const repo = makeRepo({ w1: {}, w2: {} });
+  const p = new ModelPolicy(repo);
+  // w1 is on Opus and its handoff says Sonnet -> down; w2 is on Sonnet and is owed Opus -> up.
+  const want = (role) => ({ model: role === "w1" ? "claude-sonnet-5" : "claude-opus-5",
+                            chosenBy: role === "w1" ? "frontmatter" : "default", note: null });
+  const v = p.check(new Map([["w1", info("Opus 5")], ["w2", info("Sonnet 5")]]), "po", new Set(["w1", "w2"]),
+                    DEFAULT_PREMIUM, Date.now(), new Map(), null, want);
+  eq(v.map((x) => [x.role, x.model, x.target]),
+     [["w1", "Opus 5", "claude-sonnet-5"], ["w2", "Sonnet 5", "claude-opus-5"]],
+     "switched down AND up, each to its own target");
+});
+
+suite("policy: a target CHANGE restarts the backoff (MP-001 R2)", () => {
+  const repo = makeRepo({ w1: {} });
+  const p = new ModelPolicy(repo);
+  const models = new Map([["w1", info("Sonnet 5")]]);
+  const opus = () => ({ model: "claude-opus-5", chosenBy: "default", note: null });
+  const t0 = 1_000_000;
+  eq(p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0, new Map(), null, opus).length, 1, "first attempt");
+  eq(p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0 + 1000, new Map(), null, opus).length, 0, "backing off");
+  // the handoff is rewritten to ask for something else: that is a NEW correction, not a retry
+  const sonnet46 = () => ({ model: "claude-sonnet-4-6", chosenBy: "frontmatter", note: null });
+  const again = p.check(models, "po", new Set(["w1"]), DEFAULT_PREMIUM, t0 + 1001, new Map(), null, sonnet46);
+  eq(again.length, 1, "a changed target is attempted at once, not after the old backoff");
+  eq(again[0].attempt, 1, "and its attempt count restarts");
 });
 
 suite("policy: a worker is nudged once, then held off — not every tick", () => {
@@ -249,7 +284,8 @@ suite("policy: the tagged orchestrator found on a cheaper model is promoted — 
   const pol = new ModelPolicy(repo);
   const onOpus = detectModel("w" + footer("Opus 5"));
   eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000),
-     { repo, role: "productowner", model: "Opus 5", attempt: 1, webviewId: "wid-po" }, "promoted, addressed to its frame");
+     { repo, role: "productowner", model: "Opus 5", attempt: 1, target: "claude-fable-5-1[1m]",
+       chosenBy: "default", webviewId: "wid-po" }, "promoted, addressed to its frame");
   eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 1000), null, "held off by the backoff");
   eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 61_000).attempt, 2, "retried after it");
   eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, true, DEFAULT_PREMIUM, 1000 + 200_000), null, "never while mid-turn");

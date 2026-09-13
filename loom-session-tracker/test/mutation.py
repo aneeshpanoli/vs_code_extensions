@@ -187,8 +187,8 @@ MUTATIONS = [
 
  ("the model policy retypes /model while the chip is still catching up with an acknowledged switch",
   "src/models.ts",
-  "      if (info.acknowledged && !isPremium(info.acknowledged, premium)) continue;",
-  "      if (info.acknowledged && !isPremium(info.acknowledged, premium) && Boolean(0)) continue;"),
+  "      if (info.acknowledged && wantChip.toLowerCase() === info.acknowledged.toLowerCase()) continue;",
+  "      if (info.acknowledged && wantChip.toLowerCase() === info.acknowledged.toLowerCase() && Boolean(0)) continue;"),
 
  ("the orchestrator is promoted while it is mid-turn (the command would queue as a message)",
   "src/models.ts",
@@ -499,6 +499,91 @@ MUTATIONS = [
   "src/gc.ts",
   "    if (wrote !== false) lastWrite = now();",
   "    lastWrite = now();"),
+
+ # ── MP-001, 2026-09-13: the handoff chooses the worker's tier, the tracker enforces it ──────────
+ # Each of R1-R5 gets one, and each names the test that must die with it.
+
+ # R1 — killed by "R1: a PREMIUM id is ignored and SAYS SO" and by the extension-level
+ # "MP-001 R2: a PREMIUM id in a handoff types nothing". The premium FLOOR is checked on the table,
+ # not on the allowlist, precisely so widening a setting cannot open the orchestrator's tier; making
+ # it allowlist-only is the whole bug, and it looks like a harmless simplification.
+ ("a premium id in a handoff is enforceable as soon as someone widens workerModels",
+  "src/models.ts",
+  "  if (idIsPremium(id)) {\n    return { ...def, note: `${role}: handoff asks for '${raw}' — the premium tier is orchestrator-only; ignored` };\n  }",
+  "  if (false) {\n    return { ...def, note: `${role}: handoff asks for '${raw}' — the premium tier is orchestrator-only; ignored` };\n  }"),
+
+ # R1 — killed by "R1: a `model:` line in the BODY is not frontmatter". A brief that merely
+ # DISCUSSES a model would otherwise set the worker's tier.
+ ("a `model:` line anywhere in a handoff's body sets the tier, not just its frontmatter",
+  "src/models.ts",
+  '  const m = /^\\uFEFF?[ \\t]*---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---[ \\t]*(?:\\r?\\n|$)/.exec(String(text || ""));',
+  '  const m = /[ \\t]*---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---[ \\t]*(?:\\r?\\n|$)/.exec(String(text || ""));'),
+
+ # R2 — killed by "policy: the desired tier is enforced in BOTH directions" and by
+ # "MP-001 R2: a worker on Sonnet owed Opus is switched UP". Reverting to the premium-only test
+ # restores exactly the pre-MP-001 behaviour: a handoff asking for Sonnet is silently ignored, and a
+ # worker left on Sonnet is never brought back up. The suite would go green on a dead feature.
+ ("the policy only forbids the premium tier again — the handoff's choice is never enforced",
+  "src/models.ts",
+  "      if (!onPremium && wantChip.toLowerCase() === String(info.model).toLowerCase()) {",
+  "      if (!onPremium) {"),
+
+ # R2 — killed by "policy: a target CHANGE restarts the backoff". A role that had backed off to the
+ # 15-minute step on its old target would sit unswitched for a quarter of an hour after its handoff
+ # asked for a new one — the slowest possible failure, and invisible.
+ ("a changed target inherits the OLD target's backoff instead of restarting it",
+  "src/models.ts",
+  "      const sameGoal = !!rec && rec.model.toLowerCase() === info.model.toLowerCase()\n                            && normalizeId(rec.target || \"\") === normalizeId(want.model);",
+  "      const sameGoal = !!rec && rec.model.toLowerCase() === info.model.toLowerCase();"),
+
+ # R3 — killed by "MP-001 R3: the spawn path types /model BEFORE /loom". After the bind the composer
+ # is busy, so a /model typed second queues as an ordinary message and NEVER runs (dispatch.ts): the
+ # tab binds and silently stays on the wrong tier. Both commands are still sent, so every
+ # count-based assertion still passes; only the ORDER catches it.
+ ("the spawn path binds first and sets the tier afterwards, into a composer that is now busy",
+  "src/extension.ts",
+  "            const pm = { role, webviewId: wid, result: await premodel(role, wid) };\n            noteModel(\"spawn\", pm); debugLog({ spawnModel: pm });\n            const st = plan.stranded.find((x) => x.role === role);",
+  "            const st = plan.stranded.find((x) => x.role === role);\n            setTimeout(() => premodel(role, wid), 0);"),
+
+ # R4 — killed by "R4: two loop-backs on ONE handoff raise it to Opus; the third does not rewrite
+ # again" (its "re-reading an unchanged status.json counts nothing" assertion). status.json is
+ # re-read every tick, so counting per READ rather than per REPORT escalates on the first loop-back
+ # within seconds — the judgement the rubric is supposed to be measuring never gets made.
+ ("a loop-back is counted once per TICK rather than once per report",
+  "src/models.ts",
+  '    if (String(status.status || "") === "blocked" && seenAt !== rec.lastSeen) {',
+  '    if (String(status.status || "") === "blocked") {'),
+
+ # R4 — killed by "R4: escalation refuses once the inbox holds a DIFFERENT handoff". Between the
+ # decision and the write the orchestrator may have written the NEXT brief over it; raising the tier
+ # of a handoff nobody looped back on is worse than never escalating.
+ ("escalation rewrites whatever handoff is in the inbox now, not the one that looped back",
+  "src/models.ts",
+  '    if (frontmatter(text)["id"] !== expectId) return false;            // a different handoff now',
+  "    if (false) return false;            // a different handoff now"),
+
+ # R5 — killed by "R5: a line is appended when the role reports idle … and it is not appended again
+ # on every later tick". The inbox still holds the finished id and status.json still says idle, so
+ # deleting the closed record has the next tick re-open and re-close the same block: one ledger line
+ # per tick for as long as the worker sits idle, and every average computed from it is wrong.
+ ("a closed ledger line is re-opened and re-appended on every tick the role stays idle",
+  "src/models.ts",
+  "    if (cur && cur.closed) return;",
+  "    if (cur && cur.closed) delete led[role];"),
+
+ # R5 — killed by "R5: the ledger is APPEND-only — an existing file is never rewritten".
+ ("the ledger is rewritten rather than appended — every earlier block is lost",
+  "src/models.ts",
+  "      fs.appendFileSync(f, JSON.stringify(line) + \"\\n\");    // append-only: never read, never rewritten",
+  "      fs.writeFileSync(f, JSON.stringify(line) + \"\\n\");"),
+
+ # R5/R4 — killed by "R5/R4: state survives alongside pending — no section clobbers another".
+ # saveState is change-only; comparing `pending` alone drops an escalation count or a ledger line
+ # whose tick happened not to move a pending record — the counts silently reset to zero.
+ ("the change-only state write compares `pending` alone, dropping escalation and ledger state",
+  "src/models.ts",
+  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)) return;",
+  "      if (same(cur.pending, st.pending)) return;"),
 ]
 
 def sh(cmd):

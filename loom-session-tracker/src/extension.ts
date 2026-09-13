@@ -16,7 +16,8 @@ import { ownerRoleFor, publishNaming } from "./naming";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
-import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
+import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, desiredModel, acknowledgedSwitch,
+         chipFor } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, strandedRoles, resumableFrom, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
@@ -77,10 +78,18 @@ export function activate(context: vscode.ExtensionContext) {
     // last-writer-wins, so a note attached to the tick's own call would be overwritten by the
     // garbage-collection note a few lines later and the refusal would be invisible.
     let stampNote: string | undefined;
+    // Same reasoning for the model policy (MP-001): a handoff whose `model:` line was REFUSED, and a
+    // spawned tab that never acknowledged its switch, are both states of this window rather than
+    // events of one log line. Attached to their own debugLog call they would be overwritten within
+    // the same tick — and an ignored frontmatter that says so nowhere is exactly the silence R1
+    // exists to prevent.
+    let modelNote: Record<string, any> | undefined;
+    const noteModel = (k: string, v: any) => { modelNote = { ...(modelNote || {}), [k]: v }; };
     const debugLog = (obj: any) => {
       try {
         fs.writeFileSync(path.join(os.homedir(), ".claude", "loom", "tracker-debug.json"),
-          JSON.stringify({ repo, ...(stampNote ? { stamp: stampNote } : {}), ...obj }, null, 2));
+          JSON.stringify({ repo, ...(stampNote ? { stamp: stampNote } : {}),
+                           ...(modelNote ? { model: modelNote } : {}), ...obj }, null, 2));
       } catch { /* ignore */ }
     };
     const notifier = new Notifier(repo);
@@ -107,6 +116,17 @@ export function activate(context: vscode.ExtensionContext) {
       if (cfg().get("enforceWorkerModel", true) !== true) return;
       const premium = (cfg().get("premiumModels", DEFAULT_PREMIUM) as string[]) || DEFAULT_PREMIUM;
       const target = String(cfg().get("workerModel", "claude-opus-5") || "claude-opus-5");
+      const allow = (cfg().get("workerModels", DEFAULT_WORKER_MODELS) as string[]) || DEFAULT_WORKER_MODELS;
+      // The tier is the HANDOFF's choice now (MP-001): resolved per role, from that role's inbox
+      // frontmatter, and only ever within the allowlist. A request the tracker refuses is noted
+      // once per tick rather than swallowed — an ignored `model:` line that says nothing anywhere
+      // is indistinguishable from one that worked.
+      const notes: string[] = [];
+      const wanted = (role: string) => {
+        const d = desiredModel(repo, role, target, allow);
+        if (d.note) notes.push(d.note);
+        return d;
+      };
       const orch = repo ? getOrchestrator(repo) : null;
       // A `/model` typed into a BUSY composer is queued as a message and never runs (see
       // tracker.busyRoles). Busy roles are withheld from this tick entirely: not a violation, not an
@@ -116,19 +136,35 @@ export function activate(context: vscode.ExtensionContext) {
       const live = new Set(eligibleTargets(tracker.view(), busy, "command", repo).map((t) => t.role));
       const idleModels = new Map(Array.from(tracker.modelState()).filter(([r]) => live.has(r)));
       const frameOf = new Map(tracker.view().map((a) => [a.role, a.webviewId] as [string, string]));
+      // R4/R5 run over every role the bus knows, not only the idle ones: a loop-back is reported by
+      // a role that has just STOPPED, and a ledger line must close for a role whose tab has gone.
+      if (repo) for (const role of boardRoles(repo)) {
+        if (isOwnerRole(role)) continue;
+        try {
+          const esc = modelPolicy.escalate(role, target, allow);
+          if (esc) {
+            debugLog({ modelEscalated: esc });
+            vscode.window.showInformationMessage(
+              `Loom: ${esc.role} has looped back twice on ${esc.id} — raising that handoff to ${esc.to}.`);
+          }
+          modelPolicy.ledgerTick(role, target, allow);
+        } catch { /* a tick must survive a half-written bus */ }
+      }
       for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium, Date.now(),
-                                        frameOf, orch ? orch.webviewId ?? null : null)) {
+                                        frameOf, orch ? orch.webviewId ?? null : null, wanted)) {
         // Toast the first attempt; retries stay quiet in the status bar so a stuck session
         // cannot spam notifications every backoff window.
-        const what = `${v.role} is on ${v.model} (orchestrator-only tier) — switching to ${target}`;
+        const why = v.chosenBy === "frontmatter" ? "its handoff asks for" : "it is owed";
+        const what = `${v.role} is on ${v.model} — ${why} ${v.target}`;
         if (v.attempt === 1) vscode.window.showInformationMessage(`Loom: ${what}.`);
         else vscode.window.setStatusBarMessage(`Loom: ${what} (retry ${v.attempt}).`, 8000);
-        modelPolicy.enforce(v, target, (ok, note) => {
+        modelPolicy.enforce(v, v.target, (ok, note) => {
           modelPolicy.recordResult(v, ok, note);
           if (!ok && v.attempt === 1) vscode.window.showWarningMessage(
-            `Loom: could not switch ${v.role} off ${v.model} (${note}) — retrying, or run /model ${target} there.`);
+            `Loom: could not switch ${v.role} off ${v.model} (${note}) — retrying, or run /model ${v.target} there.`);
         });
       }
+      if (notes.length) { noteModel("frontmatterIgnored", notes); debugLog({ modelFrontmatterIgnored: notes }); }
       // The mirror: the tagged orchestrator belongs ON the premium tier. With the default model
       // pinned to the worker tier (user direction 2026-09-13), a restored or restarted orchestrator
       // comes up on it and is promoted here — only its own declared/tagged frame, only when idle.
@@ -136,7 +172,7 @@ export function activate(context: vscode.ExtensionContext) {
       const up = String(cfg().get("orchestratorModel", "claude-fable-5-1[1m]") || "claude-fable-5-1[1m]");
       const frame = tracker.ownerView().find((o) => o.webviewId === orch.webviewId && o.liveness === "live");
       if (!frame) return;
-      const pv = modelPolicy.checkOrchestrator(orch.role, orch.webviewId, frame.model, frame.busy, premium, Date.now());
+      const pv = modelPolicy.checkOrchestrator(orch.role, orch.webviewId, frame.model, frame.busy, premium, Date.now(), up);
       if (!pv) return;
       const what = `orchestrator ${pv.role} is on ${pv.model} — switching to ${up}`;
       if (pv.attempt === 1) vscode.window.showInformationMessage(`Loom: ${what}.`);
@@ -369,6 +405,38 @@ export function activate(context: vscode.ExtensionContext) {
     // An orchestrator can write files and ring sessions, but only the extension can open a tab. This
     // serves `<repo>/open-requests.json` so a PO can bring its own roles back instead of asking the
     // user to click (see requests.ts for the boundaries).
+    /**
+     * Type `/model <desired>` into a freshly opened frame and wait, bounded, for the session to
+     * acknowledge it — then return so the caller can bind. Returns what happened, for the debug log.
+     *
+     * Why acknowledge rather than fire-and-forget: the footer chip LAGS a switch by a whole turn
+     * (models.ts, measured 2026-09-13), so the chip cannot confirm anything here; the panel's
+     * "Set model to <name>" line can, and it appears at once. Why bounded: a tab that never answers
+     * must not hold the whole spawn loop — every other role in the request is waiting behind it.
+     */
+    const premodel = async (role: string, wid: string): Promise<string> => {
+      if (!repo || cfg().get("enforceWorkerModel", true) !== true) return "disabled";
+      const dflt = String(cfg().get("workerModel", "claude-opus-5") || "claude-opus-5");
+      const allow = (cfg().get("workerModels", DEFAULT_WORKER_MODELS) as string[]) || DEFAULT_WORKER_MODELS;
+      const want = desiredModel(repo, role, dflt, allow);
+      if (want.note) { noteModel("frontmatterIgnored", [want.note]); debugLog({ modelFrontmatterIgnored: [want.note] }); }
+      if (want.model === dflt) return "default tier — nothing to type";
+      const chip = chipFor(want.model);
+      await new Promise<void>((res) => injectTo({ role, webviewId: wid, repo }, `/model ${want.model}`,
+                                                "spawn-debug.json", () => res()));
+      const bound = Math.max(0, Number(cfg().get("modelAckMs", 8000)) || 0);
+      const deadline = Date.now() + bound;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, Math.min(500, Math.max(1, deadline - Date.now()))));
+        try {
+          const f = (await readFrames()).find((x) => String(x.webviewId) === wid);
+          const ack = f ? acknowledgedSwitch(String((f as any).text || "")) : null;
+          if (ack && chip && ack.toLowerCase() === chip.toLowerCase()) return `acknowledged ${ack}`;
+        } catch { /* keep waiting out the bound */ }
+      }
+      return `no acknowledgement within ${bound}ms — bound anyway, the next idle tick will switch it`;
+    };
+
     let serving = false;
     const serveOpenRequests = async () => {
       if (serving || !repo) return;
@@ -405,6 +473,16 @@ export function activate(context: vscode.ExtensionContext) {
             await vscode.commands.executeCommand("claude-vscode.editor.open", undefined, undefined, undefined);
             const wid = await newFrame();
             if (!wid) { plan.refused.push({ role, reason: "opened a new tab but could not tell which frame it is — bind it by hand" }); continue; }
+            // R3 (MP-001): put the tab on the right tier BEFORE binding it. `/loom <role>` runs the
+            // inbox check, and from that moment the composer is busy — a `/model` typed after it
+            // would queue as an ordinary message and never execute (dispatch.ts). Only when the
+            // handoff asks for something other than the configured default, because a fresh tab
+            // already comes up on that. The bind is NOT conditional on the switch: on no
+            // acknowledgement within the bound we bind anyway and leave the tier to the next idle
+            // tick, which is R2's job — a role that is bound but on the wrong model gets corrected,
+            // a role that is never bound just sits there.
+            const pm = { role, webviewId: wid, result: await premodel(role, wid) };
+            noteModel("spawn", pm); debugLog({ spawnModel: pm });
             const st = plan.stranded.find((x) => x.role === role);
             await new Promise<void>((res) => injectTo({ role, webviewId: wid, repo }, `/loom ${role}`, "spawn-debug.json",
               (ok, note) => { opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: ok,
