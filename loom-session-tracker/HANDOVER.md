@@ -9,13 +9,15 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.33.0)
 
-**Version 0.33.0** deployed and pushed; **524 tests** green in BOTH modes, 72/72 mutants caught by the real baseline-graded gate (GC-003, developer2) with the no-op self-check surviving. `./live.sh`
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), **72/72 mutations caught** under the baseline-grading
-gate GC-003 introduced — measured on 0.33.0 composed over `main` @ f435750, where the count is 524.
+**Version 0.33.0** is merged and pushed. The deployed copy on this machine is still **0.32.1**, so
+every window needs `../deploy.sh loom-session-tracker` + a reload before it is actually running
+0.33.0 — do not read "0.33.0" here as "0.33.0 is what the editor is executing". **529 tests** green
+in BOTH modes (`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **72/72 mutations caught** under
+the baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 `./live.sh` is clean except the warnings under open threads and the expected "windows are running an
-OLD build" failure until the deploy + reload. Read this section, then `README.md`, then run
+OLD build" failure until that deploy + reload. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
 ### The principles the code now rests on (each was learned from a live failure)
@@ -46,22 +48,31 @@ OLD build" failure until the deploy + reload. Read this section, then `README.md
    `src/`), `./live.sh` (real bus + running editor, FAILS on: old build in a window, poisoned
    targetmap, invisible orchestrator, worker-named tag). Fixtures in `test/fixtures/live` are real
    panels, redacted, self-verified at capture; capture the BUS too or fixtures encode the blind spot.
-10. **Gate on real exit codes.** Twice a `time`/`tail` pipe hid a red result and a push went out.
+   **The mutation gate is BASELINE-GRADED** (GC-003, 2026-09-13) — it measures the unmutated suite
+   first, REFUSES to grade against a red baseline (exit 2), counts a mutant caught only when a test
+   that PASSED on the baseline FAILS on it, names those tests, and runs a deliberate no-op mutant that
+   must SURVIVE. Do not reduce it to "the suite went red": that is the vacuous gate it replaced.
+10. **An exit code is only evidence when you know what green looks like.** Twice a `time`/`tail` pipe
+    hid a red `./test.sh` result and a push went out — so never hide one in a pipe. And the deeper
+    version, measured 2026-09-13: the mutation gate graded every mutant on `./test.sh`'s exit code
+    while the suite was ALREADY red in that mode, so all 46 mutants of the day "failed the suite" and
+    all 46 were scored caught — a no-op mutant would have been too. An exit code compared against
+    nothing is a constant. See principle 9.
 11. **A transcript resumes only from the window it was written under** (0.30.0). Claude Code looks a
     session id up in the window cwd's project dir; elsewhere `editor.open(sid)` makes a blank
     `Untitled` tab on the pinned model. A role whose transcripts all live under its worktree's cwd is
     *stranded* from the main window: never reopened, spawned+bound on request, reported with the cwd.
     Measured 2026-09-13 05:50 — four roles, four blank tabs, orchestrators asking again.
+12. **Only the orchestrator is on the premium tier** (user direction 2026-09-13). The settings pin is
+    `claude-opus-5`; the tagged orchestrator's own idle frame is promoted with `/model`. The footer
+    chip lags a switch until the next turn, so `models.acknowledgedSwitch()` reads the "Set model
+    to" line and the policy does not retype while it lags.
 13. **The panel's silence is an opinion** (0.30.1): the compact button renders only past 50% used,
     so a visible conversation with no button is under 50% and no transcript estimate may start a
     cycle. A transcript that stopped before the last clear is dead. One session id can live in two
     project dirs; the newest copy is the session. After a confirmed clear the extension REBINDS the
     orchestrator's `board.json` entry to the fresh id itself (`rebindSession`, 0.31.0); the restore
     prompt and playbook §14 step 4 ask the orchestrator to confirm it.
-12. **Only the orchestrator is on the premium tier** (user direction 2026-09-13). The settings pin is
-    `claude-opus-5`; the tagged orchestrator's own idle frame is promoted with `/model`. The footer
-    chip lags a switch until the next turn, so `models.acknowledgedSwitch()` reads the "Set model
-    to" line and the policy does not retype while it lags.
 14. **The context is re-read every turn, so its LENGTH is the cost** (0.32.0, measured
     2026-09-13 across all projects: 2.93 billion cache-read tokens in one day, 238k of context per
     turn over 12,540 turns, output under 0.5% of tokens). Three consequences, all shipped:
@@ -102,7 +113,7 @@ OLD build" failure until the deploy + reload. Read this section, then `README.md
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
-`~/.claude/loom/test_loom_cdp.py` (mirrored in `tools/`), `ORCHESTRATION-PLAYBOOK.md` §13–§17 (§17: no watchers in an orchestrator session).
+`~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§17 (§17: no watchers in an orchestrator session).
 Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
 
 ## Where everything is
@@ -110,11 +121,11 @@ Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
 | | |
 |---|---|
 | Source (git) | `/home/aneesh/vs_code_extensions/loom-session-tracker` — `main`, pushed to `github.com:aneeshpanoli/vs_code_extensions` |
-| Deployed copy | `~/.vscode-oss/extensions/local.loom-session-tracker-0.14.0/` — installed with `../deploy.sh loom-session-tracker`, registered in `extensions.json`, needs a window reload |
+| Deployed copy | `~/.vscode-oss/extensions/local.loom-session-tracker-0.32.1/` (newest installed 2026-09-13; 0.33.0 is merged but NOT yet deployed) — installed with `../deploy.sh loom-session-tracker`, registered in `extensions.json`, needs a window reload |
 | The bus it watches | `~/.claude/loom/<project>/` — `board.json`, per-role `status.json`/`inbox.md`/`outbox.md`, plus the state files this extension writes |
 | The injector | `~/.claude/loom/loom_cdp.py` — **not in git**, backed up in place as `loom_cdp.py.bak-<epoch>`. Changed 2026-09-09: `--repo` (project-scoped `_role_repo`/`find_role`/`_load_targetmap`, refuses ambiguous bare names), owner aliases read from `naming.json`, `KNOWN_ROLES` derived from the buses instead of a literal, `/loom` binding requires a leading command not a substring |
 | The pattern's playbook | `~/.claude/loom/ORCHESTRATION-PLAYBOOK.md` — **not in git**; §13 (target by webviewId) and §14 (the memory cycle) matter most here |
-| Live projects | `Gaming`, `gaming` (stale, lowercase), `funisland`, `livegita`, `shwab_docker` |
+| Live projects | whatever has a `board.json` under `~/.claude/loom/` — 15 buses as of 2026-09-13, including `Gaming` + `gaming` (stale, lowercase), `ReciEats`, `Lumen`, `livegita`, `tfg_ua`, `shwab_docker`, `funisland`, `vs_code_extensions`. Enumerate it, do not trust this list |
 
 Two of those live outside version control. If either is lost, the extension still runs but cannot
 inject anything.
@@ -125,8 +136,8 @@ inject anything.
 
 The instrument panel for running many Claude Code sessions as a team: it reads every Claude panel in
 every editor window over CDP, works out which session is which Loom role, and acts on what it finds
-(finish notifications, stall alerts, usage-limit resumes, model policy, worktree hygiene, and the
-orchestrator context-memory cycle). `README.md` is the full description. The parent
+(finish notifications, stall alerts, usage-limit resumes, model policy, worktree hygiene, cross-project
+garbage collection, and the orchestrator context-memory cycle). `README.md` is the full description. The parent
 [`../README.md`](../README.md) keeps the engineering record — what was measured and why each
 decision went the way it did.
 
@@ -221,7 +232,8 @@ ways. Three things now exist so that cannot repeat quietly:
   tests run with HOME sandboxed and frames alone are half a world. It caught two of its own bugs on the
   first run: filled `·` separators broke the model footer, and a trailing-slash-only path pattern erased
   `worktrees/developer`.
-- `test/mutation.py` — reintroduces all 12 defects of that night and requires the suite to fail on each.
+- `test/mutation.py` — reintroduces 72 measured defects (2026-09-09 onward) and requires a test that
+  PASSED on the unmutated baseline to FAIL on each; see principle 9.
   Run it after any change to classification, dispatch or limits. It found a real gap immediately: the
   source-ranking rule (a sign-off outranks path evidence) had NO test that failed without it, because
   the corroboration rule masked it in every existing scenario.
@@ -287,7 +299,7 @@ Coverage says which lines ran. It cannot say which realities were considered. So
 ```bash
 cd /home/aneesh/vs_code_extensions/loom-session-tracker
 npx tsc -p .        # or: ELECTRON_RUN_AS_NODE=1 /usr/share/codium/codium node_modules/typescript/bin/tsc -p ./
-./test.sh           # 349 checks; ./test.sh <filter> to narrow
+./test.sh           # 529 checks; ./test.sh <filter> to narrow
 ./live.sh           # invariants against the live editor (read-only)
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 cd .. && ./deploy.sh loom-session-tracker    # then reload the window
@@ -371,7 +383,7 @@ claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic sessi
   productowner.id; `bindings.json` still maps dead 972792b0 → productowner). tfg_ua was correct.
   Gaming's bus is abandoned/cross-wired (board sid has no transcript; its productowner.id is
   ReciEats' frame) and funisland's board has NO owner entry — `rebindSession` leaves both alone.
-- **Windows on old builds** — `./live.sh` names them; 0.29.0 needs a reload per window. Until the
+- **Windows on old builds** — `./live.sh` names them; every window needs a reload to reach 0.32.1 (and a deploy for 0.33.0). Until the
   ReciEats window reloads, its PO's `open-requests.json` for developer1 is refused "already live"
   (Lumen's developer1 claimed cross-window — fixed in 0.28.0, not yet loaded there).
 - **`Gaming/developer1.id` and `Gaming/productowner.id` are stale copies of ReciEats'** — delete them

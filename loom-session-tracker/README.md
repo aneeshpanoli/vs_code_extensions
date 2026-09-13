@@ -66,7 +66,7 @@ No npm on this machine? The suite and the live check run under the editor's bund
    It must match a directory under `~/.claude/loom/`.
 2. **Open the Loom Sessions view** (broadcast icon in the activity bar). Within one tick (15s) you
    should see your project with its live roles beneath it, each showing `● live` and a short frame
-   id. The status bar shows `Loom: 2/3 · 11 open`.
+   id. The status bar shows `Loom: 2/5 · 11 open` (the denominator is `maxActiveSessions`, default 5).
 3. **Tag the orchestrator.** The session you drive the others from appears as a candidate —
    `● possible orchestrator — click ★ to tag`. Click the star. Nothing else in the extension is
    *required*, but almost everything interesting is gated on it: finish notifications, stall
@@ -268,13 +268,14 @@ dirty — funisland's live here until someone looks at them; and `~/.claude/chec
 size only, because there is no retention policy for those yet and inventing one quietly is how work
 gets lost.
 
-Settings: `gcEnabled` (true), `gcIntervalHours` (24), `gcTranscriptDays` (14), `gcBackupDays` (7);
+Settings: `gcEnabled` (false), `gcIntervalHours` (24), `gcTranscriptDays` (14), `gcBackupDays` (7);
 tier 3's bus staleness reuses `staleBusDays`. `./live.sh` prints the current dry-run plan counts, and
 `Collect Garbage (across projects)` always offers **Show plan** before **Run tiers 1+2**.
 
 ### Session lifecycle
 
-Spawn a session for a role, retire (close) one, lock one against deletion, or delete a role's
+Spawn a session for a role, retire one (which names its tab for a person to close — Loom never
+closes a tab itself), lock one against deletion, or delete a role's
 artifacts entirely. Every destructive path refuses first: the orchestrator can never be closed or
 deleted, a locked role cannot be touched, a role must be a *confirmed live agent of this project*
 to be retired, and a delete refuses if the worktree has unbanked work — with a two-step
@@ -425,7 +426,7 @@ described under "Orchestrators open their own sessions" and no longer happens.
 | `Refresh Now` | Force a tick |
 | `Show Status` | The tracked agents and their liveness |
 | `Spawn Session…` | Open a session for a role (refuses past the active cap) |
-| `Retire (Close) Session` | Close a confirmed live agent's tab |
+| `Retire (Close) Session` | Name a confirmed live agent's tab so a person can close it — Loom never closes a tab itself (the command's own title is left over from 0.26.0) |
 | `Delete Session` | Archive a role's worktree + transcript (recoverable) |
 | `Lock` / `Unlock` | Protect a role from deletion |
 | `Tag as Orchestrator` / `Untag` | Choose the session that receives notifications |
@@ -549,7 +550,7 @@ the whole extension, and had no test of its own.
 
 ```bash
 npx tsc -p .                                   # build to out/
-./test.sh                                      # 349 checks, 22 files, zero dependencies
+./test.sh                                      # 529 checks, 37 files, no test framework
 ./test.sh notifier                             # filter by name
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 ./live.sh                                      # invariants against the live editor
