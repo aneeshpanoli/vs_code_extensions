@@ -420,6 +420,57 @@ skips it, the digest's "Reopen sessions" refuses it with the reason, and an open
 served by spawning a fresh bound tab, with a `note` in the result naming the transcript and the cwd it
 would resume from. Reopening it *with* its memory means a window on that worktree.
 
+### The ids died on every restart, and now they heal themselves
+
+A `webviewId` is the `?id=` UUID VSCodium mints per webview **instance**. Nothing persists it and
+nothing can: every restart mints new ones. So `bindings.json`, `board.json`, `<role>.id` and
+`orchestrator.json` all woke up pointing at frames that no longer existed, and stayed that way until
+a worker re-ran `/loom <role>` by hand and the orchestrator re-confirmed each tab with a nonce ring.
+Measured after the 2026-09-13 restart: `productowner.id` said `1db463ac` while that session was in
+fact in `1e41adbf`, and both developer tabs of the `vs_code_extensions` bus were stranded and never
+reopened at all.
+
+**The Claude session id does not die on restart, and it is readable.** Each panel's inner
+`#active-frame` has a URL of the form `…/index.html?id=<webviewId>&…&session=<uuid>`, reachable from
+the shell frame's own `Runtime.evaluate` — same process, no extra CDP attach. Measured on 12 live
+panels across 5 windows: 11 are conversation panels and each mapped straight to some bus's
+`board.json` `session_id`; the 12th is the sidebar (`purpose=webviewView`) and correctly carried
+none.
+
+**The URL, not the bootstrap state.** A panel also carries `{"isFullEditor":true,"sessionID":"…"}`
+in an inline script, and the two disagree. The state is written at load and never updated, so it
+goes stale exactly when it matters — on a `/clear`. ReciEats' orchestrator panel read URL
+`e868c82c` (a session live 18:26 → 20:54) while its state still said `cee5d24f`, a session that had
+ended at 16:06. Across the twelve the state was present on six and never once where the URL was
+absent, so it adds no coverage and can be confidently wrong. Loom reads the URL only.
+
+So the **session id is the address and the webviewId is a cache**. A frame carrying a role's session
+id *is* that role — ahead of content, and ahead of a declaration naming a frame that no longer
+exists — and the tracker then rewrites `bindings.json`, `board.json`, `<role>.id` (keeping line 2's
+guard when it still holds) and, for an owner, `orchestrator.json`. Writes are atomic and
+change-only, and each one is logged in `tracker-debug.json` as `reboundBySessionId` with old → new.
+Within one tick of a restart, `reach_po.py @<repo>/<role>.id` works again with nobody typing
+anything.
+
+This is the **one** narrowing of the rule that the tracker never writes `bindings.json`: a binding
+derived from a session-id match may be written, and nothing else may. Content never rewrites
+anything, and a tracker that cannot read a session id changes nothing at all.
+
+Two more guards, because a wrong answer here is written to three files and then injected into:
+
+* a session id claimed by **two** roles is dropped rather than tiebroken;
+* the restart path opens **one** tab at a time and diffs the frame list around each open, and 0 or
+  ≥2 new frames writes nothing — the same rule `serveOpenRequests` already used, now shared code
+  (`newframe.ts`) so the two cannot drift.
+
+**The remaining manual step.** A role whose board `session_id` is stale *and* whose transcripts live
+under a cwd this window cannot resume is still stranded — Loom will not open a tab it cannot
+attribute. It is reported in `tracker-debug.json` as `restartStranded`, and the orchestrator's wake
+tells it to spawn. The transcript fallback covers the ordinary case: when the board's `session_id`
+has gone stale, a frame carrying any transcript id from that role's **own worktree** is matched to
+it. The window's own cwd is deliberately not used — the owner role usually has no worktree, so every
+ad-hoc Claude tab a person opens in that folder would map to the orchestrator.
+
 ### Blank tabs after a restart
 
 Claude Code's restore discards the session id, so every Claude panel comes back as a blank `Untitled`

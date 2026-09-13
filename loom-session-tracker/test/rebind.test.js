@@ -97,6 +97,22 @@ suite("R1: a session id seen on EITHER pass survives, like the percentage", asyn
   });
 });
 
+suite("R1: an id that arrives on the SHORTER pass is kept too", async () => {
+  // The case the two above do NOT reach, and the one the merge's second branch exists for: the
+  // longest text arrives FIRST, so the later read never replaces the entry wholesale — and the
+  // session id it carries has to be folded into the entry that is already there. A mutation run
+  // found this line untested (2026-09-13): both earlier fixtures happen to take the first branch,
+  // where the id rides along with the longer text.
+  await withFake({ targets: [
+    { sessionId: "s1", url: wv("a1d00001-0000-4000-8000-000000000000"),
+      texts: ["the full transcript, rendered", "short"], sessions: [null, SID_C] },
+  ] }, async (srv) => {
+    const frames = await readFrames("127.0.0.1", srv.port, FAST);
+    eq(frames[0].text, "the full transcript, rendered", "the longest text still wins");
+    eq(frames[0].claudeSessionId, SID_C, "and the id from the shorter pass is not thrown away");
+  });
+});
+
 suite("R1: a frame attached as its own inner document is read from its target URL", async () => {
   await withFake({ targets: [
     { sessionId: "s1", url: wv("a1d00001-0000-4000-8000-000000000000") + `&session=${SID_C}`, text: "no envelope" },
