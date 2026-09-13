@@ -155,8 +155,17 @@ Past `contextThresholdPct` (50%) this extension makes that deliberate instead:
    project docs, and reconcile them so the memory stays true.
 
 The percentage comes from the panel's own compact button (`73% context used — click to compact`),
-which the app renders only past 50% used; below that, or when the board records a `session_id`, the
-session's transcript is used instead. Either source alone is enough.
+which the app renders only past 50% used. The session's transcript (its last `usage` block) gives
+the token count and the session's identity, and is the estimate when the panel cannot be seen or the
+threshold is below 50. It never overrules a panel that can be seen: a rendered conversation with no
+button *is* under 50%, whatever a transcript says. Measured 2026-09-13, 00:13 to 04:21: Lumen's
+orchestrator was banked, cleared and restored fourteen times, once per cooldown, on a 57% estimate
+read off a transcript the session had stopped writing days earlier — the panel-emptied witness had
+kept the old session id, that id also had a stale copy under Gaming's project directory, and the
+fresh panel showed no button every time. Three rules came out of it: the panel's silence vetoes the
+estimate; a known transcript older than the last completed cycle is dead, and only a transcript
+written since the clear (or nothing) is read; and a session id present in several project
+directories is read from the copy still being written.
 
 `/clear` is irreversible from inside a session, so it is sent **only** when: the memory file exists,
 is newer than the moment it was asked for, and is more than a stub; the session is not mid-turn; and

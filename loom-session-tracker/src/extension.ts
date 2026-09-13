@@ -224,7 +224,10 @@ export function activate(context: vscode.ExtensionContext) {
       const panelPct = known ? known.contextPct : null;
       contextNote = panelPct !== null
         ? `${Math.round(panelPct)}% context used (its own figure)`
-        : reading ? `~${pct(reading.fraction)}% context (${reading.tokens.toLocaleString()} tok, estimated)` : "";
+        : reading ? `~${pct(reading.fraction)}% context (${reading.tokens.toLocaleString()} tok, estimated)` +
+                    // a visible panel with no button is under 50%: say so next to the estimate (memory.ts)
+                    (/no compact button/.test(step.note) ? ` — ${step.note}` : "")
+                  : "";
       // Persist BEFORE injecting: if the injection fails, the phase still advances and the cycle
       // times out with a warning — a clear can never be sent twice.
       saveState(repo, step.next);

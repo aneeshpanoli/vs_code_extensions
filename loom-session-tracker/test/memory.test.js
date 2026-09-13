@@ -10,6 +10,7 @@ const {
   decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
   saveMessage, restoreMessage, CLEAR_MESSAGE, MIN_MEMORY_BYTES, DEFAULT_CONFIG,
 } = load("memory.js");
+const { transcriptFor } = load("context.js");
 
 const MIN = 60_000;
 const NOW = 1_800_000_000_000;
@@ -22,7 +23,9 @@ const reading = (tokens, sessionId = "s-old", file = "/tmp/x/s-old.jsonl") =>
 function input(over = {}) {
   return {
     repo: "demo", role: "po", webviewId: "wid-po",
-    reading: reading(600_000), busy: false, frameSeen: true, panelPct: null, panelChars: 150000,
+    // a panel past 50% renders its compact button — the figure the cycle trusts (a panel without
+    // one is under 50%, see "VETOES the transcript estimate")
+    reading: reading(600_000), busy: false, frameSeen: true, panelPct: 60, panelChars: 150000,
     windowId: "win-A",
     memoryFile: "/tmp/demo/po/memory.md", memoryMtime: null, memorySize: 0,
     now: NOW, cfg: { ...DEFAULT_CONFIG }, state: { phase: "watch" },
@@ -32,7 +35,7 @@ function input(over = {}) {
 
 // ── watch ───────────────────────────────────────────────────────────────────
 suite("memory: under the threshold nothing happens", () => {
-  const s = decide(input({ reading: reading(400_000) }));
+  const s = decide(input({ panelPct: 40, reading: reading(400_000) }));
   eq(s.kind, "none", "no step");
   match(s.note, /40%/, "reports what it saw");
 });
@@ -61,12 +64,25 @@ suite("memory: the panel's own percentage outranks the transcript estimate", () 
   eq(high.next.triggerFromPanel, true, "and marked as the panel's own number");
 });
 
-suite("memory: with no compact button the transcript estimate is used, and labelled", () => {
-  // The button is only rendered past ~50% used, so below that there is nothing to read.
-  const s = decide(input({ panelPct: null }));
-  eq(s.kind, "save", "the estimate still works");
-  eq(s.next.triggerFromPanel, false, "marked as an estimate");
-  match(s.note, /estimated/, "and said out loud");
+suite("memory: a visible panel with no compact button VETOES the transcript estimate", () => {
+  // The button is only rendered past 50% used, so a panel we can see, holding a conversation, with
+  // no button is under 50% — whatever a transcript says. Measured 2026-09-13: fourteen cycles in four
+  // hours on Lumen's orchestrator, all on a 57% estimate off a dead transcript, all under a fresh
+  // panel with no button.
+  const s = decide(input({ panelPct: null, reading: reading(570_000) }));
+  eq(s.kind, "none", "no save");
+  match(s.note, /no compact button.*under 50%.*57% transcript estimate is not trusted/, "and says why");
+  // The estimate is still what the token count and the session identity come from…
+  const unseen = decide(input({ panelPct: null, frameSeen: false, panelChars: null }));
+  eq(unseen.kind, "none", "…but an unseen frame is never typed into anyway");
+  // …and below a 50% threshold the panel has no opinion, so the estimate decides.
+  const low = decide(input({ panelPct: null, reading: reading(400_000), cfg: { ...DEFAULT_CONFIG, thresholdPct: 30 } }));
+  eq(low.kind, "save", "threshold 30: the panel cannot rule on that, the estimate can");
+  eq(low.next.triggerFromPanel, false, "marked as an estimate");
+  match(low.note, /estimated/, "and said out loud");
+  // a panel that is nearly empty (just cleared, or not rendered yet) is not a witness either way
+  const empty = decide(input({ panelPct: null, panelChars: 200, reading: reading(600_000) }));
+  eq(empty.kind, "save", "a 200-char panel says nothing about occupancy");
 });
 
 suite("memory: a session mid-turn is never typed into", () => {
@@ -467,4 +483,33 @@ suite("memory: a frame that was not seen this tick can never be cleared", () => 
                            memoryMtime: NOW, memorySize: MIN_MEMORY_BYTES + 10 }));
   eq(s.kind, "none", "no frame, no clear — however idle it looks");
   match(s.note, /not seen this tick/, "and the reason names the real uncertainty");
+});
+
+suite("memory: a known transcript that stopped before the last clear is dead — the cycle does not loop on it", () => {
+  // The panel-emptied witness keeps the OLD session id; its file then reads as full forever.
+  const repo = makeRepo({ po: { session_id: "sid-dead" } });
+  const { dir } = projectTranscript("-mem-dead", "sid-dead", 572_000, Date.now() - 60 * 60_000);   // written an hour ago
+  const cleared = Date.now() - 30 * 60_000;                                                          // cleared half an hour ago
+  eq(readOrchestratorContext(repo, "po", { phase: "watch", sessionId: "sid-dead", transcriptDir: dir, lastCycleAt: cleared }, 1000000),
+     null, "nothing written since the clear: no reading, not a stale one");
+  projectTranscript("-mem-dead", "sid-fresh", 90_000, Date.now());                                  // the session that /clear started
+  const r = readOrchestratorContext(repo, "po", { phase: "watch", sessionId: "sid-dead", transcriptDir: dir, lastCycleAt: cleared }, 1000000);
+  eq(r.sessionId, "sid-fresh", "the transcript written since the clear is the session");
+  eq(r.tokens, 90_000);
+  // …and the board's id alone, with no cycle yet, is still read as before
+  eq(readOrchestratorContext(repo, "po", { phase: "watch" }, 1000000).sessionId, "sid-dead", "no clear yet: the board's session");
+});
+
+suite("memory: a session id that exists in two project directories is read from the copy still being written", () => {
+  // Measured 2026-09-13: Lumen's orchestrator had a copy under Gaming's dir (last written 09-10, 57%)
+  // and the live one under Lumen's (77%); the cycle read the stale one.
+  // The stale copy sorts FIRST in the projects directory (as Gaming's did before Lumen's), so a
+  // first-found lookup returns it; only mtime picks the right one.
+  projectTranscript("-mem-copy-a-stale", "sid-twice", 570_000, Date.now() - 3 * 24 * 3600_000);
+  const { file } = projectTranscript("-mem-copy-z-live", "sid-twice", 766_000, Date.now());
+  eq(transcriptFor("sid-twice"), file, "the newest copy, not the first found");
+  // and the other order too
+  const { file: live2 } = projectTranscript("-mem-copy2-a-live", "sid-twice2", 766_000, Date.now());
+  projectTranscript("-mem-copy2-z-stale", "sid-twice2", 570_000, Date.now() - 3 * 24 * 3600_000);
+  eq(transcriptFor("sid-twice2"), live2, "newest wins in either order");
 });

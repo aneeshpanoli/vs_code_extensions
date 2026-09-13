@@ -109,16 +109,23 @@ export function readTranscriptContext(file: string, windowTokens = DEFAULT_WINDO
   return null;
 }
 
-/** The transcript file for a session id, wherever its project directory happens to be. */
+/** The transcript file for a session id, wherever its project directory happens to be. One id can
+ *  exist in SEVERAL directories — measured 2026-09-13, Lumen's orchestrator 64938df2 had a copy under
+ *  Gaming's dir last written 2026-09-10 and the live one under Lumen's — so the most recently
+ *  written copy is the session; an older copy is history. */
 export function transcriptFor(sessionId: string): string | null {
   if (!sessionId) return null;
   let dirs: string[] = [];
   try { dirs = fs.readdirSync(PROJECTS_ROOT); } catch { return null; }
+  let best: { file: string; mtime: number } | null = null;
   for (const d of dirs) {
     const f = path.join(PROJECTS_ROOT, d, `${sessionId}.jsonl`);
-    try { if (fs.statSync(f).isFile()) return f; } catch { /* next */ }
+    try {
+      const st = fs.statSync(f);
+      if (st.isFile() && (!best || st.mtimeMs > best.mtime)) best = { file: f, mtime: st.mtimeMs };
+    } catch { /* next */ }
   }
-  return null;
+  return best ? best.file : null;
 }
 
 /**

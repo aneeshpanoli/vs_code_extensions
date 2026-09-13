@@ -186,6 +186,21 @@ MUTATIONS = [
   "    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info || busy) return null;",
   "    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info) return null;"),
 
+ ("a panel with no compact button no longer vetoes the transcript estimate (the fourteen-clear night, 2026-09-13)",
+  "src/memory.ts",
+  "  if (!fromPanel && input.frameSeen && input.panelChars !== null && input.panelChars >= CLEARED_PANEL_CHARS &&",
+  "  if (!fromPanel && input.frameSeen && input.panelChars !== null && input.panelChars >= CLEARED_PANEL_CHARS && Boolean(0) &&"),
+
+ ("a transcript that stopped before the last clear is still read as the session",
+  "src/memory.ts",
+  "    if (mtime < state.lastCycleAt) {",
+  "    if (mtime < state.lastCycleAt && Boolean(0)) {"),
+
+ ("a session id present in two project directories is read from whichever copy is found first",
+  "src/context.ts",
+  "      if (st.isFile() && (!best || st.mtimeMs > best.mtime)) best = { file: f, mtime: st.mtimeMs };",
+  "      if (st.isFile() && !best) best = { file: f, mtime: st.mtimeMs };"),
+
  ("a switch acknowledged before a later turn still counts as fresh (the chip has had its chance)",
   "src/models.ts",
   '  if (before.includes("You:") || since.includes("You:")) return null;',

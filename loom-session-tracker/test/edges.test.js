@@ -87,7 +87,7 @@ const reading = (tokens, sessionId = "s-old", file = "/tmp/x/s-old.jsonl") =>
 function input(over = {}) {
   return {
     repo: "demo", role: "po", webviewId: "wid", reading: reading(600_000), busy: false,
-    frameSeen: true, panelPct: null, panelChars: 150000, memoryFile: "/m/memory.md",
+    frameSeen: true, panelPct: 60, panelChars: 150000, memoryFile: "/m/memory.md",
     memoryMtime: null, memorySize: 0, now: 1_800_000_000_000,
     cfg: { ...DEFAULT_CONFIG }, state: { phase: "watch" }, ...over,
   };

@@ -462,3 +462,32 @@ suite("tick: an orchestrator already on the premium tier, or mid-turn, is left a
     ok(!st || !st.pending || !st.pending["product-owner"], "mid-turn on Opus: not typed into");
   } finally { off2(); }
 });
+
+// ── the loop of 2026-09-13 00:13–04:21: fourteen bank/clear/restore cycles on a dead transcript ──
+suite("context memory: a visible orchestrator panel with no compact button is NOT cycled on a transcript estimate", async () => {
+  const repo = makeRepo({ po: { session_id: "sid-loop" } }, "ctxL");
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  transcript("-ctx-loop", "sid-loop", 572412);           // the 57% "estimate" that fired all night
+  // a real, rendered conversation (well over CLEARED_PANEL_CHARS) with no compact button on it
+  const big = poFrame("wid-po", repo, "\n" + "conversation ".repeat(1500));
+  try { fs.unlinkSync(path.join(LOOM, "context-debug.json")); } catch { /* an earlier suite's */ }
+  const off = await activate([big]);
+  try {
+    await settle(60);
+    const st = readJson(busPath(repo, "context-state.json"));
+    ok(!st || st.phase === "watch", "no cycle started: " + JSON.stringify(st));
+    ok(!fs.existsSync(path.join(LOOM, "context-debug.json")), "nothing injected");
+    match(vscode._statusItems[0].tooltip, /no compact button/, "and the tooltip says why");
+  } finally { off(); }
+  // the same panel WITH its button at 70% fires — the panel is the source that counts
+  vscode._reset();
+  openProject(repo);
+  setOrchestrator(repo, "po", "wid-po");
+  const off2 = await activate([{ ...big, contextPct: 70 }]);
+  try {
+    await settle(60);
+    eq(readJson(busPath(repo, "context-state.json")).phase, "saving", "the panel's own 70% starts the cycle");
+    eq(readJson(busPath(repo, "context-state.json")).triggerFromPanel, true);
+  } finally { off2(); }
+});

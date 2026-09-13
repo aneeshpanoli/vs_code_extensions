@@ -11,7 +11,7 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
 
-**Version 0.30.0** deployed and pushed; 443 tests, 39/39 mutations caught (parallel), `./live.sh`
+**Version 0.30.1** deployed and pushed; 446 tests, 42/42 mutations caught (parallel), `./live.sh`
 clean except the warnings listed under open threads. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
@@ -49,6 +49,10 @@ clean except the warnings listed under open threads. Read this section, then `RE
     `Untitled` tab on the pinned model. A role whose transcripts all live under its worktree's cwd is
     *stranded* from the main window: never reopened, spawned+bound on request, reported with the cwd.
     Measured 2026-09-13 05:50 — four roles, four blank tabs, orchestrators asking again.
+13. **The panel's silence is an opinion** (0.30.1): the compact button renders only past 50% used,
+    so a visible conversation with no button is under 50% and no transcript estimate may start a
+    cycle. A transcript that stopped before the last clear is dead. One session id can live in two
+    project dirs; the newest copy is the session.
 12. **Only the orchestrator is on the premium tier** (user direction 2026-09-13). The settings pin is
     `claude-opus-5`; the tagged orchestrator's own idle frame is promoted with `/model`. The footer
     chip lags a switch until the next turn, so `models.acknowledgedSwitch()` reads the "Set model
@@ -323,7 +327,11 @@ claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic sessi
   the tagged orchestrator is promoted by the policy. First real restart should be watched.
 - **Blank `Untitled` tabs already open** (ten at 2026-09-13 05:55) must be closed by hand; the cause
   (principle 11) is fixed in 0.30.0, but every window must RELOAD to run it.
-- **The context-memory cycle has still never completed end to end on a real session.**
+- **The context-memory cycle completed end to end on a real session — fourteen times in one night,
+  wrongly** (Lumen, 2026-09-13 00:13–04:21, one per 15 m cooldown, on a 57% estimate off a dead
+  transcript). Fixed in 0.30.1 (panel-silence veto, dead-transcript rule, newest-copy lookup);
+  Lumen's `context-state.json` was pointed at the live transcript by hand to stop it. Lumen's
+  `board.json` still names the dead PO session 64938df2 — the PO should rebind (`/loom productowner`).
 - `gaming` (lowercase) is a stale duplicate bus of `Gaming`; 16 board session_ids point at nothing.
 - Model policy and limit resume have no cross-window lease (the context cycle does).
 

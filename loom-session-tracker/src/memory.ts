@@ -43,6 +43,8 @@ export const LEASE_MS = 15 * 60_000;
 /** A panel holding less than this has been cleared. Measured: a cleared tab renders ~170 characters;
  *  a live orchestrator conversation ran 145,680. Two orders of magnitude of daylight. */
 export const CLEARED_PANEL_CHARS = 4000;
+/** The app renders its compact button only once this much of the usable window is used. */
+export const PANEL_BUTTON_PCT = 50;
 
 export type Phase = "watch" | "saving" | "clearing";
 
@@ -307,6 +309,7 @@ export function decide(input: ContextInput): Step {
           `restoring ${input.role} from ${path.basename(input.memoryFile)}`,
         next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
+                transcriptDir: input.reading ? path.dirname(input.reading.file) : state.transcriptDir,
                 memoryBaseline: undefined,
                 cycles: (state.cycles ?? 0) + 1, lastNote: "cycle complete" },
       };
@@ -331,6 +334,18 @@ export function decide(input: ContextInput): Step {
   const fromPanel = typeof input.panelPct === "number" && isFinite(input.panelPct);
   if (!fromPanel && !input.reading) {
     return keep("context unknown — no compact button on the panel and no transcript for this role");
+  }
+  // THE PANEL'S SILENCE IS AN OPINION. The app renders the compact button only past 50% used
+  // (cdp.ts), so a panel we can see, holding a real conversation, with NO button, is telling us it
+  // is under 50% — and the transcript estimate cannot overrule that. Measured 2026-09-13, 00:13 to
+  // 04:21: Lumen's orchestrator was banked, cleared and restored FOURTEEN times, once per cooldown,
+  // on a 57% "estimate" read off a transcript the session had stopped writing days earlier, while
+  // the fresh panel in front of the tracker showed no button every time. The estimate still serves
+  // a threshold below 50, the token count in the prompt, and the session's identity.
+  if (!fromPanel && input.frameSeen && input.panelChars !== null && input.panelChars >= CLEARED_PANEL_CHARS &&
+      cfg.thresholdPct >= PANEL_BUTTON_PCT) {
+    return keep(`panel shows no compact button (under ${PANEL_BUTTON_PCT}%) — ` +
+      `the ${pct((input.reading as ContextReading).fraction)}% transcript estimate is not trusted over it`);
   }
   const percent = fromPanel ? Math.round(input.panelPct as number) : pct((input.reading as ContextReading).fraction);
   if (percent < cfg.thresholdPct) {
@@ -412,6 +427,22 @@ export function readOrchestratorContext(repo: string, role: string, state: Conte
     if (fresh) {
       const r = readTranscriptContext(fresh, windowTokens);
       if (r) return r;
+    }
+  }
+  // A TRANSCRIPT THAT STOPPED BEFORE THE LAST CLEAR IS NOT THE SESSION. When a clear is witnessed
+  // by the panel emptying rather than by a new session id (the fresh transcript had not appeared, or
+  // was looked for in the wrong directory), the state keeps the OLD id — and the old file keeps
+  // reading as full. Measured 2026-09-13: fourteen cycles in four hours on Lumen's orchestrator,
+  // every one triggered by 64938df2, a file last written before the first of them. So once a cycle
+  // has completed, a known file older than it is dead: the session is whatever transcript has been
+  // written in its directory SINCE the clear — and if none has, there is no reading, not a stale one.
+  if (knownFile && state.lastCycleAt) {
+    let mtime = 0;
+    try { mtime = fs.statSync(knownFile).mtimeMs; } catch { /* unreadable -> dead */ }
+    if (mtime < state.lastCycleAt) {
+      const dir = state.transcriptDir || path.dirname(knownFile);
+      const fresh = newestTranscriptIn(dir, { sinceMs: state.lastCycleAt, exclude: known || undefined });
+      return fresh ? readTranscriptContext(fresh, windowTokens) : null;
     }
   }
   return knownFile ? readTranscriptContext(knownFile, windowTokens) : null;
