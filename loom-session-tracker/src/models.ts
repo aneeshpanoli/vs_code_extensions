@@ -222,11 +222,23 @@ export function handoffFiles(repo: string | null, role: string): string[] {
   catch { return []; }
 }
 
-/** The `id:` of the handoff currently sitting in a role's inbox, or null. */
+/** An ORCHESTRATOR'S REPLY, not a handoff: `-ack` (case-insensitive, tolerant of trailing
+ *  whitespace) is the suffix the PO appends to a handoff's own id when it writes its ack into the
+ *  SAME inbox.md (FX-001 R1). Everything downstream keys off `handoffId()`, so this is the one
+ *  point that decides — a ledger line, an escalation record and `model:` enforcement all read an
+ *  ack as a block nobody will ever work. */
+function isAckId(id: string | null | undefined): boolean {
+  return /-ack\s*$/i.test(String(id ?? ""));
+}
+
+/** The `id:` of the handoff currently sitting in a role's inbox, or null. An id ending `-ack` is an
+ *  ack, not a handoff (FX-001 R1) — see `isAckId`. */
 export function handoffId(repo: string | null, role: string): string | null {
   if (!repo) return null;
-  try { return frontmatter(fs.readFileSync(inboxFile(repo, role), "utf8"))["id"] || null; }
-  catch { return null; }
+  try {
+    const id = frontmatter(fs.readFileSync(inboxFile(repo, role), "utf8"))["id"] || null;
+    return isAckId(id) ? null : id;
+  } catch { return null; }
 }
 
 /** A role's status.json, or null when it is absent or unreadable. */
@@ -308,7 +320,9 @@ export function desiredModel(repo: string | null, role: string, fallback = "clau
   let text: string;
   try { text = fs.readFileSync(path.join(LOOM_ROOT, repo, role, "inbox.md"), "utf8"); }
   catch { return def; }                                     // no inbox yet, or unreadable -> default
-  const raw = frontmatter(text)["model"];
+  const fm = frontmatter(text);
+  if (isAckId(fm["id"])) return def;      // an ack, not a handoff (FX-001 R1) — no model: enforcement
+  const raw = fm["model"];
   if (!raw) return def;                                     // no block, or a block without a model
   const id = normalizeId(raw);
   if (!id) return def;
@@ -383,8 +397,21 @@ function loadState(repo: string): PolicyState {
   return { pending: {}, escalations: {}, ledger: {} };
 }
 
+/** Drop every `escalations` entry whose KEY is an ack id (that map is keyed by handoff id), and
+ *  every `ledger` entry whose `.id` FIELD is one (that map is keyed by ROLE, not id — a role can
+ *  hold a real handoff and an ack in sequence, so the key itself says nothing). FX-001 R1: an
+ *  earlier build let acks open both before `handoffId()` was fixed to refuse them at the source;
+ *  this purges whatever those runs already wrote, on the next save. The durable
+ *  `model-ledger.jsonl` is append-only and deliberately left alone — only an in-progress ledger
+ *  line, never yet appended, can be lost here. */
+function purgeAcks(st: PolicyState): void {
+  if (st.escalations) for (const id of Object.keys(st.escalations)) if (isAckId(id)) delete st.escalations[id];
+  if (st.ledger) for (const role of Object.keys(st.ledger)) if (isAckId(st.ledger[role]?.id)) delete st.ledger[role];
+}
+
 function saveState(repo: string, st: PolicyState): void {
   try {
+    purgeAcks(st);
     const f = stateFile(repo);
     const same = (a: any, b: any) => JSON.stringify(a || {}) === JSON.stringify(b || {});
     try {

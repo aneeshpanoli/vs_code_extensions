@@ -121,6 +121,59 @@ suite("R1: no inbox file at all is the default, and never throws", () => {
   eq(frontmatter(null), {}, "and a null document parses to nothing");
 });
 
+// ── FX-001 R1 · an ack is not a handoff ─────────────────────────────────────────────────────────
+// The orchestrator's reply to a handoff is written into the SAME inbox.md, with `id: <handoff>-ack`
+// — a new id, so `handoffId()` (unfixed) opened a ledger line and an escalation record for a block
+// nobody works. See models.ts `isAckId`.
+
+suite("FX-001 R1: an inbox with `id: X-ack` opens nothing — handoffId is null", () => {
+  const repo = makeRepo({ dev: {} }, "ack-id");
+  inbox(repo, "dev", handoff("CH-001-ack", "claude-sonnet-5"));
+  eq(handoffId(repo, "dev"), null, "an ack id is not a handoff id");
+});
+
+suite("FX-001 R1: `id: X` (no -ack) still opens, same as always", () => {
+  const repo = makeRepo({ dev: {} }, "ack-id-real");
+  inbox(repo, "dev", handoff("CH-001", "claude-sonnet-5"));
+  eq(handoffId(repo, "dev"), "CH-001", "a real id is untouched by the ack check");
+});
+
+suite("FX-001 R1: the -ack check is case-insensitive and tolerant of trailing whitespace", () => {
+  const repo = makeRepo({ dev: {} }, "ack-id-ws");
+  inbox(repo, "dev", "---\nid: CH-002-ACK  \nfrom: productowner\nto: dev\n---\nbody\n");
+  eq(handoffId(repo, "dev"), null, "upper-case ACK with trailing padding is still an ack");
+});
+
+suite("FX-001 R1: an ack carrying a `model:` line is never enforced", () => {
+  const repo = makeRepo({ dev: {} }, "ack-model");
+  inbox(repo, "dev", handoff("CH-003-ack", "claude-sonnet-5"));
+  const d = desiredModel(repo, "dev", "claude-opus-5");
+  eq(d.model, "claude-opus-5", "the ack's model: line is not a worker's own request");
+  eq(d.chosenBy, "default");
+  eq(d.note, null, "an ack is not a refused request either — no note");
+});
+
+suite("FX-001 R1: a state file carrying -ack records loses them on save", () => {
+  const repo = makeRepo({ dev: {} }, "ack-purge");
+  const stateFile = busPath(repo, "model-policy.json");
+  writeJson(stateFile, {
+    pending: {},
+    escalations: { "CH-004-ack": { role: "dev", blocked: 2, escalated: true },
+                   "CH-004": { role: "dev", blocked: 1 } },
+    ledger: { dev: { id: "CH-004-ack", role: "dev", model: "claude-sonnet-5", chosenBy: "frontmatter",
+                     started: "T1", loopBacks: 0, testsBefore: null } },
+  });
+  // a real handoff for a DIFFERENT role, just to give ModelPolicy something to save through
+  inbox(repo, "other", handoff("CH-005", "claude-sonnet-5"));
+  writeJson(busPath(repo, "other", "status.json"), { status: "blocked", updated_at: "T1" });
+  const p = new ModelPolicy(repo);
+  p.escalate("other", "claude-opus-5");                      // any call that reaches saveState
+  const st = readJson(stateFile);
+  eq(Object.keys(st.escalations).filter((k) => /-ack$/i.test(k)), [], "the ack escalation entry is gone");
+  ok("CH-004" in st.escalations, "…but the real one for the same role survives");
+  eq(st.ledger.dev, undefined, "the ledger line whose id is an ack is gone too (keyed by role, not id)");
+});
+
 // ── R4 · escalation ─────────────────────────────────────────────────────────────────────────────
 
 suite("R4: two loop-backs on ONE handoff raise it to Opus; the third does not rewrite again", () => {
