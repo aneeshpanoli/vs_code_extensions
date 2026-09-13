@@ -9,9 +9,9 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear
+## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
 
-**Version 0.29.0** deployed and pushed; 431 tests, 34/34 mutations caught (46 s, parallel), `./live.sh`
+**Version 0.30.0** deployed and pushed; 443 tests, 39/39 mutations caught (parallel), `./live.sh`
 clean except the warnings listed under open threads. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
@@ -44,6 +44,15 @@ clean except the warnings listed under open threads. Read this section, then `RE
    targetmap, invisible orchestrator, worker-named tag). Fixtures in `test/fixtures/live` are real
    panels, redacted, self-verified at capture; capture the BUS too or fixtures encode the blind spot.
 10. **Gate on real exit codes.** Twice a `time`/`tail` pipe hid a red result and a push went out.
+11. **A transcript resumes only from the window it was written under** (0.30.0). Claude Code looks a
+    session id up in the window cwd's project dir; elsewhere `editor.open(sid)` makes a blank
+    `Untitled` tab on the pinned model. A role whose transcripts all live under its worktree's cwd is
+    *stranded* from the main window: never reopened, spawned+bound on request, reported with the cwd.
+    Measured 2026-09-13 05:50 — four roles, four blank tabs, orchestrators asking again.
+12. **Only the orchestrator is on the premium tier** (user direction 2026-09-13). The settings pin is
+    `claude-opus-5`; the tagged orchestrator's own idle frame is promoted with `/model`. The footer
+    chip lags a switch until the next turn, so `models.acknowledgedSwitch()` reads the "Set model
+    to" line and the policy does not retype while it lags.
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
@@ -268,8 +277,10 @@ restart, then wake the PO to continue the work." So `src/reopen.ts` + `extension
 - `previouslyLive(repo)` = roles in the bus's `targetmap.json` + `bindings.json`, read BEFORE the
   first tick rewrites them — the record of who was open, not who the board has ever known.
 - 30 s after activation (restored shells are still rendering during the first tick), every such role
-  that is now missing is reopened from its FRESHEST transcript (board sid vs newest in the role's
-  worktree project dir — the board sid is sometimes stale), plus the orchestrator always.
+  that is now missing is reopened from its FRESHEST transcript THAT THIS WINDOW CAN RESUME (board sid
+  vs newest in the role's worktree project dir — the board sid is sometimes stale; a transcript under
+  another cwd opens blank and is skipped, `tracker-debug.json` lists it as `restartStranded`), plus
+  the orchestrator always.
 - Once the tag resolves to a live frame again, `[loom-restart]` is injected into it, once.
 - `loomSessionTracker.autoReopenOnRestart` (default true) turns this off. This is the ONE exception
   to the 2026-07-12 rule that Loom never opens or closes Claude tabs on its own; it still never closes.
@@ -307,8 +318,11 @@ claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic sessi
   (user's call). `live.sh` warns on every contested declaration.
 - **Blank `Untitled` shells after every restart** — Claude Code's restore discards the session id.
   Left in place on purpose (principle 5). `blanks.ts` identifies them for a future tabGroups close.
-- **`~/.claude/settings.json` pins `claude-fable-5-1[1m]`** so every restarted session starts on the
-  premium tier and the model policy chases all of them. Changing the pin is the fix; user's call.
+- **`~/.claude/settings.json` now pins `claude-opus-5`** (changed 2026-09-13, backup beside it as
+  `settings.json.bak-<epoch>`). Running sessions keep their model; restarted ones come up on Opus and
+  the tagged orchestrator is promoted by the policy. First real restart should be watched.
+- **Blank `Untitled` tabs already open** (ten at 2026-09-13 05:55) must be closed by hand; the cause
+  (principle 11) is fixed in 0.30.0, but every window must RELOAD to run it.
 - **The context-memory cycle has still never completed end to end on a real session.**
 - `gaming` (lowercase) is a stale duplicate bus of `Gaming`; 16 board session_ids point at nothing.
 - Model policy and limit resume have no cross-window lease (the context cycle does).

@@ -163,8 +163,33 @@ MUTATIONS = [
 
  ("a role with no transcript is refused instead of spawned",
   "src/requests.ts",
-  "    if (c) open.push(c); else spawn.push(role);",
-  '    if (c) open.push(c); else refused.push({ role: raw, reason: "no transcript" });'),
+  "    spawn.push(role);",
+  '    refused.push({ role: raw, reason: "no transcript" });'),
+
+ ("a transcript written under another cwd is treated as resumable from this window (the blank-tab bug, 2026-09-13)",
+  "src/reopen.ts",
+  "  if (!windowCwd) return true;",
+  "  if (!windowCwd || Boolean(1)) return true;"),
+
+ ("a stranded spawn is not reported back to the orchestrator",
+  "src/requests.ts",
+  "    if (st) stranded.push(st);",
+  "    if (st && Boolean(0)) stranded.push(st);"),
+
+ ("the model policy retypes /model while the chip is still catching up with an acknowledged switch",
+  "src/models.ts",
+  "      if (info.acknowledged && !isPremium(info.acknowledged, premium)) continue;",
+  "      if (info.acknowledged && !isPremium(info.acknowledged, premium) && Boolean(0)) continue;"),
+
+ ("the orchestrator is promoted while it is mid-turn (the command would queue as a message)",
+  "src/models.ts",
+  "    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info || busy) return null;",
+  "    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info) return null;"),
+
+ ("a switch acknowledged before a later turn still counts as fresh (the chip has had its chance)",
+  "src/models.ts",
+  '  if (before.includes("You:") || since.includes("You:")) return null;',
+  '  if (before.includes("You:")) return null;'),
 
  ("the post-/clear restore no longer tells the orchestrator it can open its own roles",
   "src/memory.ts",

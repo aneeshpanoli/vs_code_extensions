@@ -200,3 +200,65 @@ suite("policy: enforcement injects /model into the offending session", () => {
     });
   });
 });
+
+// ── the chip lags the switch ────────────────────────────────────────────────────────────────────
+// Measured 2026-09-13 05:49–05:53 on ReciEats/developer2: "Set model to Opus 5 for this session
+// only" printed at once; the footer chip still read "Fable 5.1" a minute later and the policy typed
+// the command again; the chip flipped when the next turn began.
+const { acknowledgedSwitch } = load("models.js");
+const switched = (id, name) => `\nYou: /model ${id}\n/model ${id}\n\nSet model to ${name} for this session only\n`;
+
+suite("models: a fresh 'Set model to' acknowledgement is read off the panel", () => {
+  const t = "work…" + switched("claude-opus-5", "Opus 5") + footer("Fable 5.1");
+  eq(acknowledgedSwitch(t), "Opus 5", "the switch the session acknowledged");
+  eq(detectModel(t), { model: "Fable 5.1", effort: "Medium", acknowledged: "Opus 5" }, "chip still says Fable; acknowledgement carried");
+  eq(acknowledgedSwitch("work…" + footer("Fable 5.1")), null, "no /model, no acknowledgement");
+  eq(acknowledgedSwitch("You: /model claude-opus-5\n/model claude-opus-5\n\nUnknown model\n" + footer("Fable 5.1")), null, "a refused switch is not one");
+});
+
+suite("models: an acknowledgement is only fresh while nothing has happened since", () => {
+  const stale = "x" + switched("claude-opus-5", "Opus 5") + "\nYou: carry on\nClaude: ok\n" + footer("Fable 5.1");
+  eq(acknowledgedSwitch(stale), null, "a later turn means the chip has had its chance — the chip is the truth");
+  const latest = "x" + switched("claude-opus-5", "Opus 5") + switched("claude-fable-5-1[1m]", "Fable 5.1") + footer("Opus 5");
+  eq(acknowledgedSwitch(latest), "Fable 5.1", "the LAST switch is the one that counts");
+  const welcome = "Untitled\nType /model to pick the right tool for the job.\nIntroducing Fable 5.1\n" + footer("Fable 5.1");
+  eq(acknowledgedSwitch(welcome), null, "the welcome tip mentions /model without a switch");
+});
+
+suite("policy: a worker whose switch was acknowledged is NOT nudged again while the chip lags", () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "pol-ack");
+  const pol = new ModelPolicy(repo);
+  const live = new Set(["alpha"]);
+  let v = pol.check(new Map([["alpha", detectModel("w" + footer("Fable 5.1"))]]), null, live, DEFAULT_PREMIUM, 1000);
+  eq(v.map((x) => x.role), ["alpha"], "first sighting: nudged");
+  const lagging = detectModel("w" + switched("claude-opus-5", "Opus 5") + footer("Fable 5.1"));
+  v = pol.check(new Map([["alpha", lagging]]), null, live, DEFAULT_PREMIUM, 1000 + 10 * 60_000);
+  eq(v, [], "backoff long expired, chip still premium, but the panel says it switched: left alone");
+  ok(pol.pending().alpha, "still pending — cleared only when the chip agrees");
+  v = pol.check(new Map([["alpha", detectModel("w" + footer("Opus 5"))]]), null, live, DEFAULT_PREMIUM, 1000 + 11 * 60_000);
+  eq(v, []); ok(!pol.pending().alpha, "chip caught up: cleared");
+  // an acknowledged switch to ANOTHER premium model does not count as compliance
+  const wrong = detectModel("w" + switched("claude-fable-5", "Fable 5") + footer("Fable 5.1"));
+  v = pol.check(new Map([["alpha", wrong]]), null, live, DEFAULT_PREMIUM, 1000 + 30 * 60_000);
+  eq(v.map((x) => x.role), ["alpha"], "still premium after the switch: nudged");
+});
+
+// ── the mirror: the orchestrator is promoted ────────────────────────────────────────────────────
+suite("policy: the tagged orchestrator found on a cheaper model is promoted — only its frame, only idle", () => {
+  const repo = makeRepo({ roles: {} }, "pol-promote");
+  const pol = new ModelPolicy(repo);
+  const onOpus = detectModel("w" + footer("Opus 5"));
+  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000),
+     { repo, role: "productowner", model: "Opus 5", attempt: 1, webviewId: "wid-po" }, "promoted, addressed to its frame");
+  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 1000), null, "held off by the backoff");
+  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 61_000).attempt, 2, "retried after it");
+  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, true, DEFAULT_PREMIUM, 1000 + 200_000), null, "never while mid-turn");
+  eq(pol.checkOrchestrator("productowner", null, onOpus, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "never without a frame");
+  eq(pol.checkOrchestrator(null, "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "never without a tag");
+  eq(pol.checkOrchestrator("productowner", "wid-po", null, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "never blind");
+  const lagging = detectModel("w" + switched("claude-fable-5-1[1m]", "Fable 5.1") + footer("Opus 5"));
+  eq(pol.checkOrchestrator("productowner", "wid-po", lagging, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "acknowledged: chip lagging");
+  ok(pol.pending().productowner, "pending until seen");
+  eq(pol.checkOrchestrator("productowner", "wid-po", detectModel("w" + footer("Fable 5.1")), false, DEFAULT_PREMIUM, 1000 + 300_000), null);
+  ok(!pol.pending().productowner, "cleared once the chip shows the premium model");
+});

@@ -42,6 +42,8 @@ export interface OwnerView {
   /** How much text the panel is showing. A freshly cleared panel holds a couple of hundred
    *  characters, which is how a `/clear` is confirmed when there is no transcript to check. */
   chars: number;
+  /** The model on this frame's footer, so the policy can keep the orchestrator on the premium tier. */
+  model: ModelInfo | null;
 }
 
 export interface TickResult {
@@ -57,7 +59,7 @@ export class Tracker {
   private agents = new Map<string, Agent>();   // role -> most recent confident detection
   private owners = new Map<string, {
     lastSeen: number; busy: boolean; contextPct: number | null; repo: string | null; chars: number;
-    strong: boolean;
+    strong: boolean; model: ModelInfo | null;
     /** The BOARD names this frame as the orchestrator's (registry.boardOwnerFrames). Authoritative:
      *  beats a stale tag and beats content detection. A click cannot override the board. */
     declared: boolean;
@@ -172,6 +174,7 @@ export class Tracker {
         this.owners.set(f.webviewId, {
           lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
           repo: this.repoFilter, chars: (f.text || "").length, strong: true, declared: true,
+          model: detectModel(f.text),
         });
         continue;
       }
@@ -228,6 +231,7 @@ export class Tracker {
           this.owners.set(f.webviewId, {
             lastSeen: now0, busy: isBusy(f.text), contextPct: f.contextPct ?? null,
             repo: owned, chars: (f.text || "").length, strong, declared: false,
+            model: detectModel(f.text),
           });
         }
         continue;
@@ -299,7 +303,7 @@ export class Tracker {
     return Array.from(this.owners.entries())
       .map(([webviewId, o]) => ({
         webviewId, lastSeen: o.lastSeen, busy: o.busy, contextPct: o.contextPct,
-        repo: o.repo, chars: o.chars, strong: o.strong, declared: o.declared,
+        repo: o.repo, chars: o.chars, strong: o.strong, declared: o.declared, model: o.model,
         liveness: this.livenessOf(o.lastSeen),
       }))
       .sort((a, b) => b.lastSeen - a.lastSeen);

@@ -13,6 +13,18 @@
 // HOW IT IS CORRECTED: inject `/model <id>` into the offending session, the same way `/loom <role>`
 // binds one. A role stays pending until it is SEEN on a cheaper model; attempts repeat on a growing
 // backoff, so a switch that fails or silently does not take effect is retried rather than forgotten.
+//
+// THE CHIP LAGS THE SWITCH (measured 2026-09-13 05:49–05:53 on ReciEats/developer2): `/model
+// claude-opus-5` printed "Set model to Opus 5 for this session only" at once, but the footer chip
+// still read "Fable 5.1" sixty seconds later, so the policy typed the command AGAIN; the chip only
+// flipped to "Opus 5" when the session's next turn began. The panel is therefore read for that
+// acknowledgement: a `You: /model <id>` echo followed by "Set model to <name>" with no later turn is
+// a switch that took, and the role is left alone until the chip catches up.
+//
+// THE OTHER DIRECTION (user direction 2026-09-13: "new tabs should always be Opus 5, not Fable;
+// only the orchestrator is supposed to be on Fable 5.1"): the default model pinned in
+// ~/.claude/settings.json is the cheaper tier, so every spawned or restored tab starts there, and
+// the TAGGED orchestrator is promoted to the premium tier when it is seen on anything else.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -39,7 +51,10 @@ const PERMISSION_CHIP = "Bypass permissions|Accept edits|Plan mode|Ask each time
 const FOOTER_RE = new RegExp(
   `\\b(${MODEL_NAMES})\\s*[\\n·|]\\s*(?:(${EFFORTS})\\s*[\\n·|]\\s*)?(?:${PERMISSION_CHIP})`, "gi");
 
-export interface ModelInfo { model: string; effort: string | null; }
+export interface ModelInfo { model: string; effort: string | null;
+  /** A `/model` switch the session has ACKNOWLEDGED since its last turn ("Set model to <name>"),
+   *  which the footer chip has not caught up with yet. null when there is no fresh acknowledgement. */
+  acknowledged?: string | null; }
 
 /** The model a live panel is currently running, read off its footer. null if not determinable. */
 export function detectModel(text: string | null | undefined): ModelInfo | null {
@@ -49,7 +64,28 @@ export function detectModel(text: string | null | undefined): ModelInfo | null {
   let m: RegExpExecArray | null, last: RegExpExecArray | null = null;
   while ((m = FOOTER_RE.exec(tail)) !== null) last = m;   // the LAST match is the footer
   if (!last) return null;
-  return { model: last[1], effort: last[2] || null };
+  const ack = acknowledgedSwitch(text);
+  return ack ? { model: last[1], effort: last[2] || null, acknowledged: ack } : { model: last[1], effort: last[2] || null };
+}
+
+/** As the panel renders a switch: the echo of the typed command, then the CLI's result line. */
+const SWITCH_ACK_RE = new RegExp(`Set model to (${MODEL_NAMES})\\b`, "i");
+
+/** The model a panel's LAST `/model` command switched to, when nothing has happened since: the
+ *  final `You: /model …` echo is followed by "Set model to <name>" and by no later `You:` turn. A
+ *  switch that old lines quote (a resumed session, a conversation about switching) is not fresh
+ *  and yields null — after a restart the chip is the truth again. */
+export function acknowledgedSwitch(text: string | null | undefined): string | null {
+  const t = String(text || "");
+  const at = t.lastIndexOf("You: /model");
+  if (at < 0) return null;
+  const after = t.slice(at + "You: /model".length);
+  const m = SWITCH_ACK_RE.exec(after);
+  if (!m) return null;
+  // the result line must belong to THIS echo (no turn between), and nothing may follow it
+  const before = after.slice(0, m.index), since = after.slice(m.index + m[0].length);
+  if (before.includes("You:") || since.includes("You:")) return null;
+  return m[1];
 }
 
 export function isPremium(model: string | null | undefined, premium: string[] = DEFAULT_PREMIUM): boolean {
@@ -131,6 +167,9 @@ export class ModelPolicy {
       const wid = frames.get(role) ?? null;
       if (wid && orchestratorFrame && wid === orchestratorFrame) continue;
       if (!isPremium(info.model, premium)) { delete st.pending[role]; continue; }   // actually compliant now
+      // Switched, chip not yet redrawn: the panel acknowledged a move to a cheaper model since its
+      // last turn. Typing again would only print the same line again. Wait for the chip.
+      if (info.acknowledged && !isPremium(info.acknowledged, premium)) continue;
       const rec = st.pending[role];
       const sameModel = !!rec && rec.model.toLowerCase() === info.model.toLowerCase();
       if (sameModel && now < rec.nextAttempt) continue;                 // backing off between retries
@@ -141,6 +180,30 @@ export class ModelPolicy {
     }
     saveState(this.repo, st);
     return out;
+  }
+
+  /**
+   * The ORCHESTRATOR found on a non-premium model — the mirror of `check()`. With the default model
+   * pinned to the cheaper tier, a restarted or restored orchestrator comes up on it; this puts it
+   * back. Same backoff, same acknowledgement rule, same state file (under the key `<role>`, which a
+   * worker can never share: an owner-named role is never in `check()`'s map).
+   */
+  checkOrchestrator(orchestratorRole: string | null, orchestratorFrame: string | null,
+                    info: ModelInfo | null, busy: boolean, premium: string[] = DEFAULT_PREMIUM,
+                    now = Date.now()): ModelViolation | null {
+    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info || busy) return null;
+    const st = loadState(this.repo);
+    const key = orchestratorRole;
+    if (isPremium(info.model, premium)) { if (st.pending[key]) { delete st.pending[key]; saveState(this.repo, st); } return null; }
+    if (info.acknowledged && isPremium(info.acknowledged, premium)) return null;   // switched, chip lagging
+    const rec = st.pending[key];
+    const sameModel = !!rec && rec.model.toLowerCase() === info.model.toLowerCase();
+    if (sameModel && now < rec.nextAttempt) return null;
+    const attempts = (sameModel ? rec.attempts : 0) + 1;
+    st.pending[key] = { model: info.model, attempts, nextAttempt: now + backoffFor(attempts),
+                        lastAttemptAt: new Date(now).toISOString() };
+    saveState(this.repo, st);
+    return { repo: this.repo, role: orchestratorRole, model: info.model, attempt: attempts, webviewId: orchestratorFrame };
   }
 
   /** Record what the injection reported. A role is only cleared once it is SEEN on a cheaper model. */

@@ -126,6 +126,20 @@ The top pricing tier is reserved for the orchestrator. A worker found on a premi
 switched back with `/model <workerModel>`, and stays pending until it is actually *seen* on a
 cheaper model — a switch that silently fails is retried on a growing backoff rather than forgotten.
 
+The footer chip lags the switch. Measured 2026-09-13 on ReciEats/developer2: `/model claude-opus-5`
+printed "Set model to Opus 5 for this session only" at once, the chip still read "Fable 5.1" a minute
+later, the policy typed the command again, and the chip only flipped when the session's next turn
+began. So the panel is read for that acknowledgement: a `You: /model …` echo followed by
+"Set model to <name>" with no later turn means the switch took, and the role is left alone until the
+chip catches up. An old acknowledgement (a later turn, a resumed session) does not count — the chip
+is the truth again.
+
+The mirror holds too. `~/.claude/settings.json` pins the default model to the worker tier, so every
+spawned or restored tab starts cheap; the TAGGED orchestrator, when its own frame is seen idle on
+anything else, is switched to `orchestratorModel` (`claude-fable-5-1[1m]`) with the same backoff and
+the same acknowledgement rule. Setting: `enforceOrchestratorModel`. Only the orchestrator is ever on
+the premium tier; nothing else is promoted.
+
 ### Orchestrator context memory
 
 The orchestrator is the session that actually fills up: it runs for days across every role. Left
@@ -276,20 +290,33 @@ endpoint is a `/clear`, and a worker-named tag is one tick away from wiping a wo
 
 An orchestrator can write files and ring sessions but cannot open a tab. It writes
 `~/.claude/loom/<repo>/open-requests.json` — `{"roles":["developer1"],"requestedAt":"<iso>"}` — and the
-next tick opens each role from its freshest transcript, replacing the file with the outcome
-(`opened` / `refused`, each refusal carrying its reason). Bounded: never an orchestrator, never a role
-already live, never one off the board, never past the active-session cap, and a request older than 30
-minutes is ignored so a dead session cannot open tabs tomorrow. Setting: `serveOpenRequests`.
-Playbook §15 is the orchestrator-facing copy.
+next tick opens each role from its freshest transcript *that this window can resume*, replacing the
+file with the outcome (`opened` / `refused`, each refusal carrying its reason). Bounded: never an
+orchestrator, never a role already live, never one off the board, never past the active-session cap,
+and a request older than 30 minutes is ignored so a dead session cannot open tabs tomorrow. Setting:
+`serveOpenRequests`. Playbook §15 is the orchestrator-facing copy.
+
+A transcript resumes only from the window whose folder it was written under. Claude Code looks a
+session id up in that cwd's project directory (`~/.claude/projects/<cwd with / and . as ->`); an id it
+cannot find there opens a *new, blank* `Untitled` conversation on the pinned model. Measured
+2026-09-13 05:50: four roles (Lumen/developer1, ReciEats/developer1 and designer, livegita/developer1)
+were reopened from their freshest transcripts, all under `…--claude-worktrees-<role>` because each
+role had moved into its worktree, and all four tabs came up as 400-character blank shells with
+`webviewId: null` handed back — so the orchestrators asked again, and the windows filled with empty
+tabs. Such a role is *stranded* from this window: it is not offered for reopening, the restart path
+skips it, the digest's "Reopen sessions" refuses it with the reason, and an open-request for it is
+served by spawning a fresh bound tab, with a `note` in the result naming the transcript and the cwd it
+would resume from. Reopening it *with* its memory means a window on that worktree.
 
 ### Blank tabs after a restart
 
 Claude Code's restore discards the session id, so every Claude panel comes back as a blank `Untitled`
 conversation — 8 of 26 panels after one measured restart. The restart reopen then adds the real
-sessions, which is why roles appeared twice. Loom now closes a blank shell once its session is back,
-under three conditions that must all hold: it was already blank *before* the reopen, it is *still*
-blank afterwards (so a reused panel is never closed), and never more are closed than were opened.
-Setting: `closeBlankShellsOnRestart`. This is the only case in which Loom closes a Claude tab.
+sessions, which is why roles appeared twice. 0.26.0 closed those shells over CDP and lost three
+windows (`/json/close` on a webview target closes its window), so Loom never closes a Claude tab: the
+shells stay for a person to close, `blanks.ts` still identifies them, and `closeBlankShellsOnRestart`
+is inert. The second source of blank tabs — reopening a transcript from the wrong window — is
+described under "Orchestrators open their own sessions" and no longer happens.
 
 ## Commands
 
@@ -322,6 +349,7 @@ All under `loomSessionTracker.`.
 | `workingWarnThreshold` | `5` | Digest warning for roles working across all projects |
 | `autoResumeAfterLimit` / `resumeMessage` | `true` / built-in | Resume a session when its usage limit lifts |
 | `enforceWorkerModel` / `workerModel` / `premiumModels` | `true` / `claude-opus-5` / Fable, Mythos | Reserve the expensive tier for the orchestrator |
+| `enforceOrchestratorModel` / `orchestratorModel` | `true` / `claude-fable-5-1[1m]` | Put the tagged orchestrator back on it when a restore drops it to the pin |
 | `showStartupDigest` / `staleBusDays` / `digestUnbankedCheck` | `true` / `30` / `true` | The attention summary |
 | `contextMemory` | `true` | Run the bank → clear → restore cycle |
 | `contextThresholdPct` | `50` | When to run it |

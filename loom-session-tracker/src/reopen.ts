@@ -11,6 +11,18 @@
 // learningactivity/curriculum sids were the freshest. So: recompute every tick, keep offering until
 // nothing is missing, and reopen the FRESHEST transcript. Opening stays an explicit click — the
 // 2026-07-12 rule that Claude tabs are never opened or closed automatically still holds.
+//
+// A TRANSCRIPT CAN ONLY BE RESUMED FROM THE WINDOW IT WAS WRITTEN UNDER. Claude Code looks a session
+// id up in the project directory of the window's cwd (`~/.claude/projects/<cwd with / and . as ->`);
+// an id it cannot find there opens a NEW, blank "Untitled" conversation instead — on the pinned
+// default model, with no memory. Measured 2026-09-13 05:50: four roles (Lumen/developer1,
+// ReciEats/developer1 and designer, livegita/developer1) were reopened from their FRESHEST transcript,
+// every one of which lived under `…--claude-worktrees-<role>` because the role had moved into its
+// worktree; all four tabs came up as 400-character blank shells, the bus got `webviewId: null`
+// back, and the orchestrators asked again. A role whose only transcripts live under another cwd is
+// STRANDED from this window: it is not offered for reopening, the restart path skips it, and an
+// open-request for it is served by spawning a fresh bound tab (which is what a blank tab would have
+// been anyway, minus the binding).
 
 import * as fs from "fs";
 import * as os from "os";
@@ -47,8 +59,16 @@ function boardEntry(repo: string, role: string): any {
 
 function mtimeOf(f: string): number { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }
 
-/** The newest transcript this role could be reopened from, or null when it has none anywhere. */
-export function freshestSession(repo: string, role: string): ReopenCandidate | null {
+/** Can `claude-vscode.editor.open(sessionId)` resume this transcript from a window whose folder is
+ *  `windowCwd`? Only when the file sits in that cwd's own project directory. An unknown cwd (a
+ *  windowless run, or a test) is permissive — the guard exists to stop known-wrong opens. */
+export function resumableFrom(file: string, windowCwd: string | null | undefined): boolean {
+  if (!windowCwd) return true;
+  return path.dirname(path.resolve(file)) === projectDirFor(path.resolve(windowCwd));
+}
+
+/** Every transcript a role could come back from, freshest first. */
+function allSessions(repo: string, role: string): ReopenCandidate[] {
   const e = boardEntry(repo, role);
   const out: ReopenCandidate[] = [];
   const sid = e && (e.session_id || e.sessionId);
@@ -66,9 +86,40 @@ export function freshestSession(repo: string, role: string): ReopenCandidate | n
       out.push({ role, sessionId: n.slice(0, -6), file: f, source: "worktree", mtime: mtimeOf(f) });
     }
   }
-  if (!out.length) return null;
   out.sort((a, b) => b.mtime - a.mtime);
-  return out[0];
+  return out;
+}
+
+/** The newest transcript this role could be reopened from IN THIS WINDOW, or null when it has none.
+ *  With `windowCwd`, transcripts written under another cwd are skipped — a fresher one there does
+ *  not make this window's resumable one wrong, it makes the role stranded (see `strandedRoles`). */
+export function freshestSession(repo: string, role: string, windowCwd: string | null = null): ReopenCandidate | null {
+  const out = allSessions(repo, role).filter((c) => resumableFrom(c.file, windowCwd));
+  return out.length ? out[0] : null;
+}
+
+/** A role with transcripts, none of which this window can resume. `cwd` is where its freshest one
+ *  would resume from — the folder a person would have to open to bring it back with its memory. */
+export interface Stranded { role: string; sessionId: string; file: string; cwd: string | null }
+
+/** Roles of this project that are NOT live, HAVE a transcript, and can be resumed from NOWHERE in
+ *  this window. Reopening these here yields a blank tab; only spawning (a fresh bound tab) or a
+ *  window on their own cwd can bring them back. */
+export function strandedRoles(repo: string, liveNames: Set<string>, windowCwd: string | null): Stranded[] {
+  const out: Stranded[] = [];
+  if (!windowCwd) return out;
+  for (const role of boardRoles(repo)) {
+    if (liveNames.has(role) || liveNames.has(canonicalRole(repo, role))) continue;
+    const all = allSessions(repo, role);
+    if (!all.length || all.some((c) => resumableFrom(c.file, windowCwd))) continue;
+    // The cwd it would resume from: the board's worktree when the file sits in that worktree's own
+    // project dir (the board sid itself often does — the role moved there and kept writing).
+    const e = boardEntry(repo, role);
+    const wt = e && typeof e.worktree === "string" ? e.worktree : null;
+    const cwd = wt && path.dirname(path.resolve(all[0].file)) === projectDirFor(path.resolve(wt)) ? wt : null;
+    out.push({ role, sessionId: all[0].sessionId, file: all[0].file, cwd });
+  }
+  return out;
 }
 
 /**
@@ -76,12 +127,12 @@ export function freshestSession(repo: string, role: string): ReopenCandidate | n
  * `liveNames` = roles the tracker sees signed/bound/pathed this tick, plus the owner names when an
  * orchestrator frame is present — an owner with no frame is as missing as any worker.
  */
-export function missingRoles(repo: string, liveNames: Set<string>): ReopenCandidate[] {
+export function missingRoles(repo: string, liveNames: Set<string>, windowCwd: string | null = null): ReopenCandidate[] {
   const out: ReopenCandidate[] = [];
   for (const role of boardRoles(repo)) {
     // an aliased name is live when its surviving name is (livegita: gitadeveloper -> developer)
     if (liveNames.has(role) || liveNames.has(canonicalRole(repo, role))) continue;
-    const c = freshestSession(repo, role);
+    const c = freshestSession(repo, role, windowCwd);
     if (c) out.push(c);
   }
   return out;

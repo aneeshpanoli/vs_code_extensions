@@ -131,3 +131,26 @@ suite("requests: every message the extension sends an orchestrator tells it how 
   ok(/open-requests\.json/.test(wake), "the restart wake names the channel too");
   ok(/do not wait for a person/.test(wake), "and says not to wait");
 });
+
+suite("requests: a role stranded in another cwd is SPAWNED and bound, never reopened blank", () => {
+  // Measured 2026-09-13 05:50 (ReciEats/designer): editor.open on a worktree transcript from the main
+  // window produced a 410-character "Untitled" shell, and the orchestrator got webviewId back for a
+  // tab with no memory and no binding.
+  const { projectDirFor } = load("reopen.js");
+  const { strandedNote } = load("requests.js");
+  const win = "/home/x/Containers/RE";
+  const wtc = win + "/.claude/worktrees/designer";
+  const repo = makeRepo({ designer: { session_id: "s-des", worktree: wtc }, developer2: { session_id: "s-d2" } }, "req-stranded");
+  tx(projectDirFor(wtc), "s-des");                            // only in the worktree's dir
+  tx(projectDirFor(win), "s-d2");                             // resumable here
+  request(repo, ["designer", "developer2"]);
+  const p = planOpen(repo, new Set(), 5, Date.now(), win);
+  eq(p.open.map((c) => c.role), ["developer2"], "the resumable one is reopened");
+  eq(p.spawn, ["designer"], "the stranded one is spawned fresh");
+  eq(p.stranded.map((s) => [s.role, s.sessionId, s.cwd]), [["designer", "s-des", wtc]], "and reported as stranded");
+  ok(/s-des.*cannot be resumed from this window/.test(strandedNote(p.stranded[0])), "the note tells the orchestrator why");
+  eq(p.refused, []);
+  // Without a window cwd the old behaviour holds: the transcript is opened.
+  request(repo, ["designer"]);
+  eq(planOpen(repo, new Set(), 5).open.map((c) => c.role), ["designer"]);
+});

@@ -383,3 +383,82 @@ suite("tagging: the orchestrator's frame id is recorded, so it can be injected i
     eq(tag.webviewId, "wid-owner", "with the detected frame");
   } finally { off(); }
 });
+
+// ── a transcript resumes only from the window it was written under (2026-09-13) ─────────────────
+const { projectDirFor } = load("reopen.js");
+const tx = (dir, sid) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, sid + ".jsonl"), "{}\n"); };
+
+suite("open request: a role stranded in a worktree's cwd is spawned fresh, its transcript never opened blank", async () => {
+  const repo = makeRepo({ designer: { session_id: "sid-des-wt" }, productowner: { session_id: "sid-po" } }, "wireS");
+  const dir = openProject(repo);
+  const wtc = path.join(dir, ".claude", "worktrees", "designer");
+  writeJson(busPath(repo, "board.json"), { designer: { session_id: "sid-des-wt", worktree: wtc }, productowner: { session_id: "sid-po" } });
+  tx(projectDirFor(wtc), "sid-des-wt");                       // lives ONLY under the worktree's cwd
+  setOrchestrator(repo, "productowner", "wid-po");
+  writeJson(busPath(repo, "open-requests.json"), { roles: ["designer"], requestedAt: new Date().toISOString() });
+  const off = await activate([poFrame("wid-po", repo)]);
+  try {
+    await settle(3200);                                       // the spawn path waits 2.5s to tell the new frame apart
+    const opens = vscode._executed.filter((e) => e.id === "claude-vscode.editor.open");
+    ok(opens.length >= 1, "a tab was opened");
+    ok(opens.every((e) => e.args[0] === undefined), "…as a NEW conversation, never editor.open(sid-des-wt)");
+    const res = readJson(busPath(repo, "open-requests.json"));
+    ok(res && res.servedAt, "the request was served");
+    ok(!res.opened.some((o) => o.sessionId === "sid-des-wt"), "the stranded transcript was not reopened");
+  } finally { off(); }
+});
+
+suite("digest: 'Reopen sessions' refuses a session written under another folder instead of opening it blank", async () => {
+  const repo = makeRepo({ roles: { alpha: { session_id: "sid-alpha-wt" } } }, "wireT");
+  const dir = openProject(repo);
+  tx(projectDirFor(path.join(dir, ".claude", "worktrees", "alpha")), "sid-alpha-wt");
+  setOrchestrator(repo, "product-owner");
+  vscode._answer = (_m, actions) => (actions.includes("Reopen sessions") ? "Reopen sessions" : undefined);
+  vscode._quickPick = (items) => items;
+  const off = await activate([]);
+  try {
+    await settle();
+    eq(vscode._executed.filter((e) => e.id === "claude-vscode.editor.open"), [], "nothing opened");
+    ok(vscode._messages.warn.some((m) => /alpha.*sid-alph.*cannot be reopened from this window/.test(m)), "and the user was told why");
+  } finally { off(); }
+});
+
+// ── the orchestrator is kept on the premium tier (user direction 2026-09-13) ────────────────────
+suite("tick: the tagged orchestrator found on the worker tier is promoted, addressed to its own frame", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "wireU");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  // the PO on Opus 5, idle; a worker on Opus 5 too (compliant, untouched)
+  const off = await activate([poFrame("wid-po", repo), frame("wid-a", "work" + marker("alpha") + footer("Opus 5"))]);
+  try {
+    await settle(100);
+    const pending = readJson(busPath(repo, "model-policy.json")).pending;
+    ok(pending && pending["product-owner"], "the promotion was recorded by the tick");
+    eq(pending["product-owner"].model, "Opus 5");
+    ok(!pending.alpha, "the compliant worker is not pending");
+    ok(vscode._messages.info.some((m) => /orchestrator product-owner is on Opus 5 — switching to claude-fable-5-1\[1m\]/.test(m)), "and the user was told");
+    const dbg = readJson(path.join(LOOM, "model-policy-debug.json"));
+    ok(dbg && /--webview-id wid-po/.test(dbg.out) && /\/model claude-fable-5-1\[1m\]/.test(dbg.out), "injected /model into wid-po: " + (dbg && dbg.out));
+  } finally { off(); }
+});
+
+suite("tick: an orchestrator already on the premium tier, or mid-turn, is left alone", async () => {
+  const repo = makeRepo({ roles: {} }, "wireV");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  const off = await activate([poFrame("wid-po", repo).text ? frame("wid-po", poFrame("wid-po", repo).text.replace("Opus 5", "Fable 5.1")) : null]);
+  try {
+    await settle(100);
+    const st = readJson(busPath(repo, "model-policy.json"));
+    ok(!st || !st.pending || !st.pending["product-owner"], "premium already: nothing pending");
+  } finally { off(); }
+  vscode._reset();
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  const off2 = await activate([poFrame("wid-po", repo, "\nClaude is working\n")]);
+  try {
+    await settle(100);
+    const st = readJson(busPath(repo, "model-policy.json"));
+    ok(!st || !st.pending || !st.pending["product-owner"], "mid-turn on Opus: not typed into");
+  } finally { off2(); }
+});

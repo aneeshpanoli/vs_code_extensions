@@ -18,9 +18,9 @@ import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM } from "./models";
 import { buildDigest, renderDigest, Digest } from "./digest";
-import { missingRoles, previouslyLive, ReopenCandidate } from "./reopen";
+import { missingRoles, previouslyLive, strandedRoles, resumableFrom, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
-import { planOpen, writeResult, Opened } from "./requests";
+import { planOpen, writeResult, strandedNote, Opened } from "./requests";
 import { planFocus } from "./focus";
 import { readFrames } from "./cdp";
 import { isOwnerRole } from "./naming";
@@ -29,7 +29,7 @@ import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
 import { injectTo, setSenderWindow } from "./inject";
-import { DEFAULT_WINDOW_TOKENS, pct } from "./context";
+import { DEFAULT_WINDOW_TOKENS, pct, transcriptFor } from "./context";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -44,6 +44,9 @@ export function activate(context: vscode.ExtensionContext) {
   try {
     const cfg = () => vscode.workspace.getConfiguration("loomSessionTracker");
     const repo = currentRepo();     // THIS window's project — the tracker shows/writes only this repo
+    // THIS window's folder. A transcript resumes only from the window whose cwd it was written under;
+    // every reopen/open decision below is scoped to it (reopen.ts, measured 2026-09-13).
+    const windowCwd: string | null = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ?? null;
     // Publish the owner alias contract so loom_cdp.py reads the same set this extension enforces.
     publishNaming();
     const tracker = new Tracker(repo);
@@ -118,6 +121,23 @@ export function activate(context: vscode.ExtensionContext) {
             `Loom: could not switch ${v.role} off ${v.model} (${note}) — retrying, or run /model ${target} there.`);
         });
       }
+      // The mirror: the tagged orchestrator belongs ON the premium tier. With the default model
+      // pinned to the worker tier (user direction 2026-09-13), a restored or restarted orchestrator
+      // comes up on it and is promoted here — only its own declared/tagged frame, only when idle.
+      if (cfg().get("enforceOrchestratorModel", true) !== true || !orch || !orch.webviewId) return;
+      const up = String(cfg().get("orchestratorModel", "claude-fable-5-1[1m]") || "claude-fable-5-1[1m]");
+      const frame = tracker.ownerView().find((o) => o.webviewId === orch.webviewId && o.liveness === "live");
+      if (!frame) return;
+      const pv = modelPolicy.checkOrchestrator(orch.role, orch.webviewId, frame.model, frame.busy, premium, Date.now());
+      if (!pv) return;
+      const what = `orchestrator ${pv.role} is on ${pv.model} — switching to ${up}`;
+      if (pv.attempt === 1) vscode.window.showInformationMessage(`Loom: ${what}.`);
+      else vscode.window.setStatusBarMessage(`Loom: ${what} (retry ${pv.attempt}).`, 8000);
+      modelPolicy.enforce(pv, up, (ok, note) => {
+        modelPolicy.recordResult(pv, ok, note);
+        if (!ok && pv.attempt === 1) vscode.window.showWarningMessage(
+          `Loom: could not switch the orchestrator to ${up} (${note}) — retrying, or run /model ${up} there.`);
+      });
     };
     const DEFAULT_RESUME =
       "[loom-resume] Your usage limit has reset. Pick up where you left off: re-read your inbox and " +
@@ -248,12 +268,15 @@ export function activate(context: vscode.ExtensionContext) {
       if (tracker.ownerView().some((o) => o.repo === repo && o.liveness === "live")) {
         for (const r of boardRoles(repo)) if (isOwnerRole(r)) live.add(r);
       }
-      missingNow = missingRoles(repo, live);
+      missingNow = missingRoles(repo, live, windowCwd);
+      const stranded = strandedRoles(repo, live, windowCwd);
       if (missingNow.length) {
         reopenStatus.text = `$(history) Loom: reopen ${missingNow.length}`;
         reopenStatus.tooltip = `Sessions that are not open in this window:\n` +
           missingNow.map((m) => `  ${m.role}  ←  ${m.sessionId.slice(0, 8)} (${m.source}, ` +
-            `${new Date(m.mtime).toLocaleString()})`).join("\n") + `\nClick to reopen them (each with its memory).`;
+            `${new Date(m.mtime).toLocaleString()})`).join("\n") + `\nClick to reopen them (each with its memory).` +
+          (stranded.length ? `\nCannot be reopened from this window (would open blank):\n` +
+            stranded.map((s) => `  ${s.role}  ←  ${s.sessionId.slice(0, 8)} lives under ${s.cwd || "another cwd"}`).join("\n") : "");
         reopenStatus.show();
       } else reopenStatus.hide();
     };
@@ -300,6 +323,11 @@ export function activate(context: vscode.ExtensionContext) {
       if (!cfg().get<boolean>("autoReopenOnRestart", true)) return;
       computeMissing();
       const todo = missingNow.filter((m) => wasLive.has(m.role) || isOwnerRole(m.role));
+      // Roles that were live but whose transcripts this window cannot resume are NOT reopened: that
+      // is exactly the blank-tab path. They are logged; the orchestrator's wake tells it to spawn.
+      const stranded = strandedRoles(repo, new Set(missingNow.map((m) => m.role)), windowCwd)
+        .filter((s) => wasLive.has(s.role));
+      if (stranded.length) debugLog({ restartStranded: stranded.map((s) => `${s.role}<-${s.sessionId.slice(0, 8)} @ ${s.cwd || "?"}`) });
       if (!todo.length) return;
       // Snapshot the blank shells BEFORE opening anything: only these are ever closable, and only
       // if they are still blank afterwards. See blanks.ts for why each clause matters.
@@ -330,7 +358,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (cfg().get<boolean>("serveOpenRequests", true) !== true) return;
       const live = new Set(tracker.view().filter((a) => a.liveness === "live").map((a) => a.role));
       const slots = Math.max(0, coord.cap() - coord.activeTotal());
-      const plan = planOpen(repo, live, slots);
+      const plan = planOpen(repo, live, slots, Date.now(), windowCwd);
       if (!plan.consumed) return;
       serving = true;
       try {
@@ -360,8 +388,10 @@ export function activate(context: vscode.ExtensionContext) {
             await vscode.commands.executeCommand("claude-vscode.editor.open", undefined, undefined, undefined);
             const wid = await newFrame();
             if (!wid) { plan.refused.push({ role, reason: "opened a new tab but could not tell which frame it is — bind it by hand" }); continue; }
+            const st = plan.stranded.find((x) => x.role === role);
             await new Promise<void>((res) => injectTo({ role, webviewId: wid, repo }, `/loom ${role}`, "spawn-debug.json",
-              (ok, note) => { opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: ok });
+              (ok, note) => { opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: ok,
+                                            ...(st ? { note: strandedNote(st) } : {}) });
                               if (!ok) plan.refused.push({ role, reason: `opened but binding failed: ${note}` }); res(); }));
           } catch (e: any) { plan.refused.push({ role, reason: `spawn failed: ${String(e && e.message || e)}` }); }
         }
@@ -484,11 +514,20 @@ export function activate(context: vscode.ExtensionContext) {
         d.missingSessions.map((m) => ({ label: m.role, description: m.sessionId.slice(0, 8), id: m.sessionId })),
         { canPickMany: true, placeHolder: "Reopen which role sessions?" });
       if (!picks || !picks.length) return;
+      let n = 0;
       for (const p of picks) {
-        try { await vscode.commands.executeCommand("claude-vscode.editor.open", p.id, undefined, undefined); }
+        // The board's session id resumes only from the window it was written under; elsewhere
+        // editor.open makes a blank tab (reopen.ts). Say so instead of opening one.
+        const file = transcriptFor(p.id);
+        if (file && !resumableFrom(file, windowCwd)) {
+          vscode.window.showWarningMessage(`Loom: ${p.label}'s session ${p.id.slice(0, 8)} was written under another folder ` +
+            `and cannot be reopened from this window — it would open blank.`);
+          continue;
+        }
+        try { await vscode.commands.executeCommand("claude-vscode.editor.open", p.id, undefined, undefined); n++; }
         catch (e: any) { vscode.window.showErrorMessage(`Loom: could not reopen ${p.label}: ${String(e.message || e)}`); }
       }
-      vscode.window.setStatusBarMessage(`Loom: reopened ${picks.length} session(s).`, 6000);
+      vscode.window.setStatusBarMessage(`Loom: reopened ${n} session(s).`, 6000);
     };
 
     const showDigest = async (force: boolean) => {
