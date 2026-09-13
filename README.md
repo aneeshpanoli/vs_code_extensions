@@ -220,7 +220,7 @@ tier — changes nothing and says so in `tracker-debug.json`. Settings:
 `workerModels`, `modelAckMs`.
 
 TypeScript — build with `npm install && npx tsc -p .`. **Tests:** `./test.sh`
-(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 593 checks across 38 files, no test framework, run under VSCodium's bundled node since this
+(optionally with a name-substring filter, e.g. `./test.sh notifier`) — 623 checks across 39 files, no test framework, run under VSCodium's bundled node since this
 machine has no npm. (Not quite dependency-free: the CDP fake needs `ws`, which the
 extension itself depends on.) Measured coverage **depends on the runner mode**, because
 `tools/coverage.py` unions each process's UNCOVERED ranges: the parallel default reports

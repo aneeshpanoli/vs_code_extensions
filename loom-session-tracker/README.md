@@ -679,7 +679,7 @@ the whole extension, and had no test of its own.
 
 ```bash
 npx tsc -p .                                   # build to out/
-./test.sh                                      # 593 checks, 38 files, no test framework
+./test.sh                                      # 623 checks, 39 files, no test framework
 ./test.sh notifier                             # filter by name
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 ./live.sh                                      # invariants against the live editor

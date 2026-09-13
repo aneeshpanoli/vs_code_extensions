@@ -14,8 +14,8 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 **Version 0.33.0** is merged and pushed. The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-"0.33.0" here as "0.33.0 is what the editor is executing". **593 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **102/102 mutations caught** under the
+"0.33.0" here as "0.33.0 is what the editor is executing". **623 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **119/119 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 (Those two counts are as of the MP-001 merge; re-measure after banking RB-001 beside it, and
 note that `./test.sh` does NOT compile — a stale `out/` after a merge reads as a red suite.) `./live.sh`
@@ -427,7 +427,7 @@ Coverage says which lines ran. It cannot say which realities were considered. So
 ```bash
 cd /home/aneesh/vs_code_extensions/loom-session-tracker
 npx tsc -p .        # or: ELECTRON_RUN_AS_NODE=1 /usr/share/codium/codium node_modules/typescript/bin/tsc -p ./
-./test.sh           # 593 checks; ./test.sh <filter> to narrow
+./test.sh           # 623 checks; ./test.sh <filter> to narrow
 ./live.sh           # invariants against the live editor (read-only)
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 cd .. && ./deploy.sh loom-session-tracker    # then reload the window
