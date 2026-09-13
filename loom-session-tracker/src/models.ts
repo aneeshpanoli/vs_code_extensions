@@ -197,12 +197,21 @@ function numOrNull(v: any): number | null {
 
 /**
  * Rewrite ONLY the `model:` line of a role's inbox frontmatter, and only while the file still
- * carries `expectId`. The id re-check is the whole safety of this: escalation decides on a handoff
- * that may have been overwritten by the orchestrator between the decision and the write, and
- * raising the tier of the NEXT brief — one the orchestrator deliberately judged — would be worse
- * than never escalating. tmp+rename so a half-written inbox is never what a `/loom` bind reads.
+ * carries `expectId`. tmp+rename, so a half-written inbox is never what a `/loom` bind reads.
+ *
+ * THE ID RE-CHECK IS A SECOND LAYER, AND IT IS THE ONE THAT DECIDES THE RACE. `escalate` already
+ * keys its counting by handoff id, so an inbox replaced BEFORE the decision is refused there — the
+ * new id simply has no loop-backs yet. What only this re-check can refuse is an inbox replaced
+ * BETWEEN the decision and the write, which is a real window: playbook §12 step 2 has the
+ * orchestrator overwrite `inbox.md` with the next brief as its very first move after banking, and
+ * a tick can land inside it. Raising the tier of a brief the orchestrator deliberately judged,
+ * because of the PREVIOUS brief's loop-backs, is worse than never escalating at all.
+ *
+ * Exported for exactly that reason: the guard is unreachable through `escalate` (the id keying gets
+ * there first), so a test driving escalate can only ever pass for the wrong reason, and a mutant on
+ * this line survived one. It is pinned directly instead — principle 17.
  */
-function rewriteHandoffModel(repo: string, role: string, expectId: string, to: string): boolean {
+export function rewriteHandoffModel(repo: string, role: string, expectId: string, to: string): boolean {
   try {
     const f = inboxFile(repo, role);
     const text = fs.readFileSync(f, "utf8");

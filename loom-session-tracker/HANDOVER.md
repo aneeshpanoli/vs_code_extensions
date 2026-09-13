@@ -389,7 +389,7 @@ Coverage says which lines ran. It cannot say which realities were considered. So
 ```bash
 cd /home/aneesh/vs_code_extensions/loom-session-tracker
 npx tsc -p .        # or: ELECTRON_RUN_AS_NODE=1 /usr/share/codium/codium node_modules/typescript/bin/tsc -p ./
-./test.sh           # 592 checks; ./test.sh <filter> to narrow
+./test.sh           # 593 checks; ./test.sh <filter> to narrow
 ./live.sh           # invariants against the live editor (read-only)
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 cd .. && ./deploy.sh loom-session-tracker    # then reload the window

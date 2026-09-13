@@ -8,7 +8,7 @@ const { suite, ok, eq, load, makeRepo, busPath, writeJson, readJson } = require(
 const fs = require("fs");
 const path = require("path");
 const { desiredModel, frontmatter, chipFor, idIsPremium, normalizeId, ModelPolicy,
-        handoffId, DEFAULT_WORKER_MODELS } = load("models.js");
+        handoffId, rewriteHandoffModel, DEFAULT_WORKER_MODELS } = load("models.js");
 
 /** Write a role's inbox.md verbatim — fixtures are the whole point of this file. */
 function inbox(repo, role, text) {
@@ -182,6 +182,38 @@ suite("R4: a handoff already on Opus, or a role that is not blocked, escalates n
     eq(p2.escalate("dev", "claude-opus-5"), null, "'working' is not a loop-back");
   }
   eq(desiredModel(repo2, "dev", "claude-opus-5").model, "claude-sonnet-5", "untouched");
+});
+
+// The id re-check is pinned DIRECTLY, not through escalate(). Driving escalate() cannot reach it:
+// the escalation count is keyed by handoff id, so an inbox replaced before the decision is already
+// refused by the keying, and the record for the new id simply has no loop-backs yet. A mutant that
+// removed this line survived a test that drove escalate() — the test passed for the wrong reason.
+// What only this guard can refuse is an inbox replaced BETWEEN the decision and the write, which is
+// the window playbook §12 step 2 opens every single cycle. (Principle 17.)
+suite("R4: the rewrite REFUSES a handoff whose id has changed under it, and never half-writes", () => {
+  const repo = makeRepo({ dev: {} }, "esc-race");
+  const f = inbox(repo, "dev", handoff("MP-031", "claude-sonnet-5"));
+  const before = fs.readFileSync(f, "utf8");
+
+  eq(rewriteHandoffModel(repo, "dev", "MP-030", "claude-opus-5"), false,
+     "the decision was made about MP-030; the inbox now holds MP-031");
+  eq(fs.readFileSync(f, "utf8"), before, "and not one byte of the new brief was touched");
+
+  eq(rewriteHandoffModel(repo, "dev", "MP-031", "claude-opus-5"), true, "the matching id does rewrite");
+  const after = fs.readFileSync(f, "utf8");
+  ok(/^model: claude-opus-5$/m.test(after), "that line, changed");
+  eq(after.replace(/^model: claude-opus-5$/m, "model: claude-sonnet-5"), before, "and ONLY that line");
+
+  // a handoff with no `model:` line has nothing to rewrite, and is left alone rather than grown one
+  const repo2 = makeRepo({ dev: {} }, "esc-race2");
+  const g = inbox(repo2, "dev", handoff("MP-032", null));
+  const untouched = fs.readFileSync(g, "utf8");
+  eq(rewriteHandoffModel(repo2, "dev", "MP-032", "claude-opus-5"), false, "no line to rewrite");
+  eq(fs.readFileSync(g, "utf8"), untouched, "and none is invented");
+
+  // no inbox at all: refuses, never throws
+  eq(rewriteHandoffModel(makeRepo({ dev: {} }, "esc-race3"), "dev", "MP-033", "claude-opus-5"), false,
+     "a missing inbox is a refusal, not a crash");
 });
 
 // ── R5 · the ledger ─────────────────────────────────────────────────────────────────────────────
