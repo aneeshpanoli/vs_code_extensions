@@ -206,6 +206,23 @@ MUTATIONS = [
   '      if (step.kind === "restore" && step.next.sessionId && step.next.sessionId !== state.sessionId &&',
   '      if (step.kind === "restore" && Boolean(0) && step.next.sessionId && step.next.sessionId !== state.sessionId &&'),
 
+ ("the context threshold silently back at 50% — the context is re-read every turn, so its length is the cost",
+  "src/memory.ts",
+  "enabled: true, thresholdPct: 30, saveTimeoutMinutes: 10",
+  "enabled: true, thresholdPct: 50, saveTimeoutMinutes: 10"),
+
+ ("the restore prompt no longer forbids watchers — a wake loop that costs the whole context each time",
+  "src/memory.ts",
+  """    `Do NOT arm watchers, Monitors or /loop in this session: the session-tracker wakes you when a role ` +
+    `finishes, stalls or is resumed, and every wake costs your whole context (playbook \u00a717). ` +
+""",
+  "    `` +\n"),
+
+ ("an oversize memory is banked without a word — every fresh context pays for it forever",
+  "src/memory.ts",
+  "input.memorySize > MAX_MEMORY_BYTES",
+  "input.memorySize > MAX_MEMORY_BYTES && Boolean(0)"),
+
  ("a switch acknowledged before a later turn still counts as fresh (the chip has had its chance)",
   "src/models.ts",
   '  if (before.includes("You:") || since.includes("You:")) return null;',

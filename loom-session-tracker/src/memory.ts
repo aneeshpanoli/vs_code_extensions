@@ -35,6 +35,9 @@ const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 export const IDLE_TICKS_REQUIRED = 2;
 
 export const MIN_MEMORY_BYTES = 200;
+/** Above this the memory is bloat that every fresh context pays for (Lumen's reached 56 KB / 653 lines,
+ *  2026-09-13). Not a refusal — a clear with a fat memory beats no clear — but the note says so. */
+export const MAX_MEMORY_BYTES = 12_000;
 /** How long one window's claim on a cycle stands before another may take it over. Longer than the
  *  save and clear timeouts combined, so a live owner is never overtaken mid-cycle; short enough that
  *  a window closed mid-cycle does not strand the project. */
@@ -96,7 +99,7 @@ export interface MemoryConfig {
 }
 
 export const DEFAULT_CONFIG: MemoryConfig = {
-  enabled: true, thresholdPct: 50, saveTimeoutMinutes: 10, clearTimeoutMinutes: 5, cooldownMinutes: 15,
+  enabled: true, thresholdPct: 30, saveTimeoutMinutes: 10, clearTimeoutMinutes: 5, cooldownMinutes: 15,
 };
 
 export interface ContextInput {
@@ -152,13 +155,18 @@ export interface Step {
 // ── the three prompts ───────────────────────────────────────────────────────────────────────
 /** Asked BEFORE the clear. It has to be explicit that the file is the only thing that survives. */
 export function saveMessage(memoryFile: string, tokens: number | null, percent: number): string {
+  const notes = memoryFile.replace(/memory\.md$/, "notes.md");
   return `[loom-context] Your context is ${percent}% full` +
     `${tokens ? ` (${tokens.toLocaleString()} tokens)` : ""}. ` +
     `Before it fills up, write your working memory to ${memoryFile} — overwrite it, keep it current:\n` +
     `  • what you are doing RIGHT NOW and the exact next step;\n` +
     `  • every role: what it was handed, what it owes you, what it is waiting on;\n` +
     `  • decisions already made (and why), so they are not re-litigated;\n` +
-    `  • open questions and anything you are deliberately not doing yet.\n` +
+    `  • open questions, anything you are deliberately not doing yet, and a section "UNSURE" listing ` +
+    `what you believe but have not verified this thread.\n` +
+    `Keep it under ${MAX_MEMORY_BYTES.toLocaleString()} bytes: it is re-read at the start of every fresh context. ` +
+    `Durable lessons (traps, conventions, anything true across threads) go in ${notes} — append rarely, never ` +
+    `rewrite; the working memory is what changes each cycle.\n` +
     `Write the FILE — do not summarise in chat. Assume the reader has none of this conversation, ` +
     `because after you write it this session is cleared and that file is what you get back.`;
 }
@@ -167,16 +175,20 @@ export const CLEAR_MESSAGE = "/clear";
 
 /** Injected into the FRESH context. Also the "update the memory from the docs" half of the cycle. */
 export function restoreMessage(memoryFile: string, repo: string, role: string): string {
+  const notes = memoryFile.replace(/memory\.md$/, "notes.md");
   return `[loom-context] Fresh context — you are ${role}, the orchestrator of ${repo}. ` +
     `Start by reading, in this order:\n` +
     `  1. ${memoryFile} — your own working memory, written moments ago;\n` +
-    `  2. ~/.claude/loom/${repo}/board.json — the roster and each role's state;\n` +
-    `  3. the project docs (CLAUDE.md and docs/) for anything the memory asserts.\n` +
-    `Reconcile them: where the memory disagrees with the docs or the board, the docs and the board win — ` +
+    `  2. ${notes} — your durable notes, if the file exists (read once; append rarely);\n` +
+    `  3. ~/.claude/loom/${repo}/board.json and each role's status.json — the roster and where each role is;\n` +
+    `  4. ONLY the project docs the memory names — not CLAUDE.md and docs/ wholesale.\n` +
+    `Reconcile them: where the memory disagrees with the board or the docs, the board and the docs win — ` +
     `correct ${memoryFile} on the spot so it stays the accurate account.\n` +
-    `  4. REBIND: the clear gave you a NEW session id. Your ~/.claude/loom/${repo}/board.json entry has ` +
+    `  5. REBIND: the clear gave you a NEW session id. Your ~/.claude/loom/${repo}/board.json entry has ` +
     `been updated with the id that was seen to appear; confirm it equals your $CLAUDE_SESSION_ID and fix ` +
     `it if not (a stale session_id reads as a dead, still-full transcript). Your ${role}.id file is unchanged.\n` +
+    `Do NOT arm watchers, Monitors or /loop in this session: the session-tracker wakes you when a role ` +
+    `finishes, stalls or is resumed, and every wake costs your whole context (playbook §17). ` +
     `Then continue from the next step the memory names, and keep updating it as you work.` +
     ` If any role's tab is missing, do not ask a person and do not park its work: write ` +
     `~/.claude/loom/${repo}/open-requests.json {"roles":[...],"requestedAt":"<iso>"} — the tab is ` +
@@ -278,7 +290,8 @@ export function decide(input: ContextInput): Step {
       return {
         kind: "clear",
         message: CLEAR_MESSAGE,
-        note: `memory banked (${input.memorySize} bytes) — clearing`,
+        note: `memory banked (${input.memorySize} bytes${input.memorySize > MAX_MEMORY_BYTES
+                 ? ` — over the ${MAX_MEMORY_BYTES.toLocaleString()}-byte cap; every fresh context pays for it, trim it` : ""}) — clearing`,
         next: { ...state, ...claim, phase: "clearing", phaseAt: now, idleTicks: 0,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
                 lastNote: "cleared after a verified save" },

@@ -145,14 +145,19 @@ the premium tier; nothing else is promoted.
 The orchestrator is the session that actually fills up: it runs for days across every role. Left
 alone it hits auto-compaction — a summary it did not choose, did not review and cannot re-read.
 
-Past `contextThresholdPct` (50%) this extension makes that deliberate instead:
+Past `contextThresholdPct` (30% — lowered from 50% on 2026-09-13: one day measured 2.93 billion
+cache-read tokens across all projects at 238k of context per turn, and the orchestrators' context
+length was the cost) this extension makes that deliberate instead:
 
 1. **Bank** — the orchestrator is asked to write its working memory to
    `~/.claude/loom/<project>/<role>/memory.md`: what it is doing, what each role owes it, decisions
-   already made, open questions.
+   already made, open questions, and an UNSURE section. Under 12 KB, because every fresh context
+   re-reads it; durable lessons go to `<role>/notes.md`, appended rarely and read once per restore.
 2. **Clear** — `/clear`, but only once that file is verifiably on disk.
-3. **Restore** — a prompt into the fresh context: read the memory file, then the board, then the
-   project docs, and reconcile them so the memory stays true.
+3. **Restore** — a prompt into the fresh context: read the memory, the notes, the board and each
+   role's status, then only the docs the memory names, and reconcile them so the memory stays true.
+   The prompt also forbids watchers, Monitors and `/loop` in the orchestrator's session: the tracker
+   wakes it (playbook §17), and a wake re-reads the whole context.
 4. **Rebind** — `/clear` gives the orchestrator a new session id. The extension, having seen the
    fresh transcript appear, writes that id into the orchestrator's `board.json` entry itself
    (`session_id`, `rebound_by`) before the restore prompt goes out, and the prompt asks the

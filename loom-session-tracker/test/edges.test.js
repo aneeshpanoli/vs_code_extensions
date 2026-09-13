@@ -95,8 +95,8 @@ function input(over = {}) {
 const NOW = 1_800_000_000_000, MIN = 60_000;
 
 suite("edge: the threshold is inclusive", () => {
-  eq(decide(input({ panelPct: 50 })).kind, "save", "exactly at 50% fires");
-  eq(decide(input({ panelPct: 49 })).kind, "none", "one below does not");
+  eq(decide(input({ panelPct: 30 })).kind, "save", "exactly at the 30% threshold fires");
+  eq(decide(input({ panelPct: 29 })).kind, "none", "one below does not");
 });
 
 suite("edge: a memory file exactly at the minimum size counts as banked", () => {

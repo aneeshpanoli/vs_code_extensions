@@ -473,6 +473,7 @@ suite("context memory: a visible orchestrator panel with no compact button is NO
   // a real, rendered conversation (well over CLEARED_PANEL_CHARS) with no compact button on it
   const big = poFrame("wid-po", repo, "\n" + "conversation ".repeat(1500));
   try { fs.unlinkSync(path.join(LOOM, "context-debug.json")); } catch { /* an earlier suite's */ }
+  vscode._config["loomSessionTracker.contextThresholdPct"] = 50;   // the veto is the panel's opinion at 50
   const off = await activate([big]);
   try {
     await settle(60);
@@ -485,6 +486,7 @@ suite("context memory: a visible orchestrator panel with no compact button is NO
   vscode._reset();
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
+  vscode._config["loomSessionTracker.contextThresholdPct"] = 50;
   const off2 = await activate([{ ...big, contextPct: 70 }]);
   try {
     await settle(60);

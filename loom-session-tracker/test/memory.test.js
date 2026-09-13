@@ -34,10 +34,34 @@ function input(over = {}) {
 }
 
 // ── watch ───────────────────────────────────────────────────────────────────
+suite("memory: the default threshold is 30% (2026-09-13: context length is the cost)", () => {
+  eq(DEFAULT_CONFIG.thresholdPct, 30);
+  eq(decide(input({ panelPct: null, reading: reading(310_000) })).kind, "save", "31% estimate fires (the panel cannot rule below 50)");
+  eq(decide(input({ panelPct: null, reading: reading(290_000) })).kind, "none", "29% does not");
+});
+
+suite("memory: the prompts carry the memory contract — size cap, UNSURE section, notes split, no watchers", () => {
+  const { MAX_MEMORY_BYTES } = load("memory.js");
+  const save = saveMessage("/bus/po/memory.md", 400000, 40);
+  match(save, /section "UNSURE"/, "asks for what is believed but unverified");
+  match(save, new RegExp("under " + MAX_MEMORY_BYTES.toLocaleString() + " bytes"), "names the cap");
+  match(save, /\/bus\/po\/notes\.md — append rarely, never rewrite/, "durable lessons go to notes.md");
+  const restore = restoreMessage("/bus/po/memory.md", "demo", "po");
+  match(restore, /2\. \/bus\/po\/notes\.md — your durable notes, if the file exists/, "notes read once");
+  match(restore, /each role's status\.json/, "status files, not just the board");
+  match(restore, /ONLY the project docs the memory names — not CLAUDE\.md and docs\/ wholesale/, "docs narrowed");
+  match(restore, /Do NOT arm watchers, Monitors or \/loop/, "no watchers (playbook §17)");
+  // an oversize memory still clears — with a note
+  const fat = decide(input({ state: { phase: "saving", phaseAt: NOW - 60_000, memoryBaseline: 0, idleTicks: 5 },
+                             memoryMtime: NOW - 1000, memorySize: MAX_MEMORY_BYTES + 1 }));
+  eq(fat.kind, "clear", "a fat memory is still a banked memory");
+  match(fat.note, /over the 12,000-byte cap/, "and the note says to trim it");
+});
+
 suite("memory: under the threshold nothing happens", () => {
-  const s = decide(input({ panelPct: 40, reading: reading(400_000) }));
+  const s = decide(input({ panelPct: 20, reading: reading(200_000) }));
   eq(s.kind, "none", "no step");
-  match(s.note, /40%/, "reports what it saw");
+  match(s.note, /20%/, "reports what it saw");
 });
 
 suite("memory: at the threshold the orchestrator is asked to bank its memory", () => {
@@ -54,9 +78,9 @@ suite("memory: at the threshold the orchestrator is asked to bank its memory", (
 suite("memory: the panel's own percentage outranks the transcript estimate", () => {
   // The compact button's title is the app's own arithmetic over its own window (it divides by
   // contextWindow - maxOutputTokens - 13000). Where it has an opinion, it wins.
-  const low = decide(input({ panelPct: 31, reading: reading(900_000) }));
-  eq(low.kind, "none", "the panel says 31%, so nothing fires despite a big transcript");
-  match(low.note, /context 31%/, "and reports the panel's figure");
+  const low = decide(input({ panelPct: 21, reading: reading(900_000) }));
+  eq(low.kind, "none", "the panel says 21%, so nothing fires despite a big transcript");
+  match(low.note, /context 21%/, "and reports the panel's figure");
   ok(!/estimated/.test(low.note), "not flagged as an estimate");
   const high = decide(input({ panelPct: 73, reading: reading(100_000) }));
   eq(high.kind, "save", "and the panel can trigger where the estimate would not");
@@ -69,11 +93,12 @@ suite("memory: a visible panel with no compact button VETOES the transcript esti
   // no button is under 50% — whatever a transcript says. Measured 2026-09-13: fourteen cycles in four
   // hours on Lumen's orchestrator, all on a 57% estimate off a dead transcript, all under a fresh
   // panel with no button.
-  const s = decide(input({ panelPct: null, reading: reading(570_000) }));
+  const at50 = { ...DEFAULT_CONFIG, thresholdPct: 50 };   // the veto is the panel's opinion at 50; below that it has none
+  const s = decide(input({ panelPct: null, reading: reading(570_000), cfg: at50 }));
   eq(s.kind, "none", "no save");
   match(s.note, /no compact button.*under 50%.*57% transcript estimate is not trusted/, "and says why");
   // The estimate is still what the token count and the session identity come from…
-  const unseen = decide(input({ panelPct: null, frameSeen: false, panelChars: null }));
+  const unseen = decide(input({ panelPct: null, frameSeen: false, panelChars: null, cfg: at50 }));
   eq(unseen.kind, "none", "…but an unseen frame is never typed into anyway");
   // …and below a 50% threshold the panel has no opinion, so the estimate decides.
   const low = decide(input({ panelPct: null, reading: reading(400_000), cfg: { ...DEFAULT_CONFIG, thresholdPct: 30 } }));
@@ -81,7 +106,7 @@ suite("memory: a visible panel with no compact button VETOES the transcript esti
   eq(low.next.triggerFromPanel, false, "marked as an estimate");
   match(low.note, /estimated/, "and said out loud");
   // a panel that is nearly empty (just cleared, or not rendered yet) is not a witness either way
-  const empty = decide(input({ panelPct: null, panelChars: 200, reading: reading(600_000) }));
+  const empty = decide(input({ panelPct: null, panelChars: 200, reading: reading(600_000), cfg: at50 }));
   eq(empty.kind, "save", "a 200-char panel says nothing about occupancy");
 });
 
@@ -207,7 +232,7 @@ suite("memory: a fresh session id is what proves the clear landed", () => {
   eq(s.next.cycles, 3, "cycle counted");
   match(s.message, /1\. \/tmp\/demo\/po\/memory\.md/, "reads the memory doc first");
   match(s.message, /board\.json/, "then the board");
-  match(s.message, /docs and the board win/, "and reconciles it against the docs");
+  match(s.message, /the board and the docs win/, "and reconciles it against the docs");
 });
 
 suite("memory: the same session id means the clear has not happened yet", () => {

@@ -170,7 +170,7 @@ export function activate(context: vscode.ExtensionContext) {
     const windowId = `${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
     const contextConfig = (): MemoryConfig => ({
       enabled: cfg().get<boolean>("contextMemory", true) === true,
-      thresholdPct: Math.min(95, Math.max(10, Number(cfg().get("contextThresholdPct", 50)) || 50)),
+      thresholdPct: Math.min(95, Math.max(10, Number(cfg().get("contextThresholdPct", 30)) || 30)),
       saveTimeoutMinutes: Math.max(1, Number(cfg().get("contextSaveTimeoutMinutes", 10)) || 10),
       clearTimeoutMinutes: Math.max(1, Number(cfg().get("contextClearTimeoutMinutes", 5)) || 5),
       cooldownMinutes: Math.max(0, Number(cfg().get("contextCooldownMinutes", 15)) ?? 15),

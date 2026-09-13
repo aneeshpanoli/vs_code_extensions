@@ -11,7 +11,7 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.30.0)
 
-**Version 0.31.0** deployed and pushed; 447 tests, 43/43 mutations caught (parallel), `./live.sh`
+**Version 0.32.0** deployed and pushed; 449 tests, 46/46 mutations caught (parallel), `./live.sh`
 clean except the warnings listed under open threads. Read this section, then `README.md`, then run
 `./live.sh` and believe it over anything written here.
 
@@ -59,10 +59,21 @@ clean except the warnings listed under open threads. Read this section, then `RE
     `claude-opus-5`; the tagged orchestrator's own idle frame is promoted with `/model`. The footer
     chip lags a switch until the next turn, so `models.acknowledgedSwitch()` reads the "Set model
     to" line and the policy does not retype while it lags.
+14. **The context is re-read every turn, so its LENGTH is the cost** (0.32.0, measured
+    2026-09-13 across all projects: 2.93 billion cache-read tokens in one day, 238k of context per
+    turn over 12,540 turns, output under 0.5% of tokens). Three consequences, all shipped:
+    the clear threshold is **30%**, not 50 — a restore costs ~30-60k tokens once, a fat context costs
+    its full length on every one of those turns; the memory is a **contract**, `memory.md` under
+    `MAX_MEMORY_BYTES` (12,000) with an UNSURE section, durable lessons split into `<role>/notes.md`
+    (read once per restore, appended rarely), and a restore reads memory → notes → board + each
+    role's `status.json` → ONLY the docs the memory names, never `CLAUDE.md` and `docs/` wholesale
+    (an oversize memory still clears — the note says to trim it); and **no watchers, Monitors or
+    `/loop` in an orchestrator session** — the tracker wakes it when a role finishes, stalls or is
+    resumed, and every self-armed wake pays the whole context again (restore prompt, playbook §17).
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
-`~/.claude/loom/test_loom_cdp.py` (mirrored in `tools/`), `ORCHESTRATION-PLAYBOOK.md` §13–§16.
+`~/.claude/loom/test_loom_cdp.py` (mirrored in `tools/`), `ORCHESTRATION-PLAYBOOK.md` §13–§17 (§17: no watchers in an orchestrator session).
 Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
 
 ## Where everything is
@@ -317,6 +328,10 @@ claims 849774ff, livegita 45962fe2, funisland gamification. The diagnostic sessi
 
 ## Open threads (2026-09-13)
 
+- **0.32.0's companion edits are outside git** — playbook §17 (`~/.claude/loom/ORCHESTRATION-PLAYBOOK.md`)
+  and the ReciEats and livegita orchestrator memory files on the bus were patched by hand. Every
+  window still needs a reload to be on this build. funisland's copy of the loom skill is still
+  uncommitted in funisland's own repo.
 - **Audit 2026-09-13 (two Explore agents, all seven projects):** no project doc told the orchestrator
   to refresh its own `board.json` session_id after a clear; every one teaches rebinding WORKERS. The
   shared loom skill said "bind once, never rebind" — now qualified (global copy and funisland's copy,
