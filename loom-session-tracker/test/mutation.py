@@ -133,8 +133,8 @@ MUTATIONS = [
 
  ("an open request ignores the active-session cap",
   "src/requests.ts",
-  '    if (open.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }',
-  "    if (false) { continue; }"),
+  '    if (open.length + spawn.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }',
+  '    if (open.length + spawn.length >= slots && Boolean(0)) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }'),
 
  ("a stale open request is served anyway",
   "src/requests.ts",
