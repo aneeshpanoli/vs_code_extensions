@@ -9,13 +9,13 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.34.0)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.35.0)
 
-**Version 0.34.0** is merged and pushed. The deployed copy on this machine is what `ls
+**Version 0.35.0** is merged and pushed. The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-"0.34.0" here as "0.34.0 is what the editor is executing". **623 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **119/119 mutations caught** under the
+"0.35.0" here as "0.35.0 is what the editor is executing". **647 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **128/128 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 (Those two counts are as of the MP-001 merge; re-measure after banking RB-001 beside it, and
 note that `./test.sh` does NOT compile — a stale `out/` after a merge reads as a red suite.) `./live.sh`
