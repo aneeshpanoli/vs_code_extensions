@@ -140,7 +140,7 @@ anything else, is switched to `orchestratorModel` (`claude-fable-5-1[1m]`) with 
 the same acknowledgement rule. Setting: `enforceOrchestratorModel`. Only the orchestrator is ever on
 the premium tier; nothing else is promoted.
 
-### Per-handoff model (MP-001)
+### Per-handoff model (MP-001) and per-handoff files (CH-001)
 
 Workers do not all need the Opus tier. The **orchestrator judges difficulty as it writes a handoff**
 and records that judgement in the handoff's own frontmatter; the **tracker enforces it**; a
@@ -150,10 +150,11 @@ than on feel. The orchestrator switching *itself* is not part of this — that i
 
 ```markdown
 ---
-id: MP-001
+id: CH-001
 from: productowner
 to: developer2
-model: claude-sonnet-5      # ← the only new field
+model: claude-sonnet-5                          # MP-001: which tier this block needs
+files: src/models.ts, src/requests.ts, test/*   # CH-001: which files it will touch
 ---
 ```
 
@@ -198,12 +199,64 @@ counted once: `status.json` is re-read every tick, so a new report means a new `
 
 ```json
 {"id":"MP-108","role":"alpha","model":"claude-opus-5","chosenBy":"escalated","started":"…",
- "finished":"…","loopBacks":2,"testsBefore":563,"testsAfter":592}
+ "finished":"…","loopBacks":2,"testsBefore":563,"testsAfter":592,
+ "contextPctAtFinish":67,"wallMinutes":72,"filesDeclared":3,"statusUpdates":2}
 ```
 
 `chosenBy` is `frontmatter` (the orchestrator chose), `default` (it did not) or `escalated` (the
 tracker overrode it). A line that cannot be completed is written **with nulls, not skipped** — a
 missing line is invisible, and the gap would bias exactly the comparison the ledger exists to make.
+
+The last four fields are CH-001's, and they are there to score §19's **size** rule rather than the
+tier rubric:
+
+| field | what it is | when it is `null` |
+|---|---|---|
+| `contextPctAtFinish` | the role's own panel percentage on the tick the line closed | the panel rendered none — see below |
+| `wallMinutes` | `finished − started`, in minutes | either stamp will not parse |
+| `filesDeclared` | how many paths the handoff's `files:` line named | never; an absent line is `0`, which is a fact |
+| `statusUpdates` | how many **distinct** `status.json` `updated_at` values the tracker saw during the block | no `updated_at` was ever readable |
+
+**`null` for a percentage means "comfortable", not "missing".** The panel only renders its compact
+button past roughly 50 % used, so a block that finished below that has no number to read. That is
+exactly §19's "finished under 30 % context was too small" band — so the honest reading is: a *number*
+here always means at least half full, and a `null` means the session was nowhere near it. It is never
+written as `0`; a zero would be scored as the smallest handoff ever handed out.
+
+**`statusUpdates` counts reports, not reads.** `status.json` is re-read every tick, so a tick is not a
+turn — only a new `updated_at` is. Counting reads would turn this field into a measure of how long the
+window happened to be open. (The same rule, and the same past defect, as escalation counting.)
+
+### File disjointness: the tracker refuses an overlapping handoff (CH-001)
+
+Playbook §19's other rule is **one developer per file-disjoint package**: two live handoffs on one bus
+must not touch the same files, because the cost of breaking that is paid at merge time, hours later,
+by the orchestrator rather than by whoever broke it. The `files:` line above declares the package, and
+the tracker enforces it:
+
+* **On the path that opens tabs** (`open-requests.json`), a requested role whose handoff declares
+  files that a currently **working** role's handoff also declares is **refused**, with the reason
+  `overlaps <role> on <first shared file>` written back into the result file. Roles accepted earlier
+  **in the same request** count as live too — one request naming two colliding briefs is the case the
+  rule is most about, and neither of them is "working" yet.
+* **On an already-bound role**, there is nothing to refuse: the orchestrator rings a live tab through
+  `reach_po.py`, which is off-git and outside this extension. So the same check surfaces as a
+  **status-bar warning**, once per colliding pair, and is recorded under `handoffOverlap` in
+  `tracker-debug.json`. Warn only — a ring cannot be stopped.
+
+**Never a refusal on absence.** Both sides need a `files:` line. A handoff that declares nothing is not
+a handoff that touches nothing; it is one that cannot be judged, and reading the silence as licence to
+refuse would make the line compulsory by stealth and break every bus that has not adopted it
+(principle 16, pointed the same way as `model:`).
+
+**What counts as the same file.** A `*` is a wildcard (`src/*.ts` collides with `src/models.ts`), and
+the comparison is a **path-segment-anchored suffix** match, because the same file gets written from two
+roots on one bus: CH-001's own frontmatter said `src/models.ts` while RB-001's status.json said
+`loom-session-tracker/src/models.ts`. Anchoring on `/` is what keeps `src/models.ts` from matching
+`other/src/mymodels.ts` or `xsrc/models.ts`. It can still over-match a bare `models.ts` against any
+directory's — which is the right direction to be wrong in (an over-match costs one re-read; an
+under-match costs a merge conflict found an hour later) and is entirely in the writer's hands: declare
+a path with a directory in it.
 
 ### Orchestrator context memory
 
@@ -679,7 +732,7 @@ the whole extension, and had no test of its own.
 
 ```bash
 npx tsc -p .                                   # build to out/
-./test.sh                                      # 623 checks, 39 files, no test framework
+./test.sh                                      # 647 checks, 39 files, no test framework
 ./test.sh notifier                             # filter by name
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 ./live.sh                                      # invariants against the live editor

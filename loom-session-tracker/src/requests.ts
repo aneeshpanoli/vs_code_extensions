@@ -27,6 +27,9 @@
 //    open tabs days later;
 //  - the file is consumed (rewritten as a result) whether or not anything was opened, so a bad
 //    request cannot loop;
+//  - never a role whose handoff declares `files:` that a currently WORKING role's handoff also
+//    declares — playbook §19's disjointness rule (CH-001). Both sides must declare; an absent
+//    `files:` line refuses nothing, ever. See overlap.ts.
 //  - a role whose transcripts all live under ANOTHER cwd (it moved into its worktree) is not
 //    reopened here — that opens a blank tab (reopen.ts) — it is SPAWNED and bound, and the result
 //    says so, with the cwd its memory would resume from.
@@ -37,6 +40,7 @@ import * as path from "path";
 import { boardRoles } from "./registry";
 import { isOwnerRole, canonicalRole } from "./naming";
 import { freshestSession, strandedRoles, ReopenCandidate, Stranded } from "./reopen";
+import { overlapFor, overlapReason } from "./overlap";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
@@ -94,6 +98,13 @@ export function planOpen(repo: string, liveRoles: Set<string>, slots: number, no
     if (!roster.has(role)) { refused.push({ role: raw, reason: `not a role of ${repo}` }); continue; }
     if (liveRoles.has(role)) { refused.push({ role: raw, reason: "already live" }); continue; }
     if (open.some((c) => c.role === role) || spawn.includes(role)) continue;   // duplicate in one request
+    // §19's disjointness rule, enforced rather than trusted (CH-001): a handoff that declares files
+    // another WORKING role's handoff also declares is a merge conflict already written down, and the
+    // cheapest moment to refuse it is before the tab exists. Roles accepted EARLIER IN THIS PLAN
+    // count too — one request naming two colliding briefs is the case the rule is most about.
+    // Absence of a `files:` line on either side is never an overlap; see overlap.ts.
+    const ov = overlapFor(repo, role, [...open.map((c) => c.role), ...spawn]);
+    if (ov) { refused.push({ role: raw, reason: overlapReason(ov) }); continue; }
     if (open.length + spawn.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }
     const c = freshestSession(repo, role, windowCwd);
     if (c) { open.push(c); continue; }

@@ -171,8 +171,55 @@ export function frontmatter(text: string | null | undefined): Record<string, str
   return out;
 }
 
+/**
+ * The `files:` line of that same block, as the path patterns a handoff DECLARES it will touch
+ * (CH-001, playbook §19: "one handoff is one merge", and two live handoffs on one bus must not
+ * touch the same files).
+ *
+ * `frontmatter()` itself cannot carry this: it is typed `Record<string, string>` and every caller
+ * relies on that, so the list is parsed beside it rather than folded into its return type — the
+ * `files:` half of the same block, one function along.
+ *
+ * Tolerant on purpose, because a human and an orchestrator both write this line: comma- OR
+ * space-separated (§19's own example uses commas, MP-001's inbox used spaces), quotes and stray
+ * whitespace dropped, `./` and trailing slashes normalised, duplicates collapsed, order kept.
+ *
+ * AN ABSENT LINE IS AN EMPTY LIST AND NOT A CLAIM ABOUT ANYTHING. Principle 16 pointed the same way
+ * as MP-001's `model:`: a handoff that declares nothing is not a handoff that declares it touches
+ * nothing, so the overlap guard must have no opinion there rather than read the silence as licence
+ * to refuse. Every refusal below needs a `files:` line on BOTH sides.
+ *
+ * Known bound, stated rather than half-handled: this reads ONE line. A multi-line YAML list
+ * (`files:` then `  - src/a.ts`) parses as a `files:` with an empty value and therefore declares
+ * nothing — which is the safe direction (no refusals), not a silent wrong answer.
+ */
+export function declaredFiles(text: string | null | undefined): string[] {
+  const raw = frontmatter(text)["files"];
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const piece of raw.split(/[,\s]+/)) {
+    const p = normalizeDeclaredPath(piece);
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/** One declared path, in the one spelling the collision test compares. */
+export function normalizeDeclaredPath(p: string | null | undefined): string {
+  let s = String(p || "").trim();
+  s = s.replace(/^["']+/, "").replace(/["']+$/, "").trim();
+  return s.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+}
+
 function inboxFile(repo: string, role: string): string {
   return path.join(LOOM_ROOT, repo, role, "inbox.md");
+}
+
+/** The `files:` a role's CURRENT inbox declares. Unreadable or absent -> empty, never a guess. */
+export function handoffFiles(repo: string | null, role: string): string[] {
+  if (!repo) return [];
+  try { return declaredFiles(fs.readFileSync(inboxFile(repo, role), "utf8")); }
+  catch { return []; }
 }
 
 /** The `id:` of the handoff currently sitting in a role's inbox, or null. */
@@ -190,9 +237,25 @@ function readStatus(repo: string, role: string): any | null {
   } catch { return null; }
 }
 
+/** A number, or null. `null`, `undefined` and `""` are ABSENCES and must come back null — `Number()`
+ *  maps all three to 0, which in a ledger line is not a missing value but a measured one, and a 0 %
+ *  context or 0 tests would be read as fact. (Found while adding `contextPctAtFinish`, which is null
+ *  far more often than it is a number; the same hole was open under `testsBefore`.) */
 function numOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Wall-clock minutes between two timestamps, or null when either will not parse (CH-001 R3).
+ *  NEVER a guess: the ledger's own test fixtures use "T1"/"T9" as stamps, and the honest answer to
+ *  "how long did that take" for an unparseable pair is "unknown", not zero. A NEGATIVE result is
+ *  returned as measured rather than nulled — a clock that went backwards is a fact about the bus,
+ *  and silently rounding it to null would hide it. */
+function wallMinutes(started: any, finished: any): number | null {
+  const a = Date.parse(String(started || "")), b = Date.parse(String(finished || ""));
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round(((b - a) / 60_000) * 10) / 10;
 }
 
 /**
@@ -287,6 +350,16 @@ interface EscalationRecord { role: string; blocked: number; lastSeen?: string; e
 /** The line-in-progress for the ledger (R5): what we know about a (role, id) until it closes. */
 interface LedgerRecord { id: string; role: string; model: string; chosenBy: string; started: string;
   loopBacks: number; testsBefore: number | null;
+  /** §19's SIZE rule, measured (CH-001). How many paths the handoff declared — the closest proxy for
+   *  "split at file boundaries" that exists before the work is done. 0 means it declared none. */
+  filesDeclared?: number;
+  /** How many DISTINCT `status.json` `updated_at` values this block was seen with — the closest
+   *  thing to a turn count the tracker can observe from outside a session. null while no
+   *  `updated_at` has ever been readable: a count of zero would read as "it never moved". */
+  statusUpdates?: number | null;
+  /** The last `updated_at` counted, so re-reading an unchanged status.json counts nothing. The same
+   *  report-not-read rule as R4's escalation counting, for the same reason. */
+  seenUpdatedAt?: string;
   /** Its line has been appended. The record survives until the handoff id changes, purely so the
    *  same block is not written again on every idle tick that follows. */
   closed?: boolean; }
@@ -501,9 +574,16 @@ export class ModelPolicy {
   // cannot be completed is written with nulls rather than skipped — a missing line is invisible,
   // and the gap it leaves would bias exactly the comparison this exists to make.
 
-  /** Advance the ledger for one role. Call every tick; it writes only at a transition. */
+  /**
+   * Advance the ledger for one role. Call every tick; it writes only at a transition.
+   *
+   * `contextPct` is the role's frame's own "% context used", which is CDP data and therefore cannot
+   * be read from here — `extension.ts` passes what the tick measured, or null. It is recorded at the
+   * instant the line CLOSES, because §19 judges size by where a handoff finished ("under 30 % was
+   * too small; the bank threshold was too big"). Its one honest bound is stated at `appendLedger`.
+   */
   ledgerTick(role: string, workerModel = "claude-opus-5", allow: string[] = DEFAULT_WORKER_MODELS,
-             now = new Date()): void {
+             now = new Date(), contextPct: number | null = null): void {
     if (!this.repo) return;
     const id = handoffId(this.repo, role);
     const status = readStatus(this.repo, role) || {};
@@ -512,7 +592,7 @@ export class ModelPolicy {
     let cur = led[role];
     let dirty = false;
     if (cur && cur.id !== id) {                       // the next handoff landed over this one
-      if (!cur.closed) this.appendLedger(cur, status, now, st);
+      if (!cur.closed) this.appendLedger(cur, status, now, st, contextPct);
       delete led[role]; cur = undefined as any; dirty = true;
     }
     // A CLOSED line is kept, not deleted, until its handoff is replaced. The inbox still holds the
@@ -522,10 +602,14 @@ export class ModelPolicy {
     if (cur && cur.closed) return;
     if (!cur && id) {
       const want = desiredModel(this.repo, role, workerModel, allow);
+      const seen = String(status.updated_at || "");
       led[role] = { id, role, model: want.model,
                     chosenBy: this.wasEscalated(id) ? "escalated" : want.chosenBy,
                     started: String(status.updated_at || now.toISOString()),
-                    loopBacks: 0, testsBefore: numOrNull(status.tests_before ?? status.testsBefore) };
+                    loopBacks: 0, testsBefore: numOrNull(status.tests_before ?? status.testsBefore),
+                    filesDeclared: handoffFiles(this.repo, role).length,
+                    // the stamp this block OPENED on is the first distinct value we saw
+                    statusUpdates: seen ? 1 : null, ...(seen ? { seenUpdatedAt: seen } : {}) };
       dirty = true;
     } else if (cur) {
       // keep the in-progress line current: the tier may have been escalated mid-handoff, and the
@@ -533,34 +617,74 @@ export class ModelPolicy {
       const want = desiredModel(this.repo, role, workerModel, allow);
       const chosenBy = this.wasEscalated(id) ? "escalated" : want.chosenBy;
       const loopBacks = ((st.escalations || {})[id!] || { blocked: 0 }).blocked;
-      if (cur.model !== want.model || cur.chosenBy !== chosenBy || cur.loopBacks !== loopBacks) {
-        cur.model = want.model; cur.chosenBy = chosenBy; cur.loopBacks = loopBacks; dirty = true;
+      const files = handoffFiles(this.repo, role).length;
+      if (cur.model !== want.model || cur.chosenBy !== chosenBy || cur.loopBacks !== loopBacks
+          || cur.filesDeclared !== files) {
+        cur.model = want.model; cur.chosenBy = chosenBy; cur.loopBacks = loopBacks;
+        cur.filesDeclared = files; dirty = true;
+      }
+      // R3: count REPORTS, not reads. status.json is re-read every tick, so a status update is a new
+      // `updated_at` and nothing else — the same rule R4's escalation counting is built on, and the
+      // same failure if it is broken: counting reads would make this a tick counter, which measures
+      // how long the window was open rather than how many turns the block took.
+      const seen = String(status.updated_at || "");
+      if (seen && seen !== cur.seenUpdatedAt) {
+        cur.statusUpdates = (cur.statusUpdates || 0) + 1;
+        cur.seenUpdatedAt = seen; dirty = true;
       }
       // finished: the role says it is idle having handled exactly this id
       if (String(status.status || "") === "idle" && String(status.last_handled || "") === id) {
-        this.appendLedger(cur, status, now, st);
+        this.appendLedger(cur, status, now, st, contextPct);
         cur.closed = true; dirty = true;
       }
     }
     if (dirty) saveState(this.repo, st);
   }
 
-  private appendLedger(rec: LedgerRecord, status: any, now: Date, st: PolicyState): void {
-    if (!this.repo) return;
+  /**
+   * Write one closed block's line, and — only if that write actually landed — drop its escalation
+   * record (CH-001 R4).
+   *
+   * WHY THE PRUNE IS HERE AND NOT ANYWHERE EARLIER. `escalations` is working state: it exists to
+   * count loop-backs until a decision is made, and once the ledger line is on disk the DURABLE
+   * record of that decision is the line (`chosenBy: "escalated"`, `loopBacks: n`). Left behind, the
+   * record grows one entry per handoff for ever in a file that is re-read and re-written on a 15
+   * second tick. But it must not be dropped a moment before the line exists: the append can fail
+   * (a full disk, a read-only mount) and this method has always swallowed that so a ledger write
+   * cannot break a tick. Pruning unconditionally would then lose BOTH records — the only copy of
+   * "this block was escalated after two loop-backs" — so the boolean this now returns is the whole
+   * point, and the mutant for it makes the prune unconditional.
+   *
+   * `contextPctAtFinish` has an honest bound worth knowing before anyone averages it: the panel only
+   * renders its "% context used" button above roughly 50 %, so a block that finished comfortably
+   * reads null here. That is exactly §19's "finished under 30 % context was too small" band — so
+   * null is not missing data in that case, it is the measurement: no percentage rendered means the
+   * session was nowhere near full. A NUMBER here always means at least half full.
+   */
+  private appendLedger(rec: LedgerRecord, status: any, now: Date, st: PolicyState,
+                       contextPct: number | null = null): boolean {
+    if (!this.repo) return false;
+    const finished = String(status.updated_at || now.toISOString());
     const line = {
       id: rec.id, role: rec.role, model: rec.model || null,
       chosenBy: this.wasEscalated(rec.id) ? "escalated" : (rec.chosenBy || null),
       started: rec.started || null,
-      finished: String(status.updated_at || now.toISOString()),
+      finished,
       loopBacks: ((st.escalations || {})[rec.id] || { blocked: rec.loopBacks || 0 }).blocked,
       testsBefore: rec.testsBefore,
       testsAfter: numOrNull(status.tests_after ?? status.testsAfter),
+      contextPctAtFinish: numOrNull(contextPct),
+      wallMinutes: wallMinutes(rec.started, finished),
+      filesDeclared: typeof rec.filesDeclared === "number" ? rec.filesDeclared : null,
+      statusUpdates: rec.statusUpdates ?? null,
     };
     try {
       const f = path.join(LOOM_ROOT, this.repo, "model-ledger.jsonl");
       fs.mkdirSync(path.dirname(f), { recursive: true });
       fs.appendFileSync(f, JSON.stringify(line) + "\n");    // append-only: never read, never rewritten
-    } catch { /* a ledger write must never break a tick */ }
+    } catch { return false; }                               // a ledger write must never break a tick
+    if (st.escalations && st.escalations[rec.id]) delete st.escalations[rec.id];
+    return true;
   }
 
   /** Switch a role onto the model it is owed by injecting `/model <id>` into its composer. The id

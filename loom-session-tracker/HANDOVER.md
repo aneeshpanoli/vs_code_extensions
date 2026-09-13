@@ -238,10 +238,65 @@ believe it over anything written here.
     instead of reports escalates on the FIRST loop-back within seconds, and the judgement the whole
     rubric is meant to measure never gets made. The same shape as the ledger's closed-line marker:
     a transition must be recognised once, not once per observation of the state it left behind.
+20. **One handoff is one merge: the tracker refuses overlap, the ledger measures size** (0.35.0,
+    CH-001, 2026-09-13). The fixed cost of a handoff — ~40 mechanical orchestrator calls, three gate
+    runs, a merge — is the same whatever its size, so bite-sized handoffs are the expensive kind and
+    §19 sets a size rule (150–250 worker calls, split at FILE boundaries) and a parallelism rule (one
+    developer per file-disjoint package). A rule nobody enforces drifts, and these two are enforced
+    and scored in different ways ON PURPOSE, because only one of them is decidable: disjointness is a
+    fact about two files that a machine can check before the tab exists, while size is a judgement
+    that can only be MEASURED after the fact and argued about with numbers.
+
+    **Declare, then refuse — but only where something was declared.** `files:` in the frontmatter is
+    the package; `planOpen` refuses a requested role whose files a currently WORKING role's handoff
+    also claims, reason `overlaps <role> on <first shared file>`, and counts roles accepted earlier in
+    the SAME request as live (one request naming two colliding briefs is the case §19 is most about,
+    and neither is "working" yet). Absence is never a refusal, on either side: an undeclared handoff is
+    not one that touches nothing, and reading the silence as licence would make the line compulsory by
+    stealth. The same family as principle 16, and as MP-001's `model:`.
+
+    **A ring cannot be refused, so it is warned about instead.** A role that is already bound is
+    reached through `reach_po.py` — off-git, no part of this extension, nothing to intercept. The
+    honest surface is a status-bar line plus `handoffOverlap` in `tracker-debug.json`, once per
+    colliding pair. Naming that limit in the code is worth more than a guard that pretends to cover it.
+
+    **The same file gets written from two roots on one bus**, so the comparison is a path-SEGMENT
+    anchored suffix match, not a string compare: CH-001's own frontmatter said `src/models.ts` while
+    RB-001's status.json said `loom-session-tracker/src/models.ts`. The anchor is what keeps it from
+    also matching `other/src/mymodels.ts`. It still over-matches a bare `models.ts`, and that is the
+    correct direction to be wrong in — an over-match costs one re-read of two briefs, an under-match
+    costs a merge conflict discovered an hour later.
+
+    **A size field that cannot be read is null, and `Number(null)` is 0.** The ledger gained
+    `contextPctAtFinish`, `wallMinutes`, `filesDeclared` and `statusUpdates`, and adding the first of
+    them exposed a hole that had been open under `testsBefore` since MP-001: `numOrNull` mapped
+    `null`, `undefined` and `""` to 0, so an unreadable value entered the ledger as a MEASURED zero.
+    That matters most for the percentage: the panel renders no compact button below ~50 % used, which
+    is exactly §19's "under 30 % context was too small" band, so every comfortable handoff would have
+    been scored as the smallest one ever handed out. A number there now always means at least half
+    full; null means comfortable OR unread, and those two are not worth pretending to separate.
+    `statusUpdates` counts REPORTS, not reads — the same sentence as principle 19's last paragraph,
+    and the third feature in this file to need it.
+
+    **A prune must be gated on the durable copy existing.** Once a block's ledger line is appended the
+    escalation record is working state and is dropped — but the append is deliberately swallowed so a
+    full disk cannot break a tick, so pruning unconditionally would destroy BOTH copies of "this block
+    was escalated after two loop-backs". `appendLedger` returns whether it landed, and that boolean is
+    the whole guard. Measured the same day, and not hypothetically: `/home` hit 100 % full mid-handoff
+    and truncated `src/tracker.ts` to zero bytes. A write that cannot fail is a write nobody checked.
+
+    **A field asserted everywhere can still have an untested WRITE.** The mutation run's one survivor
+    was `filesDeclared` set to 0 where the ledger line OPENS — and it survived because every longer
+    block has that value refreshed by a later tick before it closes, so the open-site assignment is
+    reachable only by a block ABANDONED after exactly one tick (playbook §12 step 2's window: the
+    orchestrator's first move after banking is to write the next brief over the inbox). Four tests
+    asserted the field and none of them reached the line that first sets it. Same lesson as RB-001's
+    survivor — two tests that read as "either way" can exercise one branch twice — and the same tool
+    found it: only a baseline-graded mutant can tell "asserted" from "reached".
 
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
-`~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§17 (§17: no watchers in an orchestrator session).
+`~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§19 (§17: no watchers in an orchestrator session; §18: the orchestrator picks the worker's tier per handoff; §19: chunking — one handoff is one merge, and `files:` declares the package).
 Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
 
 ## Where everything is
@@ -427,7 +482,7 @@ Coverage says which lines ran. It cannot say which realities were considered. So
 ```bash
 cd /home/aneesh/vs_code_extensions/loom-session-tracker
 npx tsc -p .        # or: ELECTRON_RUN_AS_NODE=1 /usr/share/codium/codium node_modules/typescript/bin/tsc -p ./
-./test.sh           # 623 checks; ./test.sh <filter> to narrow
+./test.sh           # 647 checks; ./test.sh <filter> to narrow
 ./live.sh           # invariants against the live editor (read-only)
 rm -rf /tmp/cov && NODE_V8_COVERAGE=/tmp/cov ./test.sh && python3 ../tools/coverage.py /tmp/cov out
 cd .. && ./deploy.sh loom-session-tracker    # then reload the window

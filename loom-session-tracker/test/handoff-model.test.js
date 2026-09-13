@@ -240,8 +240,13 @@ suite("R5: a line is appended when the role reports idle having handled that id,
   p.ledgerTick("dev", "claude-opus-5");
   const l = ledgerLines(repo);
   eq(l.length, 1, "one line per (role, handoff)");
+  // The FULL shape, deep-equal, so a field added without a decision about its null case cannot slip
+  // in unnoticed. The four CH-001 size fields are here at their unreadable values on purpose: these
+  // fixtures use "T1"/"T9" as stamps (no duration), declare no `files:`, and call ledgerTick with no
+  // contextPct — which is the ordinary case for a role below ~50 % context, not an exotic one.
   eq(l[0], { id: "MP-020", role: "dev", model: "claude-sonnet-5", chosenBy: "frontmatter",
-             started: "T1", finished: "T9", loopBacks: 0, testsBefore: 563, testsAfter: 590 },
+             started: "T1", finished: "T9", loopBacks: 0, testsBefore: 563, testsAfter: 590,
+             contextPctAtFinish: null, wallMinutes: null, filesDeclared: 0, statusUpdates: 2 },
      "the full shape");
 
   p.ledgerTick("dev", "claude-opus-5");
@@ -337,4 +342,291 @@ suite("R5/R4: state survives alongside pending — no section clobbers another",
   ok(st.escalations && st.escalations["MP-026"], "escalation count survived the pending write");
   ok(st.ledger && st.ledger.dev, "and the open ledger line survived it too");
   eq(st.escalations["MP-026"].blocked, 1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// CH-001 — chunking guards. §19 sets two rules: SIZE (one handoff is one merge) and PARALLELISM (one
+// developer per file-disjoint package). The parallelism rule is the one a machine can enforce, from
+// the `files:` line; the size rule is one it can only MEASURE, in the ledger. These are the pure and
+// fs-only halves; the spawn refusal and the warning are driven through activate() in extension.test.js.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+const { declaredFiles, handoffFiles } = load("models.js");
+const { pathsCollide, firstShared, overlapFor, workingRoles, overlapReason } = load("overlap.js");
+
+/** A handoff with a `files:` line. `files === null` omits the line entirely. */
+const withFiles = (id, files, model) =>
+  `---\nid: ${id}\nfrom: productowner\nto: dev\n` + (model ? `model: ${model}\n` : "") +
+  (files === null ? "" : `files: ${files}\n`) + `---\n# ${id}\n\nthe brief\n`;
+
+// ── R1 · the `files:` line ──────────────────────────────────────────────────────────────────────
+
+suite("CH-001 R1: `files:` is read comma- OR space-separated, and normalised", () => {
+  eq(declaredFiles(withFiles("C-1", "src/models.ts, src/requests.ts")), ["src/models.ts", "src/requests.ts"],
+     "§19's own example spelling: commas");
+  eq(declaredFiles(withFiles("C-2", "src/models.ts src/requests.ts")), ["src/models.ts", "src/requests.ts"],
+     "and spaces, which is how a human writes it");
+  eq(declaredFiles(withFiles("C-3", "  src/a.ts ,,  src/b.ts ,")), ["src/a.ts", "src/b.ts"],
+     "stray whitespace and empty entries dropped");
+  eq(declaredFiles(withFiles("C-4", '"src/a.ts", \'src/b.ts\'')), ["src/a.ts", "src/b.ts"],
+     "per-path quotes dropped");
+  eq(declaredFiles(withFiles("C-5", "./src/a.ts, src//b/, src/a.ts")), ["src/a.ts", "src/b"],
+     "`./`, doubled and trailing slashes normalised, and the duplicate collapsed");
+  eq(declaredFiles(withFiles("C-6", "src/*.ts, test/*")), ["src/*.ts", "test/*"],
+     "a glob is kept verbatim — it is a pattern, not a path to normalise away");
+});
+
+suite("CH-001 R1: an ABSENT `files:` line is an empty list, never a claim (principle 16)", () => {
+  eq(declaredFiles(withFiles("C-7", null)), [], "a frontmatter with no `files:` declares nothing");
+  eq(declaredFiles("# a brief with no frontmatter at all\n\nfiles: src/a.ts\n"), [],
+     "a `files:` line in the BODY is not a declaration");
+  eq(declaredFiles("---\nid: C-8\nfiles: src/a.ts\n\n# never closed\n"), [],
+     "a malformed block declares nothing");
+  eq(declaredFiles(null), [], "no text at all");
+  eq(declaredFiles(withFiles("C-9", "")), [], "an EMPTY `files:` line is an absence too");
+  // The one bound worth stating: a multi-line YAML list parses as an empty value, so it declares
+  // nothing — the SAFE direction (no refusals), not a silently wrong answer.
+  eq(declaredFiles("---\nid: C-10\nfiles:\n  - src/a.ts\n  - src/b.ts\n---\n# brief\n"), [],
+     "a multi-line list is not read, and declares nothing rather than something wrong");
+});
+
+suite("CH-001 R1: handoffFiles reads it off a role's real inbox, and never throws", () => {
+  const repo = makeRepo({ dev: {} }, "cf-read");
+  inbox(repo, "dev", withFiles("C-11", "src/models.ts, test/*.js"));
+  eq(handoffFiles(repo, "dev"), ["src/models.ts", "test/*.js"]);
+  eq(handoffFiles(repo, "nobody"), [], "a role with no inbox declares nothing, and does not crash");
+  eq(handoffFiles(null, "dev"), [], "no repo either");
+});
+
+// ── R2 · what counts as the same file ───────────────────────────────────────────────────────────
+
+suite("CH-001 R2: the same file written from two different roots IS a collision", () => {
+  ok(pathsCollide("src/models.ts", "src/models.ts"), "the easy case");
+  // Not hypothetical: CH-001's own frontmatter says `src/models.ts` (relative to the extension dir)
+  // while RB-001's status.json listed `loom-session-tracker/src/models.ts` (relative to the repo
+  // root). A string comparison would call this bus's own collision "disjoint".
+  ok(pathsCollide("src/models.ts", "loom-session-tracker/src/models.ts"), "extension-dir vs repo-root");
+  ok(pathsCollide("loom-session-tracker/src/models.ts", "src/models.ts"), "symmetric");
+  ok(pathsCollide("./src/models.ts", "src/models.ts"), "after normalisation");
+});
+
+suite("CH-001 R2: the suffix match is anchored on a path SEGMENT, not on characters", () => {
+  eq(pathsCollide("src/models.ts", "other/src/mymodels.ts"), false, "`mymodels.ts` is a different file");
+  eq(pathsCollide("src/models.ts", "xsrc/models.ts"), false, "and `xsrc/` is a different directory");
+  eq(pathsCollide("src/models.ts", "src/models.ts.bak"), false, "a longer name is not the same file");
+  eq(pathsCollide("src/a.ts", "src/b.ts"), false, "two files of one directory are disjoint");
+  eq(pathsCollide("", "src/a.ts"), false, "an empty declaration collides with nothing");
+});
+
+suite("CH-001 R2: a `*` is a wildcard, in either declaration", () => {
+  ok(pathsCollide("src/*.ts", "src/models.ts"), "mine is the glob");
+  ok(pathsCollide("src/models.ts", "src/*.ts"), "theirs is the glob");
+  ok(pathsCollide("test/*", "test/handoff-model.test.js"), "a directory glob");
+  eq(pathsCollide("src/*.ts", "test/models.test.js"), false, "and it does not reach another directory");
+});
+
+suite("CH-001 R2: firstShared reports MY spelling of the first file we both claim", () => {
+  eq(firstShared(["src/a.ts", "src/models.ts"], ["loom-session-tracker/src/models.ts"]), "src/models.ts",
+     "the declaration being refused is the one worth printing");
+  eq(firstShared(["src/a.ts"], ["src/b.ts"]), null);
+  eq(firstShared([], ["src/a.ts"]), null, "declaring nothing shares nothing");
+  eq(firstShared(["src/a.ts"], []), null, "and neither does the other side");
+});
+
+// ── R2 · the overlap decision, over a real bus ──────────────────────────────────────────────────
+
+suite("CH-001 R2: a handoff that collides with a WORKING role's is refused, naming both", () => {
+  const repo = makeRepo({ alpha: {}, beta: {} }, "ov-hit");
+  inbox(repo, "alpha", withFiles("C-20", "src/models.ts, src/requests.ts"));
+  inbox(repo, "beta", withFiles("C-21", "README.md, loom-session-tracker/src/models.ts"));
+  writeJson(busPath(repo, "alpha", "status.json"), { status: "working", current: "C-20" });
+  const ov = overlapFor(repo, "beta");
+  eq(ov && ov.other, "alpha", "the working role it collides with");
+  eq(ov && ov.file, "loom-session-tracker/src/models.ts", "in beta's own spelling");
+  eq(overlapReason(ov), "overlaps alpha on loom-session-tracker/src/models.ts", "the reason, verbatim");
+  eq(overlapFor(repo, "alpha"), null, "and alpha is not refused by itself — a role never overlaps itself");
+});
+
+suite("CH-001 R2: NEVER refuse on absence — a missing `files:` line on EITHER side is no opinion", () => {
+  const repo = makeRepo({ alpha: {}, beta: {} }, "ov-absent");
+  inbox(repo, "alpha", withFiles("C-22", null));                   // the working role declares nothing
+  inbox(repo, "beta", withFiles("C-23", "src/models.ts"));
+  writeJson(busPath(repo, "alpha", "status.json"), { status: "working", current: "C-22" });
+  eq(overlapFor(repo, "beta"), null, "an undeclared handoff is not one that touches nothing");
+  const repo2 = makeRepo({ alpha: {}, beta: {} }, "ov-absent2");   // and the other way round
+  inbox(repo2, "alpha", withFiles("C-24", "src/models.ts"));
+  inbox(repo2, "beta", withFiles("C-25", null));
+  writeJson(busPath(repo2, "alpha", "status.json"), { status: "working", current: "C-24" });
+  eq(overlapFor(repo2, "beta"), null, "the role being judged declared nothing either");
+  eq(overlapFor(makeRepo({ alpha: {} }, "ov-absent3"), "alpha"), null, "an empty bus refuses nothing");
+});
+
+suite("CH-001 R2: only a role that is actually WORKING blocks another", () => {
+  const repo = makeRepo({ alpha: {}, beta: {} }, "ov-idle");
+  inbox(repo, "alpha", withFiles("C-26", "src/models.ts"));
+  inbox(repo, "beta", withFiles("C-27", "src/models.ts"));
+  for (const s of ["idle", "blocked", "done", ""]) {
+    writeJson(busPath(repo, "alpha", "status.json"), { status: s, current: "C-26" });
+    eq(overlapFor(repo, "beta"), null, `a role that is "${s}" holds no files`);
+  }
+  writeJson(busPath(repo, "alpha", "status.json"), { status: "WORKING", current: "C-26" });
+  ok(overlapFor(repo, "beta"), "and the check is case-insensitive on the status");
+  eq(workingRoles(repo), ["alpha"], "the working roster is just that one");
+});
+
+suite("CH-001 R2: a role being opened in the SAME breath counts as live", () => {
+  const repo = makeRepo({ alpha: {}, beta: {} }, "ov-also");
+  inbox(repo, "alpha", withFiles("C-28", "src/models.ts"));
+  inbox(repo, "beta", withFiles("C-29", "src/*.ts"));
+  eq(overlapFor(repo, "beta"), null, "nobody is working yet, so on the bus alone these are disjoint");
+  const ov = overlapFor(repo, "beta", ["alpha"]);
+  eq(ov && ov.other, "alpha", "but one request naming both must still refuse the second");
+  eq(overlapFor(repo, "beta", ["beta"]), null, "and passing ITSELF in changes nothing");
+});
+
+// ── R3 · the ledger measures the size rule ──────────────────────────────────────────────────────
+
+suite("CH-001 R3: filesDeclared, statusUpdates, wallMinutes and contextPctAtFinish are recorded", () => {
+  const repo = makeRepo({ dev: {} }, "sz-all");
+  inbox(repo, "dev", withFiles("C-30", "src/models.ts, src/requests.ts, test/*.js", "claude-sonnet-5"));
+  const p = new ModelPolicy(repo);
+  // a real pair of stamps, so wallMinutes is a number rather than the null the older fixtures give
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "working", current: "C-30", updated_at: "2026-09-13T10:00:00Z", tests_before: 623 });
+  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date(), 41);
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "idle", last_handled: "C-30", updated_at: "2026-09-13T11:12:00Z",
+              tests_before: 623, tests_after: 660 });
+  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date(), 67);
+  const l = ledgerLines(repo);
+  eq(l.length, 1);
+  eq(l[0].filesDeclared, 3, "three paths declared");
+  eq(l[0].wallMinutes, 72, "10:00 -> 11:12 is 72 MINUTES, not 72 of anything else");
+  eq(l[0].contextPctAtFinish, 67, "the pct the CLOSING tick measured, not the opening one");
+  eq(l[0].statusUpdates, 2, "two distinct `updated_at` values were seen");
+  eq(l[0].testsBefore, 623);
+  eq(l[0].testsAfter, 660);
+});
+
+suite("CH-001 R3: every new field is NULL rather than guessed when it cannot be read", () => {
+  const repo = makeRepo({ dev: {} }, "sz-null");
+  inbox(repo, "dev", withFiles("C-31", null));                   // declares no files
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-31" });  // no updated_at
+  p.ledgerTick("dev", "claude-opus-5");                                                    // no contextPct
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-31" });
+  p.ledgerTick("dev", "claude-opus-5");
+  const l = ledgerLines(repo);
+  eq(l.length, 1, "written, not skipped");
+  eq(l[0].contextPctAtFinish, null, "NOT 0 — the panel renders no percentage below ~50%, and 0% is a lie");
+  eq(l[0].statusUpdates, null, "NOT 0 — a count of zero would read as 'it never moved'");
+  eq(l[0].filesDeclared, 0, "but an ABSENT `files:` line really is zero paths declared, not unknown");
+  // `started`/`finished` fall back to now(), which parses, so wallMinutes is a real (tiny) number
+  ok(typeof l[0].wallMinutes === "number", "and a wall time it could compute: " + l[0].wallMinutes);
+});
+
+suite("CH-001 R3: wallMinutes is null when a stamp will not parse, never zero", () => {
+  const repo = makeRepo({ dev: {} }, "sz-wall");
+  inbox(repo, "dev", withFiles("C-32", "src/a.ts"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-32", updated_at: "T1" });
+  p.ledgerTick("dev", "claude-opus-5");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-32", updated_at: "T9" });
+  p.ledgerTick("dev", "claude-opus-5");
+  eq(ledgerLines(repo)[0].wallMinutes, null, "'T1' to 'T9' is not a duration");
+});
+
+suite("CH-001 R3: statusUpdates counts REPORTS, not the ticks that re-read them", () => {
+  const repo = makeRepo({ dev: {} }, "sz-reports");
+  inbox(repo, "dev", withFiles("C-33", "src/a.ts"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-33", updated_at: "T1" });
+  for (let i = 0; i < 5; i++) p.ledgerTick("dev", "claude-opus-5");     // five ticks, ONE report
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-33", updated_at: "T2" });
+  for (let i = 0; i < 5; i++) p.ledgerTick("dev", "claude-opus-5");     // five more, one more report
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-33", updated_at: "T3" });
+  p.ledgerTick("dev", "claude-opus-5");
+  eq(ledgerLines(repo)[0].statusUpdates, 3,
+     "3 distinct stamps across 11 ticks — otherwise this measures how long the window was open");
+});
+
+suite("CH-001 R3: filesDeclared follows the inbox if the PO widens the SAME handoff mid-block", () => {
+  const repo = makeRepo({ dev: {} }, "sz-widen");
+  inbox(repo, "dev", withFiles("C-34", "src/a.ts"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-34", updated_at: "T1" });
+  p.ledgerTick("dev", "claude-opus-5");
+  inbox(repo, "dev", withFiles("C-34", "src/a.ts, src/b.ts, src/c.ts"));   // same id, more files
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-34", updated_at: "T2" });
+  p.ledgerTick("dev", "claude-opus-5");
+  eq(ledgerLines(repo)[0].filesDeclared, 3, "the ledger records what the block actually claimed");
+});
+
+// ── R4 · the escalation record is pruned once the LEDGER holds it ───────────────────────────────
+
+suite("CH-001 R4: an escalation record is dropped once its ledger line is appended", () => {
+  const repo = makeRepo({ dev: {} }, "pr-gone");
+  inbox(repo, "dev", withFiles("C-40", "src/a.ts", "claude-sonnet-5"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-40", updated_at: "T0" });
+  p.ledgerTick("dev", "claude-opus-5");
+  for (const t of ["T1", "T2"]) {
+    writeJson(busPath(repo, "dev", "status.json"), { status: "blocked", current: "C-40", updated_at: t });
+    p.escalate("dev", "claude-opus-5");
+    p.ledgerTick("dev", "claude-opus-5");
+  }
+  ok(readJson(busPath(repo, "model-policy.json")).escalations["C-40"], "the record exists while it is needed");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-40", updated_at: "T3" });
+  p.ledgerTick("dev", "claude-opus-5");
+  const st = readJson(busPath(repo, "model-policy.json"));
+  eq(st.escalations["C-40"], undefined, "and is gone once the durable record exists");
+  const l = ledgerLines(repo);
+  eq(l.length, 1);
+  eq(l[0].chosenBy, "escalated", "the ledger line IS that durable record…");
+  eq(l[0].loopBacks, 2, "…and it kept the count the pruned record held");
+  p.ledgerTick("dev", "claude-opus-5");
+  eq(ledgerLines(repo).length, 1, "pruning the record does not reopen the block");
+});
+
+suite("CH-001 R4: a record whose ledger line could NOT be written SURVIVES", () => {
+  const repo = makeRepo({ dev: {} }, "pr-stay");
+  inbox(repo, "dev", withFiles("C-41", "src/a.ts", "claude-sonnet-5"));
+  // The ledger path is a DIRECTORY, so appendFileSync fails (EISDIR) — which the ledger swallows, so
+  // that a write cannot break a tick. Pruning anyway would destroy the ONLY record of the escalation.
+  fs.mkdirSync(busPath(repo, "model-ledger.jsonl"), { recursive: true });
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-41", updated_at: "T0" });
+  p.ledgerTick("dev", "claude-opus-5");
+  for (const t of ["T1", "T2"]) {
+    writeJson(busPath(repo, "dev", "status.json"), { status: "blocked", current: "C-41", updated_at: t });
+    p.escalate("dev", "claude-opus-5");
+    p.ledgerTick("dev", "claude-opus-5");
+  }
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-41", updated_at: "T3" });
+  p.ledgerTick("dev", "claude-opus-5");
+  const st = readJson(busPath(repo, "model-policy.json"));
+  ok(st.escalations && st.escalations["C-41"], "the escalation record is still there");
+  eq(st.escalations["C-41"].escalated, true, "with the decision it recorded");
+  eq(st.escalations["C-41"].blocked, 2, "and the count behind it");
+});
+
+// A block ABANDONED after exactly one tick is the ONLY path that uses the value `filesDeclared` was
+// given when the line OPENED — every longer block has it refreshed by a later tick, which is how a
+// mutant setting the open-site value to 0 survived a suite that asserted the field everywhere else.
+// This is playbook §12 step 2's own window: the orchestrator's first move after banking is to write
+// the next brief over the inbox, and a tick can land immediately after it.
+suite("CH-001 R3: a block ABANDONED after one tick still records what IT declared", () => {
+  const repo = makeRepo({ dev: {} }, "sz-abandon");
+  inbox(repo, "dev", withFiles("C-35", "src/models.ts, src/requests.ts"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-35", updated_at: "T1" });
+  p.ledgerTick("dev", "claude-opus-5");                  // opens, and is never ticked again
+  inbox(repo, "dev", withFiles("C-36", "docs/README.md"));   // the PO wrote the NEXT brief over it
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-36", updated_at: "T2" });
+  p.ledgerTick("dev", "claude-opus-5");                  // closes C-35 through the id-changed path
+  const l = ledgerLines(repo);
+  eq(l.length, 1);
+  eq(l[0].id, "C-35");
+  eq(l[0].filesDeclared, 2, "the TWO files C-35 declared, not the one its replacement declares");
+  eq(l[0].statusUpdates, 1, "and the single report it was seen with");
 });
