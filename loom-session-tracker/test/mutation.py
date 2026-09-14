@@ -630,8 +630,8 @@ MUTATIONS = [
  # count-based assertion still passes; only the ORDER catches it.
  ("the spawn path binds first and sets the tier afterwards, into a composer that is now busy",
   "src/extension.ts",
-  "            const pm = { role, webviewId: wid, result: await premodel(role, wid) };\n            noteModel(\"spawn\", pm); debugLog({ spawnModel: pm });\n            const st = plan.stranded.find((x) => x.role === role);",
-  "            const st = plan.stranded.find((x) => x.role === role);\n            setTimeout(() => premodel(role, wid), 0);"),
+  "            const pm = await premodel(role, wid);\n            noteModel(\"spawn\", pm); debugLog({ spawnModel: pm }); recordSpawnModel(pm);",
+  "            const pm: PreModel = { role, webviewId: wid, want: null, typed: 0, acknowledged: null,\n                                   chip: null, onPremium: false, ok: true, note: \"deferred\" };\n            setTimeout(() => premodel(role, wid), 0);"),
 
  # R4 — killed by "R4: two loop-backs on ONE handoff raise it to Opus; the third does not rewrite
  # again" (its "re-reading an unchanged status.json counts nothing" assertion). status.json is
@@ -670,7 +670,7 @@ MUTATIONS = [
  # whose tick happened not to move a pending record — the counts silently reset to zero.
  ("the change-only state write compares `pending` alone, dropping escalation and ledger state",
   "src/models.ts",
-  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)) return;",
+  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)\n          && same(cur.defaulted, st.defaulted) && same(cur.orchRefused, st.orchRefused)\n          && String(cur.selfShiftLogged || \"\") === String(st.selfShiftLogged || \"\")) return;",
   "      if (same(cur.pending, st.pending)) return;"),
 
  # ── CH-001, 2026-09-13: §19's chunking rules — the tracker ENFORCES disjointness and MEASURES size ─
@@ -774,6 +774,60 @@ MUTATIONS = [
   "src/models.ts",
   "    purgeAcks(st);\n    const f = stateFile(repo);",
   "    const f = stateFile(repo);"),
+
+ # ── MS-001, 2026-09-14: absent tiers are loud, a refused switch is not "switched", the orchestrator shifts itself ─
+
+ # R1 — killed by "MS-001 R1: a handoff with no `model:` line is noted ONCE per (role, id)". Without
+ # the "already noted" check the note fires on every 15-second tick for as long as the handoff sits
+ # in the inbox — a status bar that never stops is one nobody reads, and the SILENT default that
+ # went unnoticed for a day is replaced by a loud one that gets switched off.
+ ("the once-per-handoff guard is removed — the 'no model: line' note fires on every tick",
+  "src/models.ts",
+  "    if (seen.includes(key)) return null;\n    seen.push(key);",
+  "    seen.push(key);"),
+
+ # R2 — killed by "MS-001 R2: exit 0 with a printed 'ok': False is NOT a switch". loom_cdp.py exits
+ # 0 and prints ok=False when it could not confirm the typed text; trusting the exit code recorded
+ # that refusal as "switched" against the orchestrator's own frame on 2026-09-14.
+ ("enforce() trusts the injector's exit code again — a printed 'ok': False is recorded as switched",
+  "src/models.ts",
+  "        const verdict = injectVerdict(err, stdout, stderr);\n        const ok = verdict.ok;",
+  "        const verdict = injectVerdict(err, stdout, stderr);\n        const ok = !err;"),
+
+ # R3 — killed by "MS-001 R3: orchestrator-model.json is honoured when it names an allowed id".
+ # Ignoring the file returns the configured target for every request, so an orchestrator that asks
+ # for Sonnet to bank a memory doc keeps paying the top tier — the exact spend the owner's directive
+ # ("orchestrators self-shift up or down") exists to stop, and the tracker would say nothing.
+ ("orchestrator-model.json is read but never honoured — the orchestrator can never shift itself",
+  "src/models.ts",
+  "    if (hit) return { target: hit, self: true, reason: req.reason, requestedAt: req.at, note: null };",
+  "    if (hit) return def;"),
+
+ # R4 — killed by "MS-001 R4: the fresh-context header tells every orchestrator both model rules".
+ # The header is the one text every orchestrator on every project reads after a clear; drop the
+ # rules from it and the `model:` line goes unwritten on every bus but this one, as measured.
+ ("the restore header no longer tells the orchestrator the two model rules",
+  "src/memory.ts",
+  "    `MODELS: every handoff you write carries a model: line (§18: claude-opus-5 or claude-sonnet-5) — ` +",
+  "    `MODELS: see the playbook. ` +"),
+ # R2b — killed by "MS-001 R2b: a refused /model is RETRIED, and a tab still on premium is NOT
+ # bound". Measured on pleodo 2026-09-14: three tabs were spawned onto Fable 5.1 and bound anyway,
+ # and `/loom` makes the composer busy from that moment — so the idle tick, which refuses to type
+ # into a busy composer, could never correct them. 71/55/70 premium turns before anyone noticed.
+ ("the spawn binds a tab whose /model was refused — a handoff begins on the premium tier",
+  "src/extension.ts",
+  "            if (!pm.ok) {",
+  "            if (Boolean(0)) {"),
+
+ # R2b — killed by "MS-001 R2b: a fresh tab that comes up PREMIUM is typed into even though its
+ # handoff wants the default tier". This is the ROOT CAUSE of that night: the handoffs all said
+ # `model: claude-opus-5`, which IS the configured default, so the spawn assumed the fresh tab was
+ # already on it and typed nothing at all. A tab's tier is what its FRAME says, never what the
+ # setting says it ought to be.
+ ("the spawn assumes a fresh tab starts on the pinned default — a premium tab is never typed into",
+  "src/extension.ts",
+  '      if (want.model === dflt && !premiumNow()) return { ...base, want: want.model, chip, note: "default tier — nothing to type" };',
+  '      if (want.model === dflt) return { ...base, want: want.model, chip, note: "default tier — nothing to type" };'),
 ]
 
 def sh(cmd):

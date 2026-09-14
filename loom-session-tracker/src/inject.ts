@@ -76,6 +76,27 @@ export function senderArgs(kind: string, repo: string | null): string[] {
  * `debugName` is a file under ~/.claude/loom that records the last attempt (out/err truncated), so a
  * silent failure is diagnosable after the fact.
  */
+/**
+ * What an injection actually did, read off the injector's OUTPUT and not off its exit code.
+ *
+ * loom_cdp.py exits 0 and prints a result dict even when it could not find the frame, or typed text
+ * it could not confirm in the composer — `{'ok': False, ..., 'note': 'typed text not confirmed in
+ * composer; NOT submitted'}` (measured against the orchestrator's own frame 2026-09-14T00:04:57Z,
+ * MS-001 R2: the model policy trusted the exit code and recorded that refusal as "switched"). So
+ * `ok` is: no error AND the printed dict does not carry ok=False; the failure note is the dict's own.
+ * One reading for every injection the extension makes — `injectTo` below and `ModelPolicy.enforce`.
+ */
+export function injectVerdict(err: Error | null | undefined, stdout: string | Buffer | null | undefined,
+                              stderr: string | Buffer | null | undefined): InjectResult & { reportedFail: boolean } {
+  const out = String(stdout || "");
+  const reportedFail = /'ok':\s*False|"ok":\s*false/i.test(out);
+  const ok = !err && !reportedFail;
+  const note = ok ? "injected"
+    : reportedFail ? (/'note':\s*'([^']+)'/.exec(out)?.[1] || "inject reported not ok")
+    : String((err && err.message) || stderr || "inject failed");
+  return { ok, note, reportedFail };
+}
+
 export function injectTo(target: InjectTarget, message: string, debugName: string,
                          done?: (ok: boolean, note: string) => void): void {
   const args = [LOOM_CDP, "inject", "--role", target.role, "--message", message, "--submit",
@@ -84,13 +105,7 @@ export function injectTo(target: InjectTarget, message: string, debugName: strin
   if (target.repo) args.push("--repo", target.repo);
   execFile("python3", args, { timeout: INJECT_TIMEOUT_MS }, (err, stdout, stderr) => {
     const out = String(stdout || "");
-    // loom_cdp.py prints a result dict and exits 0 even when it could not find the frame; a report that
-    // says ok=False is a failure, not a success.
-    const reportedFail = /'ok':\s*False|"ok":\s*false/i.test(out);
-    const ok = !err && !reportedFail;
-    const note = ok ? "injected"
-      : reportedFail ? (/'note':\s*'([^']+)'/.exec(out)?.[1] || "inject reported not ok")
-      : String((err && err.message) || stderr || "inject failed");
+    const { ok, note } = injectVerdict(err, stdout, stderr);
     try {
       fs.writeFileSync(path.join(LOOM_ROOT, debugName), JSON.stringify({
         at: new Date().toISOString(), target, ok, note,
