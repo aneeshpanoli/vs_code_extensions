@@ -140,6 +140,51 @@ anything else, is switched to `orchestratorModel` (`claude-fable-5-1[1m]`) with 
 the same acknowledgement rule. Setting: `enforceOrchestratorModel`. Only the orchestrator is ever on
 the premium tier; nothing else is promoted.
 
+**A switch is only a switch when the injector says so** (MS-001). `loom_cdp.py inject` exits 0 and
+prints its own result dict even when it could not confirm the typed text — `{'ok': False, …, 'note':
+'typed text not confirmed in composer; NOT submitted'}`, measured against the orchestrator's own
+frame on 2026-09-14. The verdict is read off that dict, never off the exit code, so a refused
+injection is retried rather than recorded as done, and the injector's note is what lands in
+`lastError` and in the warning the human sees.
+
+### The orchestrator shifts its own tier (MS-001)
+
+A session cannot run `/model` on itself, so the orchestrator asks and the tracker types it:
+
+```json
+// ~/.claude/loom/<repo>/orchestrator-model.json
+{"model": "claude-sonnet-5", "reason": "banking the memory doc", "at": "2026-09-14T04:00:00Z"}
+```
+
+The tick enforces that id on the orchestrator's own declared frame, **idle only**, in **both
+directions** — the old early return "the chip is premium, so it is fine" is now "the chip is the
+desired model, so it is fine", which is what makes a downshift possible at all. Same backoff, same
+acknowledgement rule; a changed target restarts the backoff. Sonnet for doc banking and status
+reconciliation, Opus for ordinary review and dispatch, Fable for architecture and adversarial
+judgement — the orchestrator rewrites the file when the task changes, and the file survives a
+`/clear` and a bank.
+
+**The allowlist is `orchestratorModels`** (`claude-fable-5-1[1m]`, `claude-opus-5`,
+`claude-sonnet-5`). An id outside it — or an unreadable file, or no file — is **refused with a note**
+(`model.orchestratorRefused` in `tracker-debug.json`, said once per request) and the configured
+`orchestratorModel` stands exactly as before. **Workers cannot use this file**: a worker's tier is
+its handoff's, and nothing here reads it for a worker.
+
+Every self-shift the tracker actually performs appends a line to `model-ledger.jsonl`, so the owner
+can see who shifted and why:
+
+```json
+{"role":"productowner","self":true,"from":"Fable 5.1","to":"claude-sonnet-5",
+ "reason":"banking the memory doc","at":"2026-09-14T04:00:30.000Z"}
+```
+
+One line per request: retries of the same request write nothing more, and a promotion that came from
+the setting rather than from the file is not a self-shift and writes no line.
+
+**The fresh-context header carries both rules.** `restoreMessage` is the one text every orchestrator
+on every project reads after a `/clear`, so it now names them: every handoff you write carries a
+`model:` line (§18), and you shift your own tier by writing `orchestrator-model.json` (§20).
+
 ### Per-handoff model (MP-001) and per-handoff files (CH-001)
 
 Workers do not all need the Opus tier. The **orchestrator judges difficulty as it writes a handoff**
@@ -170,6 +215,15 @@ id outside the allowlist — are ignored **and say so** under `model.frontmatter
 `tracker-debug.json`. (An ignored request that is silent is indistinguishable from one that worked;
 see principle 16.)
 
+**An absent `model:` line is loud too** (MS-001). The resolution is unchanged — no line means
+`workerModel` — but the tick now says so **once per (role, handoff id)**, in the status bar and under
+`model.defaulted` in `tracker-debug.json`: `alpha's DEV-179 has no model: line — running the default
+claude-opus-5 (§18)`. Once per handoff, never per tick, and the "already noted" set is persisted in
+`model-policy.json` so a window reload does not re-toast it. Acks (`id: X-ack`) are not handoffs and
+are never noted. This exists because the silence was load-bearing: on 2026-09-14 a machine-wide audit
+found the `model:` line had been honoured **once**, no inbox on any other bus had ever carried one,
+and one project's ledger read 10/10 `chosenBy: default`, with nothing anywhere pointing it out.
+
 **Enforcement runs both ways.** A worker on Opus whose handoff asks for Sonnet is switched *down*; a
 worker on Sonnet whose handoff asks for Opus, or says nothing, is switched *up*. Same rules as the
 premium policy: only into an **idle** composer (a `/model` typed mid-turn queues as an ordinary
@@ -183,9 +237,19 @@ handoff asked for a new one.
 acknowledge it — *then* types `/loom <role>`. The order is the whole point: the bind runs the inbox
 check, and from that moment the composer is busy, so a `/model` sent second would never execute.
 Nothing is typed when the handoff wants the configured default, since a fresh tab already starts
-there. **The bind is never conditional on the switch**: if the acknowledgement does not arrive the
-tab is bound anyway and the tier is left to the next idle tick — a worker on the wrong model gets
-corrected, a worker that was never bound just sits there.
+there. **The bind is conditional on one thing only: not being on the premium tier** (MS-001 R2b). On an
+unreadable frame or a merely mistuned one the tab is bound anyway and the tier is left to the next
+idle tick — a worker on the wrong model gets corrected, a worker that was never bound just sits
+there. But `/loom` starts the inbox check, and from that moment the composer is busy, so the tick
+can never switch it: a tab left on Fable runs its whole handoff there. Measured on another project
+2026-09-14: three workers spawned, all three came up on Fable 5.1, all three bound, 71/55/70 premium
+turns before anyone noticed. So the `/model` is **retried once** (a session-less composer is always
+idle) and, if the tab is still premium, the spawn stops: nothing is bound, the frame and the reason
+`on premium — /model refused` go back in `open-requests.json` under `opened[].note`, and the human
+is warned. **What decides is the frame, not the setting.** Those three handoffs each asked for
+`claude-opus-5` — the configured default — and the old rule ("a fresh tab already starts there")
+typed nothing at all. The `/model` step's outcome is now merged into `spawn-debug.json`, which used
+to hold only the bind.
 
 **Escalation.** A role that reports `blocked` — what the `/loom` skill has a worker write when it
 raises a loop-back — **twice on the same handoff** while on Sonnet has that handoff's `model:` line
@@ -633,7 +697,8 @@ All under `loomSessionTracker.`.
 | `enforceWorkerModel` / `workerModel` / `premiumModels` | `true` / `claude-opus-5` / Fable, Mythos | Reserve the expensive tier for the orchestrator |
 | `workerModels` | `claude-opus-5`, `claude-sonnet-5` | The tiers a handoff may ask for in its `model:` frontmatter (premium is refused whatever this says) |
 | `modelAckMs` | `8000` | How long a spawned tab may take to acknowledge its `/model` before it is bound anyway |
-| `enforceOrchestratorModel` / `orchestratorModel` | `true` / `claude-fable-5-1[1m]` | Put the tagged orchestrator back on it when a restore drops it to the pin |
+| `enforceOrchestratorModel` / `orchestratorModel` | `true` / `claude-fable-5-1[1m]` | Put the tagged orchestrator back on it when a restore drops it to the pin, unless it asked for a tier of its own |
+| `orchestratorModels` | `claude-fable-5-1[1m]`, `claude-opus-5`, `claude-sonnet-5` | The tiers an orchestrator may put *itself* on by writing `<repo>/orchestrator-model.json` (MS-001); anything else is refused with a note |
 | `showStartupDigest` / `staleBusDays` / `digestUnbankedCheck` | `true` / `30` / `true` | The attention summary |
 | `contextMemory` | `true` | Run the bank → clear → restore cycle |
 | `contextThresholdPct` | `30` | When to run it (30, not 50, since 0.32.0 — see principle 14) |
@@ -654,7 +719,8 @@ All under `loomSessionTracker.`.
 It is the only thing here that touches `~/.vscode-oss/extensions`.
 
 **Reads, never writes:** `<project>/board.json` (the roster), `<project>/bindings.json` (written by
-`loom_cdp.py` at `/loom` time), each role's `status.json`/`inbox.md`/`outbox.md`, and
+`loom_cdp.py` at `/loom` time), each role's `status.json`/`inbox.md`/`outbox.md`,
+`<project>/orchestrator-model.json` (the orchestrator's own tier request, MS-001), and
 `~/.claude/projects/*/<sessionId>.jsonl`.
 
 **Writes** (all atomic, change-only, and never fatal if they fail):

@@ -16,8 +16,14 @@ import { ownerRoleFor, publishNaming } from "./naming";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
-import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, desiredModel, acknowledgedSwitch,
-         chipFor } from "./models";
+import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, DEFAULT_ORCHESTRATOR_MODELS, desiredModel,
+         chipFor, detectModel, isPremium } from "./models";
+
+/** What the spawn path's `/model` step actually did, recorded in spawn-debug.json (MS-001 R2b).
+ *  `ok: false` means the tab is on the premium tier and must NOT be bound. */
+interface PreModel { role: string; webviewId: string; want: string | null; typed: number;
+                     acknowledged: string | null; chip: string | null; onPremium: boolean;
+                     ok: boolean; note: string; }
 import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, strandedRoles, resumableFrom, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
@@ -160,6 +166,7 @@ export function activate(context: vscode.ExtensionContext) {
       // once per tick rather than swallowed — an ignored `model:` line that says nothing anywhere
       // is indistinguishable from one that worked.
       const notes: string[] = [];
+      const defaulted: string[] = [];
       const wanted = (role: string) => {
         const d = desiredModel(repo, role, target, allow);
         if (d.note) notes.push(d.note);
@@ -190,8 +197,14 @@ export function activate(context: vscode.ExtensionContext) {
               `Loom: ${esc.role} has looped back twice on ${esc.id} — raising that handoff to ${esc.to}.`);
           }
           modelPolicy.ledgerTick(role, target, allow, new Date(), pctOf.get(role) ?? null);
+          // MS-001 R1: a handoff with no `model:` line runs the default, as before — but says so,
+          // once per (role, handoff id), persisted. Silent defaults were how MP-001 "worked" on
+          // every bus but one for a day without anyone writing the line.
+          const dn = modelPolicy.noteDefaulted(role, target, allow);
+          if (dn) { vscode.window.setStatusBarMessage(`Loom: ${dn}`, 15000); defaulted.push(dn); }
         } catch { /* a tick must survive a half-written bus */ }
       }
+      if (defaulted.length) { noteModel("defaulted", defaulted); debugLog({ modelDefaulted: defaulted }); }
       for (const v of modelPolicy.check(idleModels, orch ? orch.role : null, live, premium, Date.now(),
                                         frameOf, orch ? orch.webviewId ?? null : null, wanted)) {
         // Toast the first attempt; retries stay quiet in the status bar so a stuck session
@@ -210,17 +223,30 @@ export function activate(context: vscode.ExtensionContext) {
       // The mirror: the tagged orchestrator belongs ON the premium tier. With the default model
       // pinned to the worker tier (user direction 2026-09-13), a restored or restarted orchestrator
       // comes up on it and is promoted here — only its own declared/tagged frame, only when idle.
+      //
+      // MS-001 R3: the orchestrator may ask for its OWN tier — up or down — by writing
+      // `<repo>/orchestrator-model.json`; an id in `orchestratorModels` is the target, anything
+      // else is refused with a note and the configured `orchestratorModel` stands. Both directions.
       if (cfg().get("enforceOrchestratorModel", true) !== true || !orch || !orch.webviewId) return;
-      const up = String(cfg().get("orchestratorModel", "claude-fable-5-1[1m]") || "claude-fable-5-1[1m]");
+      const configured = String(cfg().get("orchestratorModel", "claude-fable-5-1[1m]") || "claude-fable-5-1[1m]");
+      const orchAllow = (cfg().get("orchestratorModels", DEFAULT_ORCHESTRATOR_MODELS) as string[]) || DEFAULT_ORCHESTRATOR_MODELS;
+      const req = modelPolicy.orchestratorTarget(configured, orchAllow);
+      if (req.note) {
+        vscode.window.setStatusBarMessage(`Loom: ${req.note}`, 15000);
+        noteModel("orchestratorRefused", [req.note]); debugLog({ modelOrchestratorRefused: [req.note] });
+      }
+      const up = req.target;
       const frame = tracker.ownerView().find((o) => o.webviewId === orch.webviewId && o.liveness === "live");
       if (!frame) return;
-      const pv = modelPolicy.checkOrchestrator(orch.role, orch.webviewId, frame.model, frame.busy, premium, Date.now(), up);
+      const pv = modelPolicy.checkOrchestrator(orch.role, orch.webviewId, frame.model, frame.busy, premium, Date.now(), up, req);
       if (!pv) return;
-      const what = `orchestrator ${pv.role} is on ${pv.model} — switching to ${up}`;
+      const why = req.self ? `it asked for ${up}${req.reason ? ` (${req.reason})` : ""}` : `switching to ${up}`;
+      const what = `orchestrator ${pv.role} is on ${pv.model} — ${why}`;
       if (pv.attempt === 1) vscode.window.showInformationMessage(`Loom: ${what}.`);
       else vscode.window.setStatusBarMessage(`Loom: ${what} (retry ${pv.attempt}).`, 8000);
       modelPolicy.enforce(pv, up, (ok, note) => {
         modelPolicy.recordResult(pv, ok, note);
+        if (ok && req.self && modelPolicy.recordSelfShift(pv)) debugLog({ modelSelfShift: { from: pv.model, to: up, reason: req.reason } });
         if (!ok && pv.attempt === 1) vscode.window.showWarningMessage(
           `Loom: could not switch the orchestrator to ${up} (${note}) — retrying, or run /model ${up} there.`);
       });
@@ -477,27 +503,78 @@ export function activate(context: vscode.ExtensionContext) {
      * "Set model to <name>" line can, and it appears at once. Why bounded: a tab that never answers
      * must not hold the whole spawn loop — every other role in the request is waiting behind it.
      */
-    const premodel = async (role: string, wid: string): Promise<string> => {
-      if (!repo || cfg().get("enforceWorkerModel", true) !== true) return "disabled";
+    /** What the tab's footer says right now, or null when the frame cannot be read. */
+    const frameModel = async (wid: string) => {
+      try {
+        const f = (await readFrames()).find((x) => String(x.webviewId) === wid);
+        return f ? detectModel(String((f as any).text || "")) : null;
+      } catch { return null; }
+    };
+    /** The ack outcome belongs in spawn-debug.json, which `injectTo` rewrites per injection — so it
+     *  is MERGED in after the fact rather than written before and clobbered by the `/loom` that
+     *  follows. Until MS-001 that file held only the bind, which is why three tabs could start a
+     *  handoff on Fable with nothing on disk saying the `/model` step had done nothing. */
+    const recordSpawnModel = (pm: PreModel) => {
+      const f = path.join(os.homedir(), ".claude", "loom", "spawn-debug.json");
+      let cur: any = {};
+      try { cur = JSON.parse(fs.readFileSync(f, "utf8")) || {}; } catch { /* first write */ }
+      try { fs.writeFileSync(f, JSON.stringify({ ...cur, model: pm }, null, 2)); } catch { /* never fatal */ }
+    };
+    const premodel = async (role: string, wid: string): Promise<PreModel> => {
+      const base: PreModel = { role, webviewId: wid, want: null, typed: 0, acknowledged: null,
+                               chip: null, onPremium: false, ok: true, note: "" };
+      if (!repo || cfg().get("enforceWorkerModel", true) !== true) return { ...base, note: "disabled" };
       const dflt = String(cfg().get("workerModel", "claude-opus-5") || "claude-opus-5");
       const allow = (cfg().get("workerModels", DEFAULT_WORKER_MODELS) as string[]) || DEFAULT_WORKER_MODELS;
+      const premium = (cfg().get("premiumModels", DEFAULT_PREMIUM) as string[]) || DEFAULT_PREMIUM;
       const want = desiredModel(repo, role, dflt, allow);
       if (want.note) { noteModel("frontmatterIgnored", [want.note]); debugLog({ modelFrontmatterIgnored: [want.note] }); }
-      if (want.model === dflt) return "default tier — nothing to type";
       const chip = chipFor(want.model);
-      await new Promise<void>((res) => injectTo({ role, webviewId: wid, repo }, `/model ${want.model}`,
-                                                "spawn-debug.json", () => res()));
       const bound = Math.max(0, Number(cfg().get("modelAckMs", 8000)) || 0);
-      const deadline = Date.now() + bound;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, Math.min(500, Math.max(1, deadline - Date.now()))));
-        try {
-          const f = (await readFrames()).find((x) => String(x.webviewId) === wid);
-          const ack = f ? acknowledgedSwitch(String((f as any).text || "")) : null;
-          if (ack && chip && ack.toLowerCase() === chip.toLowerCase()) return `acknowledged ${ack}`;
-        } catch { /* keep waiting out the bound */ }
+      // R2b (MS-001, measured on pleodo 2026-09-14T03:46:53Z): three tabs were spawned, all three
+      // came up on FABLE 5.1, and the spawn typed nothing at all — their handoffs asked for
+      // `claude-opus-5`, which IS the configured default, and the old early return
+      // ("default tier — nothing to type") assumed a fresh tab always starts on the pin. It does
+      // not. So the decision is made on what the FRAME says, not on the setting: type whenever the
+      // chip is not already the wanted one and either the handoff asked for something else or the
+      // tab is sitting on the premium tier. A frame we cannot read still falls back to the old rule.
+      const MAX = 2;                                        // the first attempt, then one retry
+      let seen = await frameModel(wid);
+      const already = () => !!(seen && chip && seen.model.toLowerCase() === chip.toLowerCase());
+      const premiumNow = () => isPremium(seen ? seen.model : null, premium);
+      if (already()) return { ...base, want: want.model, chip, note: `already on ${chip}` };
+      if (want.model === dflt && !premiumNow()) return { ...base, want: want.model, chip, note: "default tier — nothing to type" };
+      let typed = 0, ack: string | null = null, lastNote = "";
+      for (let attempt = 1; attempt <= MAX; attempt++) {
+        typed = attempt;
+        // The composer is idle here — the tab has no session yet — so a refused injection is worth
+        // retrying at once rather than waiting for a tick that cannot type into a busy composer.
+        const sent = await new Promise<{ ok: boolean; note: string }>((res) =>
+          injectTo({ role, webviewId: wid, repo }, `/model ${want.model}`, "spawn-debug.json",
+                   (ok, note) => res({ ok, note })));
+        if (!sent.ok) { lastNote = `/model refused: ${sent.note}`; seen = await frameModel(wid); continue; }
+        const deadline = Date.now() + bound;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, Math.min(500, Math.max(1, deadline - Date.now()))));
+          seen = await frameModel(wid);
+          const a = seen && seen.acknowledged ? seen.acknowledged : null;
+          if (a && chip && a.toLowerCase() === chip.toLowerCase()) { ack = a; break; }
+          if (already()) { ack = seen!.model; break; }          // the chip itself caught up
+        }
+        if (ack) return { ...base, want: want.model, chip, typed, acknowledged: ack, note: `acknowledged ${ack}` };
+        lastNote = lastNote || `no acknowledgement within ${bound}ms`;
+        seen = await frameModel(wid);
+        if (already()) return { ...base, want: want.model, chip, typed, note: `chip reads ${chip}` };
       }
-      return `no acknowledgement within ${bound}ms — bound anyway, the next idle tick will switch it`;
+      // Out of attempts. A tab still on the PREMIUM tier must not be bound: `/loom <role>` starts the
+      // inbox check, the composer is busy from that moment, and the idle tick can never switch it —
+      // which is how three whole handoffs ran on Fable, 71/55/70 turns deep before anyone noticed.
+      // Anywhere else (an unreadable frame, a cheaper-but-wrong tier) the bind still goes ahead: the
+      // next idle tick corrects a mistuned worker, and an unbound tab just sits there.
+      const onPremium = premiumNow();
+      return { ...base, want: want.model, chip, typed, onPremium, ok: !onPremium,
+               note: onPremium ? `on premium — /model refused (${lastNote || "no acknowledgement"})`
+                               : `${lastNote} — bound anyway, the next idle tick will switch it` };
     };
 
     let serving = false;
@@ -538,11 +615,22 @@ export function activate(context: vscode.ExtensionContext) {
             // acknowledgement within the bound we bind anyway and leave the tier to the next idle
             // tick, which is R2's job — a role that is bound but on the wrong model gets corrected,
             // a role that is never bound just sits there.
-            const pm = { role, webviewId: wid, result: await premodel(role, wid) };
-            noteModel("spawn", pm); debugLog({ spawnModel: pm });
+            const pm = await premodel(role, wid);
+            noteModel("spawn", pm); debugLog({ spawnModel: pm }); recordSpawnModel(pm);
+            if (!pm.ok) {
+              // R2b: a worker must never BEGIN a handoff on the premium tier. Hand the frame back
+              // with the reason on it, so the orchestrator can ring the tab and type /model itself.
+              opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: false, note: pm.note });
+              plan.refused.push({ role, reason: `opened but NOT bound — ${pm.note}` });
+              vscode.window.showWarningMessage(
+                `Loom: ${role}'s new tab is on ${pm.chip ? `a premium model, not ${pm.chip}` : "the premium tier"} and /model was refused — NOT bound. ` +
+                `Run /model ${pm.want} in that tab (${wid.slice(0, 8)}), then /loom ${role}.`);
+              continue;
+            }
             const st = plan.stranded.find((x) => x.role === role);
             await new Promise<void>((res) => injectTo({ role, webviewId: wid, repo }, `/loom ${role}`, "spawn-debug.json",
-              (ok, note) => { opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: ok,
+              (ok, note) => { recordSpawnModel(pm);   // the bind rewrote the file; put the ack outcome back
+                              opened.push({ role, sessionId: null, from: "spawned", webviewId: wid, bound: ok,
                                             ...(st ? { note: strandedNote(st) } : {}) });
                               if (!ok) plan.refused.push({ role, reason: `opened but binding failed: ${note}` }); res(); }));
           } catch (e: any) { plan.refused.push({ role, reason: `spawn failed: ${String(e && e.message || e)}` }); }

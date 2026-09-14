@@ -565,3 +565,16 @@ suite("memory: a session id that exists in two project directories is read from 
   projectTranscript("-mem-copy2-z-stale", "sid-twice2", 570_000, Date.now() - 3 * 24 * 3600_000);
   eq(transcriptFor("sid-twice2"), live2, "newest wins in either order");
 });
+
+suite("MS-001 R4: the fresh-context header tells every orchestrator both model rules — model: on every handoff (§18), orchestrator-model.json for its own tier (§20)", () => {
+  const m = restoreMessage("/bus/memory.md", "demo", "po");
+  match(m, /every handoff you write carries a model: line \(§18/, "rule (a): every handoff carries model:");
+  match(m, /tracker warns once per handoff when it is missing/, "…and the tracker warns when it is missing");
+  match(m, /~\/\.claude\/loom\/demo\/orchestrator-model\.json \{"model":"<id>","reason":"<one line>","at":"<iso>"\} \(§20\)/, "rule (b): the file, its shape, §20 — on THIS repo's bus");
+  match(m, /claude-sonnet-5 for doc banking and status reconciliation/, "Sonnet for banking");
+  match(m, /claude-opus-5 for ordinary review and dispatch/, "Opus for review and dispatch");
+  match(m, /claude-fable-5-1\[1m\] for architecture and adversarial judgement/, "Fable for architecture");
+  match(m, /rewrite it when the task changes/, "and shift back");
+  const added = m.slice(m.indexOf("MODELS:"));
+  ok(added.split("\n").length <= 6 && added.length < 900, "brief: under ~6 lines (" + added.length + " chars)");
+});

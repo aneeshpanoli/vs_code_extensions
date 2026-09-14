@@ -9,16 +9,17 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated the same day for 0.35.1)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-14 for 0.36.0)
 
-**Version 0.35.1** is merged and pushed. The deployed copy on this machine is what `ls
+**Version 0.36.0** is MS-001 on `worktree-developer2`, not yet merged or deployed; 0.35.1 is what
+main holds. The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-"0.35.1" here as "0.35.1 is what the editor is executing". **659 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **130/130 mutations caught** under the
+a version here as "that is what the editor is executing". **676 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **136/136 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
-(Those two counts are as of the MP-001 merge; re-measure after banking RB-001 beside it, and
-note that `./test.sh` does NOT compile — a stale `out/` after a merge reads as a red suite.) `./live.sh`
+(Re-measure after each merge, and note that `./test.sh` does NOT compile — a stale `out/` after a
+merge reads as a red suite.) `./live.sh`
 is clean except the warnings under open threads and the expected "windows are running an OLD build"
 failure until that deploy + reload. Read this section, then `README.md`, then run `./live.sh` and
 believe it over anything written here.
@@ -294,9 +295,62 @@ believe it over anything written here.
     survivor — two tests that read as "either way" can exercise one branch twice — and the same tool
     found it: only a baseline-graded mutant can tell "asserted" from "reached".
 
+21. **A default nobody hears is a default nobody writes; an exit code is not a switch; and an
+    orchestrator can shift itself** (0.36.0, MS-001, 2026-09-14). MP-001 was reported working
+    machine-wide. Measured that morning it had chosen a tier exactly ONCE on this machine, no inbox
+    on any other bus had ever carried a `model:` line, and ReciEats' ledger read 10/10 `chosenBy:
+    default`. The mechanism was correct and the outcome was nil, because nothing ever said so.
+
+    **The resolution stays; the silence goes.** An absent `model:` line still runs the configured
+    `workerModel` (owner, 2026-09-13) — but the tick notes it ONCE per (role, handoff id), in the
+    status bar and under `model.defaulted` in `tracker-debug.json`, with the "already noted" set
+    persisted in `model-policy.json` so a reload does not re-toast. Once per handoff, never per tick:
+    a warning that repeats every 15 seconds is one that gets switched off, which is the same failure
+    as the silence with more noise. Acks are not handoffs and are not noted (FX-001, again).
+
+    **An exit code is not evidence.** `enforce()` set `ok = !err`, and `loom_cdp.py inject` exits 0
+    while printing `{'ok': False, …, 'note': 'typed text not confirmed in composer; NOT submitted'}` —
+    measured against this window's own orchestrator frame at 2026-09-14T00:04:57Z. So every refused
+    switch was recorded as "switched", `lastError` stayed empty and the human was never warned.
+    `injectTo` had read the printed dict correctly since it was written; `enforce` had its own copy of
+    the logic that did not. The reading now lives in ONE exported function (`injectVerdict` in
+    inject.ts) that both call — a second call site that re-derives a verdict is a second chance to
+    get it wrong, and this is what that costs.
+
+    **An orchestrator cannot run `/model` on itself, so it asks in a file.** `<repo>/orchestrator-
+    model.json` `{"model", "reason", "at"}`; the tick enforces it on the orchestrator's own declared
+    frame, idle only, against the `orchestratorModels` allowlist, and refuses an unknown id with a
+    note rather than typing it. This OVERRIDES the earlier "self-downshift is out of scope" decision
+    (owner, 2026-09-14). The change that makes a downshift possible at all is one early return:
+    `checkOrchestrator`'s "the chip is premium → fine" had to become "the chip is the desired model →
+    fine", and with it the premium-tier check stopped being the orchestrator's whole policy. Every
+    performed shift appends a `{self: true, from, to, reason, at}` line to `model-ledger.jsonl`, one
+    per request — the owner asked to see who shifted and why, and a mechanism whose use cannot be read
+    back is the thing that just failed above.
+
+    **A fresh tab's tier is what its FRAME says, not what the setting says it should be.** The same
+    night, three workers on another project were spawned through `open-requests.json`, came up on
+    Fable 5.1, were bound, and ran their whole handoffs there — 71/55/70 premium turns. All three
+    handoffs correctly said `model: claude-opus-5`, and that is exactly why nothing was typed: that
+    id IS the configured `workerModel`, and the spawn returned "default tier — nothing to type" on
+    the assumption that a fresh tab starts on the pin. The assumption had never been checked against
+    a frame. Two things follow. **Never infer state you can read** — the decision now compares the
+    tab's own chip. And **`/loom` is a one-way door**: it starts the inbox check, the composer is
+    busy from that instant, and the idle tick refuses to type into a busy composer, so a tab bound on
+    the wrong tier is not "corrected later", it is stuck. The bind is therefore refused while the
+    chip is premium (after one retry, which is free — a session-less composer is always idle), the
+    frame and the reason go back in `opened[].note`, and the human is toasted. A mistuned but cheap
+    tab is still bound: an unbound tab is the worse loss, and that one the tick really can fix.
+
+    **The header is the only channel that reaches every orchestrator.** Both rules go in
+    `restoreMessage` (§18: every handoff carries `model:`; §20: shift yourself with the file), because
+    that text is what every orchestrator on every project reads after a `/clear` — a playbook section
+    reaches only the sessions that happen to open the playbook, which is how MP-001 ended up honoured
+    on one bus out of many.
+
 ### Things outside git this depends on
 `~/.claude/loom/loom_cdp.py` (return address, busy guard, orchestrator guard, --repo/--webview-id),
-`~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§19 (§17: no watchers in an orchestrator session; §18: the orchestrator picks the worker's tier per handoff; §19: chunking — one handoff is one merge, and `files:` declares the package).
+`~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§20 (§17: no watchers in an orchestrator session; §18: the orchestrator picks the worker's tier per handoff; §19: chunking — one handoff is one merge, and `files:` declares the package; §20: an orchestrator shifts its OWN tier by writing `<repo>/orchestrator-model.json`, which the owner writes off-git and `restoreMessage` names).
 Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
 
 ## Where everything is

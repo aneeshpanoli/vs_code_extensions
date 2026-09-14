@@ -31,13 +31,20 @@
 // only the orchestrator is supposed to be on Fable 5.1"): the default model pinned in
 // ~/.claude/settings.json is the cheaper tier, so every spawned or restored tab starts there, and
 // the TAGGED orchestrator is promoted to the premium tier when it is seen on anything else.
+//
+// THE ORCHESTRATOR SHIFTS ITSELF (MS-001 R3, owner 2026-09-14): a session cannot run `/model` on
+// itself, so an orchestrator that wants a cheaper tier for doc banking, or the top tier for an
+// adversarial pass, writes `<repo>/orchestrator-model.json` and the tracker types the switch for it —
+// in BOTH directions, against `orchestratorModels`. Workers cannot use that file: a worker's tier is
+// its handoff's. And a handoff with no `model:` line is no longer a silent default: it is noted once
+// (R1), because on every bus but one the line was never written and nothing ever said so.
 
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
 import { isOwnerRole } from "./naming";
-import { senderArgs } from "./inject";
+import { senderArgs, injectVerdict } from "./inject";
 import { execFile } from "child_process";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
@@ -144,16 +151,21 @@ export function idIsPremium(id: string | null | undefined): boolean {
 /** The tiers a WORKER may be put on. Haiku is deliberately absent (owner, 2026-09-13). */
 export const DEFAULT_WORKER_MODELS = ["claude-opus-5", "claude-sonnet-5"];
 
+/** The tiers an ORCHESTRATOR may put ITSELF on through `orchestrator-model.json` (MS-001 R3).
+ *  The first entry is the configured default's usual value; the order carries no meaning. */
+export const DEFAULT_ORCHESTRATOR_MODELS = ["claude-fable-5-1[1m]", "claude-opus-5", "claude-sonnet-5"];
+
 // ── the handoff chooses the tier (MP-001, owner 2026-09-13) ─────────────────────────────────────
 // Workers do not all need the Opus tier. The ORCHESTRATOR judges difficulty as it writes a handoff
 // and records the choice in that handoff's frontmatter (`model: claude-sonnet-5`); the tracker
-// enforces it; the ledger judges the rubric a month later. The orchestrator switching ITSELF is not
-// part of this — `checkOrchestrator` below is unchanged and still reads the settings.
+// enforces it; the ledger judges the rubric a month later. The orchestrator switching ITSELF is a
+// different file (`orchestrator-model.json`, MS-001 R3, further down) — never a handoff's line.
 //
 // A frontmatter the tracker cannot read changes NOTHING: no file, no block, no `model:` line, a
 // malformed block, a premium id, an unknown id — every one of those falls back to the configured
 // `workerModel`, and the two that are a REQUEST rather than an absence say so in tracker-debug.json.
 // This is principle 16 pointed the other way: a read that cannot answer must not be read as licence.
+// Since MS-001 R1 the plain ABSENCE of a `model:` line is said too, once per handoff (`noteDefaulted`).
 
 /** The `---` block at the very top of a handoff, as key → value. A `---` further down a document is
  *  a horizontal rule, not frontmatter, so the block must OPEN the file. */
@@ -339,6 +351,28 @@ export function desiredModel(repo: string | null, role: string, fallback = "clau
   return { model: hit, chosenBy: "frontmatter", note: null };
 }
 
+// ── the orchestrator's own request (MS-001 R3) ─────────────────────────────────────────────────
+
+/** The file an orchestrator writes to ask for its own tier. Workers have no such file. */
+export function orchestratorModelFile(repo: string): string {
+  return path.join(LOOM_ROOT, repo, "orchestrator-model.json");
+}
+
+export interface OrchestratorRequest { model: string; reason: string | null; at: string | null; }
+
+/** `<repo>/orchestrator-model.json` as written, or null when absent, unreadable, or carrying no
+ *  `model` string. Read-only: nothing here decides whether the request is honoured. */
+export function orchestratorRequest(repo: string | null): OrchestratorRequest | null {
+  if (!repo) return null;
+  try {
+    const d = JSON.parse(fs.readFileSync(orchestratorModelFile(repo), "utf8"));
+    if (!d || typeof d !== "object" || typeof d.model !== "string" || !d.model.trim()) return null;
+    return { model: d.model.trim(),
+             reason: typeof d.reason === "string" ? d.reason.slice(0, 200) : null,
+             at: typeof d.at === "string" ? d.at : null };
+  } catch { return null; }
+}
+
 // ── retry bookkeeping ───────────────────────────────────────────────────────────────────────
 // An earlier version marked a role "corrected" the moment a violation was raised — before the
 // /model injection had even reported back. A failed switch (session closed, CDP hiccup) was then
@@ -380,6 +414,13 @@ interface LedgerRecord { id: string; role: string; model: string; chosenBy: stri
 interface PolicyState { pending: Record<string, PolicyRecord>;
   escalations?: Record<string, EscalationRecord>;
   ledger?: Record<string, LedgerRecord>;
+  /** MS-001 R1: `<role>|<handoff id>` pairs whose "no model: line" note has been shown. Persisted so
+   *  a reload of the window does not toast the same handoff again — once per handoff id, ever. */
+  defaulted?: string[];
+  /** MS-001 R3: `<model>@<at>` of orchestrator-model.json requests already refused with a note, and
+   *  the one self-shift most recently written to the ledger — so neither repeats per tick. */
+  orchRefused?: string[];
+  selfShiftLogged?: string;
   updatedAt?: string; }
 
 function stateFile(repo: string): string { return path.join(LOOM_ROOT, repo, "model-policy.json"); }
@@ -391,10 +432,13 @@ function loadState(repo: string): PolicyState {
     if (st && st.pending && typeof st.pending === "object") {
       return { pending: st.pending,
                escalations: (st.escalations && typeof st.escalations === "object") ? st.escalations : {},
-               ledger: (st.ledger && typeof st.ledger === "object") ? st.ledger : {} };
+               ledger: (st.ledger && typeof st.ledger === "object") ? st.ledger : {},
+               defaulted: Array.isArray(st.defaulted) ? st.defaulted.map(String) : [],
+               orchRefused: Array.isArray(st.orchRefused) ? st.orchRefused.map(String) : [],
+               ...(typeof st.selfShiftLogged === "string" ? { selfShiftLogged: st.selfShiftLogged } : {}) };
     }
   } catch { /* none yet */ }
-  return { pending: {}, escalations: {}, ledger: {} };
+  return { pending: {}, escalations: {}, ledger: {}, defaulted: [], orchRefused: [] };
 }
 
 /** Drop every `escalations` entry whose KEY is an ack id (that map is keyed by handoff id), and
@@ -418,7 +462,9 @@ function saveState(repo: string, st: PolicyState): void {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
       // change-only, across EVERY section — comparing `pending` alone would drop an escalation
       // count or a ledger line whose tick happened not to move a pending record.
-      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)) return;
+      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)
+          && same(cur.defaulted, st.defaulted) && same(cur.orchRefused, st.orchRefused)
+          && String(cur.selfShiftLogged || "") === String(st.selfShiftLogged || "")) return;
     } catch { /* missing -> write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -432,8 +478,13 @@ export interface ModelViolation { repo: string; role: string; model: string; att
    *  owed different tiers on the same tick, so the target travels with the violation rather than
    *  being read once per tick from the settings. */
   target: string;
-  /** How that target was chosen, for the message the human reads and for the ledger. */
-  chosenBy?: Desired["chosenBy"];
+  /** How that target was chosen, for the message the human reads and for the ledger. `"self"` is
+   *  the orchestrator's own request through orchestrator-model.json (MS-001 R3). */
+  chosenBy?: Desired["chosenBy"] | "self";
+  /** R3: the one-line reason the orchestrator gave for its own shift, carried to the ledger. */
+  reason?: string | null;
+  /** R3: the request's `at` stamp, so one request writes one ledger line however many retries. */
+  requestedAt?: string | null;
   /** The exact frame the tracker resolved for this role. `/model` is addressed to THIS, never to the
    *  role name alone: measured 2026-09-10, four buses each carry a `developer1`, and a by-name
    *  injection content-resolved into tfg_ua's ORCHESTRATOR — 16 `/model claude-opus-5` messages
@@ -505,29 +556,122 @@ export class ModelPolicy {
     return out;
   }
 
+  // ── MS-001 R1 · a handoff with no `model:` line is noted, once ────────────────────────────────
+  // Measured 2026-09-14: MP-001 had chosen a tier exactly ONCE on this machine. No inbox on any
+  // other bus had ever carried a `model:` line, ReciEats' ledger was 10/10 `chosenBy: default`, and
+  // nothing had said so. The RESOLUTION is unchanged (absent → the configured `workerModel`, owner
+  // 2026-09-13); what changes is that the absence is now visible — once per (role, handoff id),
+  // persisted, so neither a 15-second tick nor a window reload repeats it. Acks are not handoffs.
+
   /**
-   * The ORCHESTRATOR found on a non-premium model — the mirror of `check()`. With the default model
-   * pinned to the cheaper tier, a restarted or restored orchestrator comes up on it; this puts it
-   * back. Same backoff, same acknowledgement rule, same state file (under the key `<role>`, which a
-   * worker can never share: an owner-named role is never in `check()`'s map).
+   * The note to show if `role`'s CURRENT handoff has no `model:` line and has not been noted before,
+   * else null. Records the (role, id) pair as noted. A request the tracker REFUSED (a premium or
+   * unknown id) is not an absence and is reported by `desiredModel`'s own note, not here.
+   */
+  noteDefaulted(role: string, workerModel = "claude-opus-5", allow: string[] = DEFAULT_WORKER_MODELS): string | null {
+    if (!this.repo) return null;
+    const id = handoffId(this.repo, role);              // null for no inbox, and for an ack (FX-001)
+    if (!id) return null;
+    const want = desiredModel(this.repo, role, workerModel, allow);
+    if (want.chosenBy !== "default" || want.note) return null;
+    const st = loadState(this.repo);
+    const key = `${role}|${id}`;
+    const seen = (st.defaulted = st.defaulted || []);
+    if (seen.includes(key)) return null;
+    seen.push(key);
+    saveState(this.repo, st);
+    return `${role}'s ${id} has no model: line — running the default ${want.model} (§18)`;
+  }
+
+  // ── MS-001 R3 · the orchestrator shifts itself ────────────────────────────────────────────────
+  // A session cannot run `/model` on itself. So an orchestrator asks by writing
+  // `<repo>/orchestrator-model.json` `{"model": "<id>", "reason": "<one line>", "at": "<iso>"}`, and
+  // the tick below enforces it on the orchestrator's own declared frame, idle only, in BOTH
+  // directions. The file survives /clear and bank; the orchestrator rewrites it when the task
+  // changes. Absent, unreadable or naming an id outside `orchestratorModels`, the configured
+  // `orchestratorModel` stands exactly as before — and the refusal is said, once per request.
+
+  /**
+   * Resolve what the orchestrator should be running: its own request when the file names an allowed
+   * id, else the configured target. `self` is true only when the request is what decides; `note`
+   * is set ONCE per refused request (keyed on model@at, persisted) and null after that. `reason`
+   * and `requestedAt` travel to the ledger line when the shift is performed.
+   */
+  orchestratorTarget(configured: string, allow: string[] = DEFAULT_ORCHESTRATOR_MODELS):
+      { target: string; self: boolean; reason: string | null; requestedAt: string | null; note: string | null } {
+    const def = { target: configured, self: false, reason: null, requestedAt: null, note: null };
+    if (!this.repo) return def;
+    const req = orchestratorRequest(this.repo);
+    if (!req) return def;
+    const id = normalizeId(req.model);
+    const hit = id ? allow.find((a) => normalizeId(a) === id) : undefined;
+    if (hit) return { target: hit, self: true, reason: req.reason, requestedAt: req.at, note: null };
+    const st = loadState(this.repo);
+    const key = `${req.model}@${req.at || ""}`;
+    const seen = (st.orchRefused = st.orchRefused || []);
+    if (seen.includes(key)) return def;
+    seen.push(key);
+    saveState(this.repo, st);
+    return { ...def, note: `orchestrator-model.json asks for '${req.model}', which is not in orchestratorModels [${allow.join(", ")}]; ignored` };
+  }
+
+  /**
+   * The ORCHESTRATOR found on a model other than the one it is owed — the mirror of `check()`. With
+   * the default model pinned to the cheaper tier, a restarted or restored orchestrator comes up on
+   * it; this puts it back. Since MS-001 R3 the target is whatever `orchestratorTarget` resolved —
+   * the orchestrator's own request or the configured default — and it is enforced in BOTH
+   * directions: "chip is premium → fine" became "chip is the desired model → fine". Same backoff,
+   * same acknowledgement rule, same state file (under the key `<role>`, which a worker can never
+   * share: an owner-named role is never in `check()`'s map). A target whose chip we cannot name is
+   * not enforceable and clears the record — we could never see it take.
    */
   checkOrchestrator(orchestratorRole: string | null, orchestratorFrame: string | null,
-                    info: ModelInfo | null, busy: boolean, premium: string[] = DEFAULT_PREMIUM,
-                    now = Date.now(), target = "claude-fable-5-1[1m]"): ModelViolation | null {
+                    info: ModelInfo | null, busy: boolean, _premium: string[] = DEFAULT_PREMIUM,
+                    now = Date.now(), target = "claude-fable-5-1[1m]",
+                    request: { self: boolean; reason: string | null; requestedAt: string | null } | null = null): ModelViolation | null {
     if (!this.repo || !orchestratorRole || !orchestratorFrame || !info || busy) return null;
     const st = loadState(this.repo);
     const key = orchestratorRole;
-    if (isPremium(info.model, premium)) { if (st.pending[key]) { delete st.pending[key]; saveState(this.repo, st); } return null; }
-    if (info.acknowledged && isPremium(info.acknowledged, premium)) return null;   // switched, chip lagging
+    const wantChip = chipFor(target);
+    const clear = () => { if (st.pending[key]) { delete st.pending[key]; saveState(this.repo!, st); } return null; };
+    if (!wantChip) return clear();                                                  // unenforceable target
+    if (wantChip.toLowerCase() === String(info.model).toLowerCase()) return clear();  // on the desired model
+    if (info.acknowledged && wantChip.toLowerCase() === info.acknowledged.toLowerCase()) return null;   // switched, chip lagging
     const rec = st.pending[key];
-    const sameModel = !!rec && rec.model.toLowerCase() === info.model.toLowerCase();
-    if (sameModel && now < rec.nextAttempt) return null;
-    const attempts = (sameModel ? rec.attempts : 0) + 1;
+    // the same correction = same chip AND same target; a changed target restarts the backoff
+    const sameGoal = !!rec && rec.model.toLowerCase() === info.model.toLowerCase()
+                          && normalizeId(rec.target || "") === normalizeId(target);
+    if (sameGoal && now < rec.nextAttempt) return null;
+    const attempts = (sameGoal ? rec.attempts : 0) + 1;
     st.pending[key] = { model: info.model, target, attempts, nextAttempt: now + backoffFor(attempts),
                         lastAttemptAt: new Date(now).toISOString() };
     saveState(this.repo, st);
     return { repo: this.repo, role: orchestratorRole, model: info.model, attempt: attempts,
-             target, chosenBy: "default", webviewId: orchestratorFrame };
+             target, chosenBy: request?.self ? "self" : "default", webviewId: orchestratorFrame,
+             ...(request?.self ? { reason: request.reason, requestedAt: request.requestedAt } : {}) };
+  }
+
+  /**
+   * Append the ledger line for a PERFORMED self-shift (R3): `{"role", "self": true, "from", "to",
+   * "reason", "at"}`, so the owner can see who shifted and why. Called once the injection reported
+   * ok — which, since R2, means the text was confirmed and submitted. One line per request: a retry
+   * of the same `<to>@<requestedAt>` writes nothing more. Returns whether a line was written.
+   */
+  recordSelfShift(v: ModelViolation, at = new Date()): boolean {
+    if (!this.repo || v.chosenBy !== "self") return false;
+    const st = loadState(this.repo);
+    const key = `${normalizeId(v.target)}@${v.requestedAt || ""}`;
+    if (st.selfShiftLogged === key) return false;
+    const line = { role: v.role, self: true, from: v.model, to: v.target, reason: v.reason ?? null,
+                   at: at.toISOString() };
+    try {
+      const f = path.join(LOOM_ROOT, this.repo, "model-ledger.jsonl");
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.appendFileSync(f, JSON.stringify(line) + "\n");
+    } catch { return false; }
+    st.selfShiftLogged = key;
+    saveState(this.repo, st);
+    return true;
   }
 
   /** Record what the injection reported. A role is only cleared once it is SEEN on a cheaper model. */
@@ -727,15 +871,20 @@ export class ModelPolicy {
                          ...senderArgs("model", v.repo)],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
-        const ok = !err;
+        // MS-001 R2: the injector exits 0 and prints `{'ok': False, ..., 'note': 'typed text not
+        // confirmed in composer; NOT submitted'}` when the switch did NOT happen (measured against
+        // the orchestrator's own frame 2026-09-14T00:04:57Z). `ok = !err` recorded that as
+        // "switched". The verdict is read off the output, the same way injectTo reads it.
+        const verdict = injectVerdict(err, stdout, stderr);
+        const ok = verdict.ok;
         try {
           fs.writeFileSync(path.join(LOOM_ROOT, "model-policy-debug.json"), JSON.stringify({
-            at: new Date().toISOString(), violation: v, target: targetModel, ok,
+            at: new Date().toISOString(), violation: v, target: targetModel, ok, note: verdict.note,
             out: String(stdout || "").slice(-400),
             err: String((err && err.message) || stderr || "").slice(-400),
           }, null, 2));
         } catch { /* ignore */ }
-        done?.(ok, ok ? "switched" : String((err && err.message) || "inject failed"));
+        done?.(ok, ok ? "switched" : verdict.note);
       });
   }
 }

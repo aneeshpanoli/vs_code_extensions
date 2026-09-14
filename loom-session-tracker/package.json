@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.35.1",
+  "version": "0.36.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -293,7 +293,13 @@
         "loomSessionTracker.orchestratorModel": {
           "type": "string",
           "default": "claude-fable-5-1[1m]",
-          "description": "Model id the tagged orchestrator is switched to (passed to /model)."
+          "description": "Model id the tagged orchestrator is switched to (passed to /model) when it has not asked for a tier of its own in <repo>/orchestrator-model.json."
+        },
+        "loomSessionTracker.orchestratorModels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["claude-fable-5-1[1m]", "claude-opus-5", "claude-sonnet-5"],
+          "description": "The tiers an orchestrator may put ITSELF on by writing ~/.claude/loom/<repo>/orchestrator-model.json {\"model\": \"<id>\", \"reason\": \"<one line>\", \"at\": \"<iso>\"} (MS-001). An id outside this list is refused with a note and orchestratorModel stands. Enforced both directions, idle only, on the orchestrator's own frame; every performed self-shift appends a {self: true} line to model-ledger.jsonl."
         },
         "loomSessionTracker.showStartupDigest": {
           "type": "boolean",

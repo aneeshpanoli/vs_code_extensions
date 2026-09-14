@@ -1152,8 +1152,10 @@ suite("MP-001 R3: no acknowledgement within the bound still BINDS — an unbound
     ok(mine.some((l) => /--message \/model claude-sonnet-5\b/.test(l)), "it did try: " + JSON.stringify(mine));
     ok(mine.some((l) => /--message \/loom alpha\b/.test(l)), "and bound anyway: " + JSON.stringify(mine));
     const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
-    ok(/no acknowledgement/.test(String(((dbg || {}).model || {}).spawn?.result || "")),
+    ok(/no acknowledgement/.test(String(((dbg || {}).model || {}).spawn?.note || "")),
        "the unacknowledged switch is on the record: " + JSON.stringify((dbg || {}).model));
+    ok(/no acknowledgement/.test(String((readJson(path.join(LOOM, "spawn-debug.json")) || {}).model?.note || "")),
+       "…and in spawn-debug.json, which the /loom injection would otherwise have clobbered (MS-001 R2b)");
   } finally { off(); }
 });
 
@@ -1326,5 +1328,206 @@ suite("CH-001 R2: a role whose handoff declares NOTHING is opened as before — 
     eq((r.refused || []).filter((x) => /overlaps/.test(x.reason)), [],
        "making the `files:` line compulsory by stealth would break every bus that has not adopted it");
     eq(vscode._statusMessages.filter((m) => /overlaps/.test(m)), [], "and nothing was warned about either");
+  } finally { off(); }
+});
+
+// ── MS-001: absent tiers are loud, a failed switch is not "switched", the orchestrator shifts itself ──
+// Driven through activate() -> tick, per the owner's rule that no injection is proved by a planner alone.
+
+suite("MS-001 R1: a handoff with no model: line is named in the status bar and tracker-debug.json — once", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r1");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "DEV-179", null);
+  clearInjectLog();
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Opus 5"))], LOGGING_CDP);   // already on the default
+  try {
+    await settle(300);
+    const want = "Loom: alpha's DEV-179 has no model: line — running the default claude-opus-5 (§18)";
+    eq(vscode._statusMessages.filter((m) => m === want).length, 1, "said exactly once: " + JSON.stringify(vscode._statusMessages));
+    const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
+    ok(dbg && JSON.stringify((dbg.model || {}).defaulted || []).includes("DEV-179 has no model: line"),
+       "and survives to the end of the tick in tracker-debug.json: " + JSON.stringify(dbg && dbg.model));
+    eq(modelInjections(), [], "nothing typed — alpha is on the default already");
+    ok((readJson(busPath(repo, "model-policy.json")).defaulted || []).includes("alpha|DEV-179"), "persisted");
+  } finally { off(); }
+});
+
+const askOrchestrator = (repo, model, reason = "doc banking", at = "2026-09-14T04:00:00Z") =>
+  fs.writeFileSync(busPath(repo, "orchestrator-model.json"), JSON.stringify({ model, reason, at }));
+const poOn = (repo, chip) => frame("wid-po", poFrame("wid-po", repo).text.replace("Opus 5", chip));
+
+suite("MS-001 R3: the orchestrator asks for Sonnet in orchestrator-model.json and is switched DOWN off Fable — its frame, and a self ledger line", async () => {
+  const repo = makeRepo({ roles: {} }, "ms-r3-down");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  askOrchestrator(repo, "claude-sonnet-5", "banking the memory doc");
+  clearInjectLog();
+  const off = await activate([poOn(repo, "Fable 5.1")], LOGGING_CDP);
+  try {
+    await settle(400);
+    const inj = modelInjections();
+    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-sonnet-5\b/.test(inj[0]) && /--webview-id wid-po\b/.test(inj[0]), "…Sonnet, into the orchestrator's own frame: " + inj[0]);
+    ok(vscode._messages.info.some((m) => /orchestrator product-owner is on Fable 5\.1 — it asked for claude-sonnet-5 \(banking the memory doc\)/.test(m)),
+       "the human is told it was the orchestrator's own request: " + JSON.stringify(vscode._messages.info));
+    const pending = readJson(busPath(repo, "model-policy.json")).pending;
+    eq(pending["product-owner"].target, "claude-sonnet-5", "recorded with its target");
+    const led = fs.readFileSync(busPath(repo, "model-ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    eq(led.length, 1, "one ledger line");
+    eq({ ...led[0], at: undefined }, { role: "product-owner", self: true, from: "Fable 5.1", to: "claude-sonnet-5", reason: "banking the memory doc", at: undefined }, "who shifted and why");
+    ok(led[0].at, "stamped");
+  } finally { off(); }
+});
+
+suite("MS-001 R3: asked for Opus while on Sonnet it is switched UP to Opus — not to the configured Fable", async () => {
+  const repo = makeRepo({ roles: {} }, "ms-r3-up");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  askOrchestrator(repo, "claude-opus-5", "ordinary dispatch");
+  clearInjectLog();
+  const off = await activate([poOn(repo, "Sonnet 5")], LOGGING_CDP);
+  try {
+    await settle(400);
+    const inj = modelInjections();
+    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-opus-5\b/.test(inj[0]) && /--webview-id wid-po\b/.test(inj[0]), "Opus, its own frame: " + inj[0]);
+    ok(!inj.some((l) => /fable/.test(l)), "the file's choice, not the setting");
+  } finally { off(); }
+});
+
+suite("MS-001 R3: an id outside orchestratorModels is refused with a note, and the configured target is enforced instead", async () => {
+  const repo = makeRepo({ roles: {} }, "ms-r3-bad");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  askOrchestrator(repo, "claude-haiku-4-5", "cheap");
+  clearInjectLog();
+  const off = await activate([poOn(repo, "Opus 5")], LOGGING_CDP);
+  try {
+    await settle(400);
+    const inj = modelInjections();
+    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-fable-5-1\[1m\]/.test(inj[0]), "the SETTING's target, never the refused id: " + inj[0]);
+    ok(vscode._statusMessages.some((m) => /asks for 'claude-haiku-4-5', which is not in orchestratorModels/.test(m)), "refused, and said: " + JSON.stringify(vscode._statusMessages));
+    const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
+    ok(dbg && JSON.stringify((dbg.model || {}).orchestratorRefused || []).includes("not in orchestratorModels"), "in tracker-debug.json: " + JSON.stringify(dbg && dbg.model));
+    ok(!fs.existsSync(busPath(repo, "model-ledger.jsonl")), "the configured promotion is not a self-shift: no ledger line");
+  } finally { off(); }
+});
+
+suite("MS-001 R3: a WORKER cannot use orchestrator-model.json — its tier is its handoff's", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r3-worker");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  askOrchestrator(repo, "claude-sonnet-5", "irrelevant to alpha");
+  putHandoff(repo, "alpha", "MS-200", "claude-opus-5");
+  clearInjectLog();
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    eq(modelInjections(), [], "alpha stays on its handoff's Opus: " + JSON.stringify(injectLog()));
+  } finally { off(); }
+});
+
+suite("MS-001 R2: the tick records a refused injection (exit 0, 'ok': False) as NOT switched, note kept", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r2");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MS-201", "claude-sonnet-5");
+  const REFUSING = "import sys\nprint(\"loom_cdp] inject alpha: {'ok': False, 'role': 'alpha', 'note': 'typed text not confirmed in composer; NOT submitted'}\")\n";
+  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Opus 5"))], REFUSING);
+  try {
+    await settle(400);
+    const rec = readJson(busPath(repo, "model-policy.json")).pending.alpha;
+    eq(rec.lastError, "typed text not confirmed in composer; NOT submitted", "lastError is the injector's own note");
+    ok(vscode._messages.warn.some((m) => /could not switch alpha off Opus 5 \(typed text not confirmed in composer; NOT submitted\)/.test(m)),
+       "and the human is warned: " + JSON.stringify(vscode._messages.warn));
+  } finally { off(); }
+});
+
+// ── MS-001 R2b: a worker must never BEGIN a handoff on the premium tier ─────────────────────────
+// Measured on pleodo 2026-09-14T03:46:53Z: developer1/2/3 were spawned through open-requests.json,
+// all three came up on Fable 5.1, all three were bound, and all three ran their whole handoff there
+// (71/55/70 turns by 03:55Z). Their handoffs DID carry `model: claude-opus-5` — which IS the
+// configured default, so the spawn's early return typed nothing at all, and the idle tick can never
+// switch a composer that is busy from the moment `/loom` runs.
+
+const spawnRequest = (repo, role) =>
+  writeJson(busPath(repo, "open-requests.json"), { roles: [role], requestedAt: new Date().toISOString() });
+/** The PO frame plus a new tab that only exists once editor.open has run. */
+const spawnFrames = (repo, tab) => {
+  const po = poFrame("wid-po", repo);
+  return () => (vscode._executed.some((e) => e.id === "claude-vscode.editor.open") ? [po, tab] : [po]);
+};
+
+suite("MS-001 R2b: a fresh tab that comes up PREMIUM is typed into even though its handoff wants the default tier", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r2b-typed");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.modelAckMs"] = 300;
+  putHandoff(repo, "alpha", "MS-210", "claude-opus-5");        // == the configured workerModel
+  spawnRequest(repo, "alpha");
+  clearInjectLog();
+  // the pleodo case: the tab comes up on Fable and acknowledges the switch when typed into
+  const tab = frame("wid-new", "You: /model claude-opus-5\nSet model to Opus 5 for this session only\n" + footer("Fable 5.1"));
+  const off = await activate(spawnFrames(repo, tab), LOGGING_CDP);
+  try {
+    await settle(6000);
+    const mine = injectLog().filter((l) => /--webview-id wid-new\b/.test(l));
+    ok(/--message \/model claude-opus-5\b/.test(mine[0]), "FIRST /model, even though the handoff wants the default: " + JSON.stringify(mine));
+    ok(/--message \/loom alpha\b/.test(mine[1]), "THEN the bind, the switch acknowledged: " + JSON.stringify(mine));
+    const dbg = readJson(path.join(LOOM, "spawn-debug.json"));
+    eq(dbg.model.acknowledged, "Opus 5", "the ack outcome is in spawn-debug.json: " + JSON.stringify(dbg.model));
+    eq(dbg.model.ok, true);
+  } finally { off(); }
+});
+
+suite("MS-001 R2b: a refused /model is RETRIED, and a tab still on premium is NOT bound — the frame and reason go back to the orchestrator", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r2b-refused");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.modelAckMs"] = 200;
+  putHandoff(repo, "alpha", "MS-211", "claude-opus-5");
+  spawnRequest(repo, "alpha");
+  clearInjectLog();
+  // the injector exits 0 and reports it did not submit (R2), and the tab stays on Fable
+  const REFUSING =
+    "import sys, os\n" +
+    "p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'inject-log.txt')\n" +
+    "open(p, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n" +
+    "print(\"loom_cdp] inject alpha: {'ok': False, 'note': 'typed text not confirmed in composer; NOT submitted'}\")\n";
+  const off = await activate(spawnFrames(repo, frame("wid-new", "a tab on the wrong tier\n" + footer("Fable 5.1"))), REFUSING);
+  try {
+    await settle(6000);
+    const mine = injectLog().filter((l) => /--webview-id wid-new\b/.test(l));
+    eq(mine.filter((l) => /--message \/model claude-opus-5\b/.test(l)).length, 2, "typed twice — retried, because a session-less composer is idle: " + JSON.stringify(mine));
+    eq(mine.filter((l) => /--message \/loom/.test(l)).length, 0, "and NEVER bound: a worker must not begin a handoff on Fable");
+    const res = readJson(busPath(repo, "open-requests.json"));
+    const o = res.opened.find((x) => x.role === "alpha");
+    eq(o.webviewId, "wid-new", "the frame is handed back so the orchestrator can reach the tab");
+    eq(o.bound, false);
+    match(o.note, /on premium — \/model refused/, "…with the reason on it: " + o.note);
+    ok(res.refused.some((r) => r.role === "alpha" && /opened but NOT bound/.test(r.reason)), "refused, naming why: " + JSON.stringify(res.refused));
+    ok(vscode._messages.warn.some((m) => /alpha's new tab is on a premium model, not Opus 5 .* NOT bound/.test(m)),
+       "and the human is toasted: " + JSON.stringify(vscode._messages.warn));
+    eq(readJson(path.join(LOOM, "spawn-debug.json")).model.onPremium, true, "recorded in spawn-debug.json");
+  } finally { off(); }
+});
+
+suite("MS-001 R2b: no acknowledgement on a NON-premium tab still binds — an unbound tab is the worse loss", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r2b-cheap");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  vscode._config["loomSessionTracker.modelAckMs"] = 150;
+  putHandoff(repo, "alpha", "MS-212", "claude-sonnet-5");
+  spawnRequest(repo, "alpha");
+  clearInjectLog();
+  const off = await activate(spawnFrames(repo, frame("wid-new", "a tab that never answers\n" + footer("Opus 5"))), LOGGING_CDP);
+  try {
+    await settle(6000);
+    const mine = injectLog().filter((l) => /--webview-id wid-new\b/.test(l));
+    ok(mine.some((l) => /--message \/loom alpha\b/.test(l)), "bound anyway — Opus is the wrong tier, not the premium one: " + JSON.stringify(mine));
+    const res = readJson(busPath(repo, "open-requests.json"));
+    ok(res.opened.some((x) => x.role === "alpha" && x.bound), "and reported bound");
   } finally { off(); }
 });

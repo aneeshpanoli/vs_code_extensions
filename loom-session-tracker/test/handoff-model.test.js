@@ -683,3 +683,37 @@ suite("CH-001 R3: a block ABANDONED after one tick still records what IT declare
   eq(l[0].filesDeclared, 2, "the TWO files C-35 declared, not the one its replacement declares");
   eq(l[0].statusUpdates, 1, "and the single report it was seen with");
 });
+
+// ── MS-001 R1 · a handoff with no `model:` line is noted, once ──────────────────────────────────
+// Measured 2026-09-14: MP-001 had chosen a tier exactly once on this machine, no inbox on any other
+// bus had ever carried a `model:` line, and nothing had said so. The resolution is unchanged; the
+// silence is what changes.
+
+suite("MS-001 R1: a handoff with no `model:` line is noted ONCE per (role, id) — and the note names the default", () => {
+  const repo = makeRepo({ dev: {} }, "ms1-once");
+  inbox(repo, "dev", handoff("DEV-179", null));
+  const pol = new ModelPolicy(repo);
+  const first = pol.noteDefaulted("dev", "claude-opus-5");
+  eq(first, "dev's DEV-179 has no model: line — running the default claude-opus-5 (§18)", "the note, in these words");
+  eq(pol.noteDefaulted("dev", "claude-opus-5"), null, "the next tick says nothing — once per handoff id, never per tick");
+  eq(new ModelPolicy(repo).noteDefaulted("dev", "claude-opus-5"), null, "and a fresh policy (a window reload) does not re-toast: persisted");
+  ok((readJson(busPath(repo, "model-policy.json")).defaulted || []).includes("dev|DEV-179"), "recorded in model-policy.json");
+  eq(desiredModel(repo, "dev", "claude-opus-5").model, "claude-opus-5", "the RESOLUTION is unchanged: the default runs");
+  // the next handoff for the same role is a new (role, id) pair and is noted again
+  inbox(repo, "dev", handoff("DEV-180", null));
+  ok(/DEV-180 has no model: line/.test(pol.noteDefaulted("dev", "claude-opus-5") || ""), "a new id gets its own note");
+});
+
+suite("MS-001 R1: an ack is not a handoff and gets no note; a handoff that CHOSE a tier gets none either", () => {
+  const repo = makeRepo({ dev: {}, dev2: {}, dev3: {} }, "ms1-ack");
+  const pol = new ModelPolicy(repo);
+  inbox(repo, "dev", handoff("DEV-179-ack", null));
+  eq(pol.noteDefaulted("dev", "claude-opus-5"), null, "an ack (FX-001) carries no model: line and is not noted");
+  inbox(repo, "dev2", handoff("DEV-181", "claude-sonnet-5"));
+  eq(pol.noteDefaulted("dev2", "claude-opus-5"), null, "a chosen tier is not a default");
+  // a REFUSED request (premium id) is reported by desiredModel's own note, not as an absence
+  inbox(repo, "dev3", handoff("DEV-182", "claude-fable-5-1"));
+  eq(pol.noteDefaulted("dev3", "claude-opus-5"), null, "a refused request is not an absence — it has its own note");
+  eq(pol.noteDefaulted("nobody", "claude-opus-5"), null, "no inbox, no note");
+  eq(readJson(busPath(repo, "model-policy.json")), null, "nothing noted, nothing written");
+});
