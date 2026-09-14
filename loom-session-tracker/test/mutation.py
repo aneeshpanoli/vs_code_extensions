@@ -630,8 +630,8 @@ MUTATIONS = [
  # count-based assertion still passes; only the ORDER catches it.
  ("the spawn path binds first and sets the tier afterwards, into a composer that is now busy",
   "src/extension.ts",
-  "            const pm = { role, webviewId: wid, result: await premodel(role, wid) };\n            noteModel(\"spawn\", pm); debugLog({ spawnModel: pm });\n            const st = plan.stranded.find((x) => x.role === role);",
-  "            const st = plan.stranded.find((x) => x.role === role);\n            setTimeout(() => premodel(role, wid), 0);"),
+  "            const pm = await premodel(role, wid);\n            noteModel(\"spawn\", pm); debugLog({ spawnModel: pm }); recordSpawnModel(pm);",
+  "            const pm: PreModel = { role, webviewId: wid, want: null, typed: 0, acknowledged: null,\n                                   chip: null, onPremium: false, ok: true, note: \"deferred\" };\n            setTimeout(() => premodel(role, wid), 0);"),
 
  # R4 — killed by "R4: two loop-backs on ONE handoff raise it to Opus; the third does not rewrite
  # again" (its "re-reading an unchanged status.json counts nothing" assertion). status.json is
@@ -670,7 +670,7 @@ MUTATIONS = [
  # whose tick happened not to move a pending record — the counts silently reset to zero.
  ("the change-only state write compares `pending` alone, dropping escalation and ledger state",
   "src/models.ts",
-  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)) return;",
+  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)\n          && same(cur.defaulted, st.defaulted) && same(cur.orchRefused, st.orchRefused)\n          && String(cur.selfShiftLogged || \"\") === String(st.selfShiftLogged || \"\")) return;",
   "      if (same(cur.pending, st.pending)) return;"),
 
  # ── CH-001, 2026-09-13: §19's chunking rules — the tracker ENFORCES disjointness and MEASURES size ─
