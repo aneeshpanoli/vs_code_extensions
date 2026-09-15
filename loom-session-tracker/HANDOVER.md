@@ -9,7 +9,30 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.38.2)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.38.3)
+
+**Version 0.38.3** is WL-006: **a background mutation gate outlives the turn that launched it, and
+now wakes its own role when it exits.** A worker's turn ends the moment it backgrounds the gate, so
+nothing told it the result: its `outbox.md` and `status.json` stayed frozen on the PREVIOUS block
+and read exactly like a worker that had done nothing, and the orchestrator paid for that by hand
+three times (WL-002, WL-004+FX-002, WL-005) before this was built. The measurement lives in
+`health.ts`, not `models.ts` — the stall alarm and the gate wake are ONE reading of ONE field, and
+splitting them is how one state gets rendered as another. **A gate is called live only when three
+facts agree**: `/proc/<pid>` exists, its `cmdline` names the right KIND (a recycled pid fails here —
+pids on this box wrapped past 4,194,304 mid-session, so this is not theoretical), and its start time
+from `/proc/<pid>/stat` field 22 against `/proc/stat` `btime` is within 120s of THIS `launched_at`.
+**Anything unreadable means not identified, which means "exited", deliberately**: a missed
+suppression costs one spurious warning, while a false "running" suppresses the alarm for ever AND
+withholds the wake. One DECLARED pid, never a pattern search. The ROLE is woken, not the
+orchestrator. The wake is marked only on DELIVERY — a busy composer leaves it pending for the next
+tick, because marking on attempt records "woken" for a role that was never told. It is keyed
+`log@launchedAt` in `stall-state.json`, so the last gate cannot suppress the next for ever and a
+reload does not re-wake everything. **A declaration also carries its `handoff` now, and one whose
+`handoff` equals the role's own `last_handled` is SPENT** — not a wake and not a suppression —
+because a leftover declaration from a finished block was a live instance sitting in developer1's
+own `status.json` while this was being built. Merged `7c4114e`, DEPLOYED 2026-09-15.
+**Its first gate came back RED at 186/188 and both survivors were on the block's own safety rules**;
+see "three things 'survived' can mean" below, because that distinction is the durable half.
 
 **Version 0.38.2** is WL-005, which took two lies out of the instruments this bus reads its own
 state from. (1) A handoff's duration was measured between two different clocks: `started` was read
@@ -49,14 +72,36 @@ cheapest possible week — rather than as unmeasured, `316ef5c`); 0.37.0 was WL-
 ledger itself (`68e7ef0`). The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-a version here as "that is what the editor is executing". **783 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **180/180 mutations caught** under the
+a version here as "that is what the editor is executing". **795 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **188/188 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 (Re-measure after each merge, and note that `./test.sh` does NOT compile — a stale `out/` after a
 merge reads as a red suite.) `./live.sh`
 is clean except the warnings under open threads and the expected "windows are running an OLD build"
 failure until that deploy + reload. Read this section, then `README.md`, then run `./live.sh` and
 believe it over anything written here.
+
+### "Survived" means three things, and only one of them is a test problem
+Three consecutive blocks each produced one species, and a gate that prints the same word for all
+three cannot be audited from its summary — every survivor has to be reasoned about by hand.
+- **UNCOVERED** — a real defect nothing catches. Write the test. WL-006's was the expensive kind:
+  "an unreadable start time is assumed to be RUNNING" flipped the one default the design argued
+  hardest for, and **no test could reach the branch**, because `/proc/<pid>/stat` cannot be made
+  unreadable while `cmdline` stays readable. *The branch you are most confident about is the one
+  nothing exercises.* The fix is an injectable probe defaulting to the real `/proc` readers — a seam
+  to make the production default TESTABLE, not a seam to vary it.
+- **UNDRIVEABLE** — mutates a file no process executes. `mutation.py` copies `test/` into its
+  throwaway tree but runs the ORIGINAL driver, so a mutant edited into the copy changes a file
+  nothing reads (WL-004-R6). Delete it and guard at RUN time instead — which is what the
+  containment count does.
+- **EQUIVALENT** — mutates state nothing observes. WL-006's second survivor mutated a LOCAL copy
+  that `scanGates` never saves and that is reloaded from disk each call: unkillable because there
+  was nothing there to kill. Replace it with a mutant of the actual defect.
+
+A red baseline, a mutant that does not compile, a self-check counted inside the set, a mutant on an
+unread file, and an equivalent mutant are all the SAME failure: **a score nobody can reconcile to a
+list of names grades nothing.** That is why the gate prints survived / stale / ungraded by name, the
+no-op self-check outside the counted set, and the host `loom-*` containment count.
 
 ### The principles the code now rests on (each was learned from a live failure)
 1. **Names are a contract** (`src/naming.ts`): one owner test `isOwnerRole()`, aliases on the bus in
