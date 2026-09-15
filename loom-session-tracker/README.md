@@ -322,6 +322,93 @@ directory's — which is the right direction to be wrong in (an over-match costs
 under-match costs a merge conflict found an hour later) and is entirely in the writer's hands: declare
 a path with a directory in it.
 
+### The work ledger: what the agents actually produced (WL-001)
+
+**Every figure in this section is computed from git and from `model-ledger.jsonl`. Nothing in it
+comes from what an agent wrote about itself** — not `status.json`'s `last_line`, not a test count a
+session reported, not "DEV-219 landed". That is not a stylistic preference; it is the defect being
+corrected.
+
+Two products ran ~70,000 agent turns and ~15 billion cache-read tokens in seven days, and the owner's
+reading of it was "coding nonstop for days and the product hasn't moved much at all." Measured from
+git, it had not:
+
+| measured over 7 days | ReciEats | pleodo |
+|---|---|---|
+| changed lines reaching a user's screen | 10.7 % | 9.3 % (42.6 % counting the engine) |
+| commits touching nothing a user sees | 356 of 614 | — |
+| commits whose only job is updating the guide | 171 (28 %) | — |
+| handoffs needing at least one loop-back | 30 % | 94 % |
+| releases/tags ever cut | 0 (221 blocks) | 0 |
+
+The panel could not have told anyone, because everything it showed was the agents' own account of
+themselves — and by that account the week was excellent. So a **`work ledger` node now sits under
+each project, ABOVE its agents**, collapsed into one line that carries the verdict:
+
+```
+ReciEats   9.3B · $7,313 equiv · $0.12/line · ships 10.7% · loop-backs 30% · narration 28% · no release in 221 blocks
+```
+
+Expand it and each figure is its own row, coloured by threshold, with the raw numbers — numerator,
+denominator, window, and `computedAt`, so a stale cache is obvious — in the tooltip. **A red row
+states its number.** A bare warning icon tells a reader something is wrong without telling them how
+wrong, which is how the last one got ignored.
+
+| figure | what it measures |
+|---|---|
+| `shipsToUser` | changed lines (added+deleted) in product paths ÷ all changed lines |
+| `loopBackRate` | handoffs in `model-ledger.jsonl` with `loopBacks > 0` ÷ all, plus the median wall time |
+| `narrationShare` | commits whose **entire** file set is documentation — the "update the guide" commits |
+| `rigRatio` | test/script/tooling lines ÷ product lines |
+| `release` | commits since the newest tag, and days since it |
+| `tokens` | every billed token in the window, **cache reads included**, split by model |
+| `list-price equivalent` | those tokens priced at list — **not a bill** (see below) |
+| `net product lines` | a **two-point** diff over the product paths, plus files newly added |
+| `$ per product line` | the ratio the owner actually asked for |
+
+Four things this deliberately refuses to do:
+
+- **A figure it cannot compute is `null` and renders "unknown", never `0`.** A measured zero and an
+  unreadable value are opposites. A non-positive `wallMinutes` is dropped rather than averaged in as
+  0, and a handoff no commit names shows `—` rather than 0 lines shipped.
+- **"Never released" is a warning, not a blank.** That is ReciEats' real answer — 0 tags in 221
+  blocks — and rendering it as an empty cell is how it stayed invisible for a week.
+- **A guessed product path says it is a guess.** A repo not named in `productPaths` falls back to a
+  heuristic (everything except test/spec/`scripts/`/`tools/`/`docs/`/`*.md`/lockfiles/config) and is
+  marked `(est)` on the row and `HEURISTIC` in the tooltip. An unconfigured guess presented as a
+  measurement is the same lie in a new place.
+- **An unpriced model contributes tokens but no dollars, and is named.** A silent undercount
+  presented as a cost is the same failure again.
+
+**Cache reads are included and that is the point.** They run ~100× the other token classes — one
+measured day was 2.93 billion of them — so a total that omits them turns a 15-billion-token week into
+a 100-million-token one. `test/mutation.py` carries a mutant that drops them, and it must be caught.
+
+**"List-price equivalent" is not a bill.** This work runs on a subscription and nobody is invoiced
+it; the dollar figure is the resource measure, and every label that shows it says so. Prices are in
+`modelPrices`, verified 2026-09-15 against the published model table — Fable 5.1 $10/$50, Opus 5
+$5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5 per MTok, a cache read 0.1× input and a 1-hour cache write
+2×, **except Claude Fable 5.1, whose cache reads are $0.25/MTok rather than $1.00**. Ids match by
+longest prefix, so `claude-opus-5[1m]` and a dated snapshot inherit their family's row.
+
+**Net product lines is a two-point diff (`<base>..HEAD`), not a sum of per-commit numstat**, and the
+difference is the whole value of the figure. Summing commits counts a line once per commit that
+touched it, so a file rewritten 118 times reports thousands of lines of "production" while ending the
+same size. A repo whose entire history is inside the window diffs from the empty tree, so everything
+in it correctly counts as new.
+
+**Performance.** One `git log --numstat` pass per repo per compute, cached atomically in
+`~/.claude/loom/<repo>/work-ledger.json` with its `computedAt`; every tick in between reads the
+cache, and the view never runs git at all.
+
+**The orchestrator is told, once per project per calendar day.** When a project is red — the shipping
+share, or the cost per product line, or a week that produced no net product line at all — one line is
+injected into that project's **tagged orchestrator**, and only into an **idle** composer, the same
+discipline `/model` is held to. Never a worker: a worker cannot choose what the next block builds.
+The day is stamped in `work-ledger.json` before the injection, so a reload cannot re-announce it and
+two windows on one project cannot both announce it. That is the point of the whole feature — the
+number has to reach the session that decides what to build next.
+
 ### Orchestrator context memory
 
 The orchestrator is the session that actually fills up: it runs for days across every role. Left
@@ -680,6 +767,7 @@ described under "Orchestrators open their own sessions" and no longer happens.
 | `Worktree Cleanup Report` | Report first, remove second |
 | `Collect Garbage (across projects)` | Show the plan, or run tiers 1+2 after a confirmation |
 | `Bank Orchestrator Memory & Clear Context` | Run a context-memory cycle now |
+| `work ledger — what the agents actually produced` | The full report, as a markdown document: every figure with its raw numbers, the most-touched files, and a per-handoff table. A document rather than a webview so it can be pasted straight into a handoff. |
 
 ## Settings
 
@@ -711,6 +799,11 @@ All under `loomSessionTracker.`.
 | `gcIntervalHours` | `24` | How often the automatic tier-1 pass runs, per machine |
 | `gcTranscriptDays` | `14` | Age past which an unreferenced transcript is archivable |
 | `gcBackupDays` | `7` | Age past which a `*.bak-<epoch>` under `~/.claude/loom` is archivable |
+| `workLedgerEnabled` | `true` | Measure what each project PRODUCED, from git and the transcripts, and show it above that project's agents |
+| `productPaths` | ReciEats, pleodo | Repo → globs of what ships to a user. An unlisted repo falls back to a heuristic and the panel says so. An empty list means "nothing here ships" and is honoured as configuration |
+| `workLedgerWindowDays` / `workLedgerIntervalMin` | `7` / `10` | Days of history measured; minimum minutes between recomputes (the tick reads the cache in between) |
+| `workLedgerThresholds` | see below | `shipsGood` 40 / `shipsBad` 20 · `loopBackGood` 20 / `loopBackBad` 50 · `narrationGood` 10 / `narrationBad` 25 · `costPerLine` `0.25` dollars per net product line. Read field by field, so a partial object works |
+| `modelPrices` | list prices | `[input, output, cacheRead, cacheWrite1h]` per MTok, for the list-price-equivalent figure only — this work runs on a subscription and nobody is invoiced it |
 
 ## Files it touches
 
@@ -721,11 +814,14 @@ It is the only thing here that touches `~/.vscode-oss/extensions`.
 **Reads, never writes:** `<project>/board.json` (the roster), `<project>/bindings.json` (written by
 `loom_cdp.py` at `/loom` time), each role's `status.json`/`inbox.md`/`outbox.md`,
 `<project>/orchestrator-model.json` (the orchestrator's own tier request, MS-001), and
-`~/.claude/projects/*/<sessionId>.jsonl`.
+`~/.claude/projects/*/<sessionId>.jsonl` — the last of these also for WL-001's token
+accounting, which sums each assistant message's `usage` (cache reads included) by model.
 
 **Writes** (all atomic, change-only, and never fatal if they fail):
 `<project>/targetmap.json`, `orchestrator.json`, `session-locks.json`, `notify-state.json`,
-`limit-state.json`, `model-policy.json`, `stall-state.json`, `context-state.json`; globally
+`limit-state.json`, `model-policy.json`, `stall-state.json`, `context-state.json`,
+`work-ledger.json` (the work-ledger figures, their `computedAt`, and the day the
+orchestrator was last told — WL-001); globally
 `active-sessions.json`, `working-sessions.json`, `worktree-removals.json`, `gc-state.json`; plus
 `*-debug.json`
 files recording the last injection attempt of each kind, which is where to look when something did

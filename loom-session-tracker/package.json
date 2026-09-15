@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -113,6 +113,11 @@
       {
         "command": "loomSessionTracker.focusSession",
         "title": "Loom: Show this session's tab"
+      },
+      {
+        "command": "loomSessionTracker.workLedgerReport",
+        "title": "Loom: work ledger \u2014 what the agents actually produced",
+        "icon": "$(graph)"
       }
     ],
     "menus": {
@@ -151,6 +156,11 @@
           "command": "loomSessionTracker.bankContext",
           "when": "view == loomSessions",
           "group": "navigation@7"
+        },
+        {
+          "command": "loomSessionTracker.workLedgerReport",
+          "when": "view == loomSessions",
+          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -297,8 +307,14 @@
         },
         "loomSessionTracker.orchestratorModels": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["claude-fable-5-1[1m]", "claude-opus-5", "claude-sonnet-5"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "claude-fable-5-1[1m]",
+            "claude-opus-5",
+            "claude-sonnet-5"
+          ],
           "description": "The tiers an orchestrator may put ITSELF on by writing ~/.claude/loom/<repo>/orchestrator-model.json {\"model\": \"<id>\", \"reason\": \"<one line>\", \"at\": \"<iso>\"} (MS-001). An id outside this list is refused with a note and orchestratorModel stands. Enforced both directions, idle only, on the orchestrator's own frame; every performed self-shift appends a {self: true} line to model-ledger.jsonl."
         },
         "loomSessionTracker.showStartupDigest": {
@@ -420,6 +436,64 @@
           "type": "number",
           "default": 7,
           "description": "Archive *.bak-<epoch> files under ~/.claude/loom older than this many days."
+        },
+        "loomSessionTracker.workLedgerEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Measure what each project actually PRODUCED \u2014 from git and model-ledger.jsonl, never from what an agent wrote about itself \u2014 and show it as a `work ledger` node above that project's agents. Audited 2026-09-15: 10.7% of ReciEats' changed lines reached a user's screen over seven days and 171 of 614 commits only updated the guide, while every figure the panel showed came from the agents themselves and said the week went well."
+        },
+        "loomSessionTracker.productPaths": {
+          "type": "object",
+          "default": {
+            "ReciEats": [
+              "src/app/**",
+              "src/lib/**"
+            ],
+            "pleodo": [
+              "web/src/**",
+              "engine/**",
+              "blocks/**",
+              "app/**"
+            ]
+          },
+          "description": "Repo name \u2192 globs of what SHIPS to a user, for the shipsToUser figure. A repo not listed here falls back to a heuristic (everything except test/spec/scripts/tools/docs/*.md/lockfiles/config) and the panel says the figure is heuristic \u2014 an unconfigured guess presented as a measurement is the same lie in a new place. An EMPTY list means 'nothing here ships' and is honoured as configuration, not treated as absent."
+        },
+        "loomSessionTracker.workLedgerWindowDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 1,
+          "description": "How many days of git history the work ledger measures."
+        },
+        "loomSessionTracker.workLedgerIntervalMin": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Minimum minutes between recomputes. The compute is ONE `git log --numstat` pass per repo, cached in ~/.claude/loom/<repo>/work-ledger.json with its computedAt; every tick in between reads that cache."
+        },
+        "loomSessionTracker.workLedgerThresholds": {
+          "type": "object",
+          "default": {
+            "shipsGood": 40,
+            "shipsBad": 20,
+            "loopBackGood": 20,
+            "loopBackBad": 50,
+            "narrationGood": 10,
+            "narrationBad": 25,
+            "costPerLine": 0.25
+          },
+          "description": "Colour bands. Percentages: shipsToUser green \u2265shipsGood, red <shipsBad; loopBackRate and narrationShare invert (low is good), green \u2264Good, red >Bad. costPerLine is in DOLLARS of list-price equivalent per net product line \u2014 red above it. Fields are read one by one, so a partial object still works."
+        },
+        "loomSessionTracker.modelPrices": {
+          "type": "object",
+          "default": {
+            "claude-fable-5-1": [10, 50, 0.25, 20],
+            "claude-fable-5": [10, 50, 1, 20],
+            "claude-opus-5": [5, 25, 0.5, 10],
+            "claude-opus-4-8": [5, 25, 0.5, 10],
+            "claude-sonnet-5": [2, 10, 0.2, 4],
+            "claude-haiku-4-5": [1, 5, 0.1, 2]
+          },
+          "description": "LIST price per model, [input, output, cacheRead, cacheWrite1h] in dollars per MTok, for the 'list-price equivalent' figure only \u2014 this work runs on a subscription and nobody is invoiced it. Verified 2026-09-15 against the published model table (Fable 5.1 $10/$50, Opus 5 $5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5; a cache read is 0.1x input and a 1-hour cache write is 2x, EXCEPT Claude Fable 5.1, whose cache reads are $0.25/MTok rather than $1.00). A model id with no row contributes its tokens to the token total but no dollars, and the panel names it rather than silently undercounting. Ids are matched by longest prefix, so a [1m] suffix or a dated snapshot inherits its family's row."
         }
       }
     }

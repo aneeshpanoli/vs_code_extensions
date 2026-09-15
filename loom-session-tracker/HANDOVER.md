@@ -353,6 +353,27 @@ believe it over anything written here.
 `~/.claude/loom/test_loom_cdp.py` (mirrored in `../tools/` at the repo root, NOT inside this project), `ORCHESTRATION-PLAYBOOK.md` §13–§20 (§17: no watchers in an orchestrator session; §18: the orchestrator picks the worker's tier per handoff; §19: chunking — one handoff is one merge, and `files:` declares the package; §20: an orchestrator shifts its OWN tier by writing `<repo>/orchestrator-model.json`, which the owner writes off-git and `restoreMessage` names).
 Backups of loom_cdp.py sit beside it as `loom_cdp.py.bak-<epoch>`.
 
+**21. A number an agent can author is a number that says the week went well.** (WL-001, 2026-09-15.)
+Everything the panel showed before this — `status.json`'s `last_line`, the ledger's test counts,
+"DEV-219 landed" — was the agents' own account of themselves. Measured from git instead, 10.7 % of
+ReciEats' changed lines over seven days reached a user's screen, 171 of 614 commits only updated the
+guide, and 0 releases had ever been cut; by the agents' account the same week was excellent. So
+`workledger.ts` takes every figure from git or from `model-ledger.jsonl` (whose lines the extension
+appends by observing transitions, not the role by typing them), and the rule is worth defending when
+this file is edited: **if a figure could be sourced from something a session wrote about itself, it
+does not belong here.**
+
+Three corollaries the code is built to, each of which had to be argued for once:
+
+- **A figure that cannot be computed is `null`, never `0`.** A measured zero and an unreadable value
+  are opposites — the `numOrNull` lesson from CH-001, now applied to a whole panel. Non-positive wall
+  times are dropped, not averaged in; a handoff no commit names shows `—`, not 0 lines.
+- **Cache reads are the figure.** They run ~100× the other token classes. A token total that omits
+  them understates a 15-billion-token week by two orders of magnitude, and every cost ratio with it.
+- **Churn is not production.** The denominator is a two-point diff, not a sum of per-commit numstat:
+  a file rewritten 118 times has produced nothing if it ends the same size. ReciEats' most-touched
+  file in the audited week was `guide/GUIDE.txt`, at 203 touches.
+
 ## Where everything is
 
 | | |

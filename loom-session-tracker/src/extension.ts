@@ -43,6 +43,9 @@ import { DEFAULT_WINDOW_TOKENS, pct, transcriptFor } from "./context";
 import { planGc, applyGc, renderGc, gcSummary, fmtBytes, loadGcState, saveGcState, dueForAuto,
          finishAuto, refreshLease, liveSessionIdsOf, busLiveRoles, GcConfig, GcPlan, ApplyOptions,
          DEFAULT_GC_CONFIG } from "./gc";
+import { refreshWorkLedger, computeWorkLedger, readCache, writeCache, handoffRows, renderReport, ledgerAlert, todayKey,
+         DEFAULT_PRODUCT_PATHS, DEFAULT_THRESHOLDS, DEFAULT_WINDOW_DAYS, DEFAULT_INTERVAL_MIN,
+         Thresholds, WorkLedger } from "./workledger";
 
 let timer: NodeJS.Timeout | undefined;
 
@@ -287,6 +290,61 @@ export function activate(context: vscode.ExtensionContext) {
       clearTimeoutMinutes: Math.max(1, Number(cfg().get("contextClearTimeoutMinutes", 5)) || 5),
       cooldownMinutes: Math.max(0, Number(cfg().get("contextCooldownMinutes", 15)) ?? 15),
     });
+    // ── WL-001 · the work ledger ───────────────────────────────────────────────────────────────
+    // Read the settings once per call, so a change takes effect on the next tick without a reload.
+    const workLedgerOpts = () => ({
+      windowDays: Math.max(1, Number(cfg().get("workLedgerWindowDays", DEFAULT_WINDOW_DAYS)) || DEFAULT_WINDOW_DAYS),
+      productPaths: (cfg().get<Record<string, string[]>>("productPaths", DEFAULT_PRODUCT_PATHS) ||
+                     DEFAULT_PRODUCT_PATHS),
+      intervalMin: Math.max(1, Number(cfg().get("workLedgerIntervalMin", DEFAULT_INTERVAL_MIN)) || DEFAULT_INTERVAL_MIN),
+    });
+    const thresholds = (): Thresholds => {
+      const t = cfg().get<Partial<Thresholds>>("workLedgerThresholds", {}) || {};
+      const num = (v: any, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
+      return {
+        shipsGood: num(t.shipsGood, DEFAULT_THRESHOLDS.shipsGood),
+        shipsBad: num(t.shipsBad, DEFAULT_THRESHOLDS.shipsBad),
+        loopBackGood: num(t.loopBackGood, DEFAULT_THRESHOLDS.loopBackGood),
+        loopBackBad: num(t.loopBackBad, DEFAULT_THRESHOLDS.loopBackBad),
+        narrationGood: num(t.narrationGood, DEFAULT_THRESHOLDS.narrationGood),
+        narrationBad: num(t.narrationBad, DEFAULT_THRESHOLDS.narrationBad),
+        costPerLine: num(t.costPerLine, DEFAULT_THRESHOLDS.costPerLine),
+      };
+    };
+
+    /**
+     * R1's cache refresh + R5's one line to the orchestrator. Never throws — a git repo that is
+     * mid-rebase, absent, or not a repo at all must not cost this window its tick.
+     *
+     * R5 is the whole point of the handoff: the number has to reach the session that decides what
+     * to build NEXT. So it goes to the tagged orchestrator only — never to a worker, who cannot
+     * choose the next block — and only into an IDLE composer, the same discipline as `/model`
+     * (dispatch.ts: a command typed into a busy composer queues as an ordinary message and never
+     * executes). Once per project per calendar day, the day recorded in work-ledger.json beside the
+     * figures, so a reload does not re-announce and two windows on one project cannot both announce.
+     */
+    const runWorkLedger = () => {
+      if (!repo) return;
+      if (cfg().get<boolean>("workLedgerEnabled", true) !== true) return;
+      const cache = refreshWorkLedger(repo, repoRoot(), workLedgerOpts());
+      if (!cache) return;
+      const msg = ledgerAlert(cache.ledger, cache.notifiedOn, thresholds());
+      if (!msg) return;
+      const orch = getOrchestrator(repo);
+      if (!orch) return;                                   // nobody decides the next block here yet
+      // IDLE ONLY. `busy` is the frame's own mid-turn state; an alert typed over a running turn is
+      // the noise that gets this feature switched off in a week.
+      const frame = tracker.ownerView().find((o) => o.webviewId === orch.webviewId &&
+                                                    o.liveness === "live");
+      if (!frame || frame.busy) return;                    // not now; the day is still unspoken for
+      // Stamp the day BEFORE injecting. injectTo is fire-and-forget over a subprocess, so a stamp
+      // written in its callback can lose a race with the next tick 15 s later and announce twice;
+      // at worst this costs one missed day, which is the cheaper failure by far.
+      writeCache(repo, { ...cache, notifiedOn: todayKey() });
+      debugLog({ workLedger: { repo, shipsToUser: cache.ledger.shipsToUser, notified: true } });
+      injectTo({ role: orch.role, webviewId: orch.webviewId, repo }, msg, "ledger-debug.json");
+    };
+
     const runContextMemory = (force = false): Step | null => {
       if (!repo) return null;
       const orch = getOrchestrator(repo);
@@ -749,6 +807,7 @@ export function activate(context: vscode.ExtensionContext) {
         runOverlapWarning();
         runHealth();
         runContextMemory();
+        try { runWorkLedger(); } catch { /* a measurement must never break a tick */ }
         try { computeMissing(); wakeOrchestrator(); } catch { /* a reopen offer must never break a tick */ }
         serveOpenRequests().catch(() => { /* never break a tick */ });
         tree.refresh();
@@ -1070,6 +1129,27 @@ export function activate(context: vscode.ExtensionContext) {
         if (ok !== "Bank & clear") return;
         const step = runContextMemory(true);
         if (step && step.kind === "none") vscode.window.showInformationMessage(`Loom: ${step.note}`);
+      }),
+      // R3 — the full report. A MARKDOWN DOCUMENT, not a webview, and the reason is worth keeping:
+      // this extension has no webview anywhere, a doc needs no CSP or asset plumbing to render a
+      // table, and — the deciding one — the report exists to be pasted into a handoff or a message
+      // to the orchestrator. A webview's contents cannot be selected out of it and sent anywhere.
+      vscode.commands.registerCommand("loomSessionTracker.workLedgerReport", async (node?: any) => {
+        const opts = workLedgerOpts();
+        // The node's repo when invoked from the tree, this window's project otherwise, and every
+        // project on the bus when the window has none — so the command is never a dead end.
+        const repos = node && node.repo ? [String(node.repo)] : repo ? [repo] : busRepos();
+        const entries = repos.map((r) => {
+          // Recompute on demand rather than serving a cache that may be ten minutes old: a person
+          // who asked for the report is asking about NOW, and the cost is one git pass.
+          const w = computeWorkLedger(r === repo ? repoRoot() : null, { ...opts, nowMs: Date.now() });
+          const since = Date.now() - opts.windowDays * 86_400_000;
+          return { w, rows: handoffRows(r === repo ? repoRoot() : null, r, since, opts.productPaths) };
+        }).filter((e) => e.w.repo || e.rows.length);
+        const doc = await vscode.workspace.openTextDocument({
+          language: "markdown", content: renderReport(entries, thresholds()),
+        });
+        await vscode.window.showTextDocument(doc, { preview: false });
       }),
       vscode.commands.registerCommand("loomSessionTracker.status", () => {
         const v = tracker.view();

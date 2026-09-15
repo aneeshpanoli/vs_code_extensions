@@ -7,14 +7,26 @@ import { Tracker, AgentView } from "./tracker";
 import { ownerRoleFor } from "./naming";
 import { isLocked } from "./locks";
 import { getOrchestrator } from "./orchestrator";
+import { readCache, figuresFor, summaryLine, Figure, WorkLedger, Thresholds, DEFAULT_THRESHOLDS,
+         Band } from "./workledger";
 
 type Node =
   | { kind: "repo"; repo: string }
   | { kind: "agent"; agent: AgentView }
+  // WL-001 R2: what this project actually PRODUCED, measured from git — one line carrying the
+  // verdict, above the agents, which are all self-report.
+  | { kind: "ledger"; repo: string; w: WorkLedger }
+  | { kind: "figure"; repo: string; figure: Figure }
   | { kind: "orchestrator"; repo: string; role: string; frameOk: boolean }
   // A detected-but-untagged PO session: shown so the orchestrator is visible and one click taggable.
   | { kind: "ownerCandidate"; role: string; webviewId: string; liveness: string; strong: boolean; declared: boolean;
       contextPct: number | null };
+
+/** One icon/colour per band, shared by the ledger node and its figures so they cannot disagree. */
+const ICON: Record<Band, string> = { good: "pass", warn: "warning", bad: "error", unknown: "info" };
+const COLOR: Record<Band, string> = {
+  good: "charts.green", warn: "charts.yellow", bad: "charts.red", unknown: "descriptionForeground",
+};
 
 export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
   private _onDidChange = new vscode.EventEmitter<Node | undefined | void>();
@@ -27,7 +39,70 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
 
   refresh(): void { this._onDidChange.fire(); }
 
+  /** Thresholds from settings, falling back field-by-field so a partial object still works. */
+  private thresholds(): Thresholds {
+    const t = vscode.workspace.getConfiguration("loomSessionTracker")
+      .get<Partial<Thresholds>>("workLedgerThresholds", {}) || {};
+    const num = (v: any, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
+    return {
+      shipsGood: num(t.shipsGood, DEFAULT_THRESHOLDS.shipsGood),
+      shipsBad: num(t.shipsBad, DEFAULT_THRESHOLDS.shipsBad),
+      loopBackGood: num(t.loopBackGood, DEFAULT_THRESHOLDS.loopBackGood),
+      loopBackBad: num(t.loopBackBad, DEFAULT_THRESHOLDS.loopBackBad),
+      narrationGood: num(t.narrationGood, DEFAULT_THRESHOLDS.narrationGood),
+      narrationBad: num(t.narrationBad, DEFAULT_THRESHOLDS.narrationBad),
+      costPerLine: num(t.costPerLine, DEFAULT_THRESHOLDS.costPerLine),
+    };
+  }
+
+  /** This project's cached work ledger, or null when it is switched off or nothing is measured yet.
+   *  Read-only: the view never runs git — the tick owns the compute and the cache. */
+  private ledgerFor(repo: string): WorkLedger | null {
+    if (vscode.workspace.getConfiguration("loomSessionTracker")
+        .get<boolean>("workLedgerEnabled", true) !== true) return null;
+    return readCache(repo)?.ledger ?? null;
+  }
+
   getTreeItem(node: Node): vscode.TreeItem {
+    if (node.kind === "ledger") {
+      // COLLAPSED, one line, carrying the verdict — the figure that would have shown the audited
+      // week on day two has to be readable without a click.
+      const it = new vscode.TreeItem("work ledger", vscode.TreeItemCollapsibleState.Collapsed);
+      it.description = summaryLine(node.w);
+      const worst = figuresFor(node.w, this.thresholds())
+        .some((f) => f.band === "bad") ? "bad"
+        : figuresFor(node.w, this.thresholds()).some((f) => f.band === "warn") ? "warn" : "good";
+      it.iconPath = new vscode.ThemeIcon(ICON[worst], new vscode.ThemeColor(COLOR[worst]));
+      it.tooltip =
+        `What ${node.w.repo} PRODUCED in the last ${node.w.windowDays} days, measured from git and ` +
+        `model-ledger.jsonl.\n` +
+        `NOTHING here comes from what an agent wrote about itself — not status.json's last_line, ` +
+        `not a test count a session reported.\n\n` +
+        `${node.w.commits} commit(s) · computed ${node.w.computedAt}` +
+        `${node.w.heuristic ? `\n⚠ product paths for this repo are a HEURISTIC, not configured ` +
+                              `(loomSessionTracker.productPaths).` : ""}` +
+        `${node.w.empty ? `\n⚠ ${node.w.emptyReason}` : ""}\n\n` +
+        `Expand for each figure; "Loom: work ledger" opens the full report.`;
+      it.contextValue = "loomWorkLedger";
+      it.command = { command: "loomSessionTracker.workLedgerReport", title: "Work ledger report",
+                     arguments: [{ repo: node.repo }] };
+      return it;
+    }
+    if (node.kind === "figure") {
+      const f = node.figure;
+      const it = new vscode.TreeItem(f.label, vscode.TreeItemCollapsibleState.None);
+      // A red row STATES THE NUMBER. A bare warning icon is exactly the thing being replaced: it
+      // tells a reader something is wrong without telling them how wrong, so it gets ignored.
+      it.description = f.value;
+      it.iconPath = new vscode.ThemeIcon(ICON[f.band], new vscode.ThemeColor(COLOR[f.band]));
+      // The raw numbers — numerator, denominator, window and computedAt — so a STALE cache is
+      // obvious rather than being read as this morning's measurement.
+      it.tooltip = `${f.label}: ${f.value}\n\n${f.detail}`;
+      it.contextValue = "loomWorkLedgerFigure";
+      it.command = { command: "loomSessionTracker.workLedgerReport", title: "Work ledger report",
+                     arguments: [{ repo: node.repo }] };
+      return it;
+    }
     if (node.kind === "ownerCandidate") {
       const it = new vscode.TreeItem(node.role, vscode.TreeItemCollapsibleState.None);
       it.description = `${node.liveness === "live" ? "●" : "○"} ` +
@@ -125,15 +200,28 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       // (which is never a tracked agent) is still visible.
       // Ensure this project has a group when it has something orchestrator-ish to show,
       // even with zero tracked agents (tagged orchestrator, or an untagged candidate).
-      if (this.repo && (getOrchestrator(this.repo) || this.candidateNodes(this.repo).length)) repos.add(this.repo);
+      // …or when it has a WORK LEDGER. Without this a project with no live agent and no tagged
+      // orchestrator gets no node at all, so its ledger is invisible — and a project nobody is
+      // actively running is exactly the one whose week you most need to be able to read.
+      if (this.repo && (getOrchestrator(this.repo) || this.candidateNodes(this.repo).length ||
+                        this.ledgerFor(this.repo))) repos.add(this.repo);
       const top: Node[] = Array.from(repos).sort().map((repo) => ({ kind: "repo", repo } as Node));
       // Window with no project folder: no repo group to nest under, so list candidates at top level.
       if (!this.repo) top.push(...this.candidateNodes());
       return top;
     }
+    if (node.kind === "ledger") {
+      return figuresFor(node.w, this.thresholds())
+        .map((figure) => ({ kind: "figure", repo: node.repo, figure } as Node));
+    }
     if (node.kind === "repo") {
       const orch = getOrchestrator(node.repo);
       const nodes: Node[] = [];
+      // WL-001 R2: ABOVE the agents. Everything below this line is the agents' account of
+      // themselves; this one node is the only thing in the panel they did not write.
+      // Read-only from the cache the tick maintains — the view never runs git.
+      const wl = this.ledgerFor(node.repo);
+      if (wl) nodes.push({ kind: "ledger", repo: node.repo, w: wl });
       const cands = this.repo === node.repo ? this.candidateNodes(node.repo) : [];
       if (orch) {
         const frameOk = cands.some((c: any) => c.webviewId === orch.webviewId);
