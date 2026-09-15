@@ -28,6 +28,134 @@ const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 const WORKING_FILE = path.join(LOOM_ROOT, "working-sessions.json");
 const HOUR_MS = 3_600_000;
 
+// ── WL-006 · a declared background gate is evidence, not silence ──────────────────────────────
+//
+// THE HOLE THIS CLOSES, measured three times (WL-002, WL-004+FX-002, WL-005). A worker launches a
+// mutation gate in the background, its turn ends, and the gate finishes ~18 minutes later with
+// nothing to wake it. Its `outbox.md` line 1 still names the PREVIOUS handoff and `status.json`
+// still says the previous `current`, which to anything reading the bus is indistinguishable from a
+// worker that has done nothing — the same shape as a stall. The orchestrator then either waits on a
+// worker that will never speak, or rings a worker that IS busy and burns the context doing the work.
+//
+// WHY THIS LIVES IN health.ts and not beside the ledger tick: the stall alarm and the gate wake are
+// THE SAME MEASUREMENT of the same field. The stall clock asks "how long since status.json was
+// written", which cannot tell stuck from busy — it fired at 0.8h during FX-002 with ten files
+// edited. A live gate is positive evidence of work on exactly that question. Splitting the two
+// across files is how one state ends up rendered as another.
+//
+// THREE STATES, NEVER COLLAPSED (the `unmeasured`-as-zero mistake, sixth sighting):
+//   · "running" — a declared gate positively identified as alive. NOT a stall; suppresses the alarm.
+//   · "exited"  — declared, and not identified alive. Wake the role, once.
+//   · "none"    — nothing declared. The only one of the three that may look like idle.
+
+export type GateState = "running" | "exited" | "none";
+
+export interface GateDeclaration {
+  pid: number;
+  log: string;
+  launchedAt: string;
+  mutants: number | null;
+  /** WHICH BLOCK THE GATE BELONGS TO, so a finished block's leftover declaration does not wake
+   *  anyone. Found live in developer1's own status.json 2026-09-15: WL-005's declaration — pid dead,
+   *  block merged 90 minutes earlier — was still sitting there, and under
+   *  "unidentified -> exited -> wake" it was a wake for a block that was over. The `log@launchedAt`
+   *  key bounds that to ONE spurious wake rather than one per tick, which is the important half, but
+   *  one wake still costs a role a whole turn of the context this block exists to protect. Optional:
+   *  a declaration without it still behaves as before, bounded by the key. */
+  handoff: string | null;
+}
+
+/** `status.json.gate`, as the worker writes it. Absent or malformed reads as no declaration — a
+ *  half-written gate block must never be read as a live gate. */
+export function readGate(obj: any): GateDeclaration | null {
+  const g = obj && obj.gate;
+  if (!g || typeof g !== "object") return null;
+  const pid = Number(g.pid);
+  const log = typeof g.log === "string" ? g.log : "";
+  const launchedAt = typeof g.launched_at === "string" ? g.launched_at
+                   : typeof g.launchedAt === "string" ? g.launchedAt : "";
+  if (!Number.isInteger(pid) || pid <= 0 || !log || !Number.isFinite(Date.parse(launchedAt))) return null;
+  const m = Number(g.mutants);
+  const h = typeof g.handoff === "string" && g.handoff ? g.handoff : null;
+  return { pid, log, launchedAt, mutants: Number.isFinite(m) ? m : null, handoff: h };
+}
+
+/** Seconds since boot, from /proc/stat's `btime`. */
+function bootTimeMs(): number | null {
+  try {
+    const m = /^btime (\d+)$/m.exec(fs.readFileSync("/proc/stat", "utf8"));
+    return m ? Number(m[1]) * 1000 : null;
+  } catch { return null; }
+}
+
+/** When the process at `pid` actually started, from /proc/<pid>/stat field 22 (USER_HZ ticks since
+ *  boot). Null when it cannot be read — which is not "it started long ago", it is "unknown". */
+function processStartMs(pid: number): number | null {
+  const boot = bootTimeMs();
+  if (boot === null) return null;
+  let stat: string;
+  try { stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8"); } catch { return null; }
+  // The comm field can contain spaces and parentheses, so fields are counted AFTER the last ')'.
+  const tail = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/);
+  const ticks = Number(tail[19]);                          // field 22 overall = index 19 after comm
+  if (!Number.isFinite(ticks)) return null;
+  return boot + (ticks / 100) * 1000;                      // USER_HZ is 100 on Linux
+}
+
+/** The declared pid's own command line, or null. READ OF ONE KNOWN PID, never a pattern search:
+ *  a search whose pattern names its target matches the searcher's own argv, which has caught three
+ *  things on this bus in one day — and the bracket form protects the pattern, not the rest of argv. */
+function cmdlineOf(pid: number): string | null {
+  try { return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim(); }
+  catch { return null; }
+}
+
+/** How far a process's measured start may sit from the declared `launched_at` and still be the same
+ *  launch. The declaration is written in the same turn as the spawn, so seconds; a minute is slack. */
+const GATE_START_TOLERANCE_MS = 120_000;
+
+/**
+ * Is the declared gate actually running?
+ *
+ * A PID IS NOT PROOF — pids are reused, and a wake fired at a recycled pid is worse than no wake.
+ * Three facts must agree, and each covers a different way the pid alone lies:
+ *   1. /proc/<pid> exists                  — something is alive there.
+ *   2. its command line names `mutation.py` — it is the KIND of process that was declared; a pid
+ *                                            recycled by an editor or a shell fails here.
+ *   3. its start time is within tolerance of `launched_at` — it is THIS launch. A second gate that
+ *                                            happened to inherit the pid, or a long-lived process
+ *                                            that had it all along, fails here.
+ *
+ * Any of them unreadable means NOT identified, and therefore "exited". That direction is deliberate:
+ * a missed suppression costs one spurious stall warning, while a false "running" suppresses the
+ * alarm for ever and withholds the wake this block exists to deliver.
+ */
+export interface GateProbe {
+  cmdline(pid: number): string | null;
+  startedAt(pid: number): number | null;
+}
+
+/** The real /proc readers. Injectable ONLY so the unreadable-start case can be asserted: there is no
+ *  way to make /proc/<pid>/stat unreadable while /proc/<pid>/cmdline is readable from a test, and a
+ *  branch no test can reach is exactly where a wrong default hides — a mutant flipping that `exited`
+ *  to `running` survived the whole suite, which suppresses the alarm for ever. The seam exists to
+ *  make the default testable, not to vary it in production. */
+export const REAL_GATE_PROBE: GateProbe = { cmdline: cmdlineOf, startedAt: processStartMs };
+
+export function gateStateOf(decl: GateDeclaration | null, now = Date.now(),
+                            probe: GateProbe = REAL_GATE_PROBE): GateState {
+  if (!decl) return "none";
+  const cmd = probe.cmdline(decl.pid);
+  if (cmd === null) return "exited";                       // no /proc entry at all
+  if (!/mutation\.py/.test(cmd)) return "exited";          // pid reused by something else
+  const started = probe.startedAt(decl.pid);
+  if (started === null) return "exited";                   // cannot identify => do not claim running
+  const declared = Date.parse(decl.launchedAt);
+  if (Math.abs(started - declared) > GATE_START_TOLERANCE_MS) return "exited";
+  return started <= now + GATE_START_TOLERANCE_MS ? "running" : "exited";
+}
+
+
 /** The statuses the loom protocol defines. Anything else silently bypasses the notifier. */
 export const KNOWN_STATUSES = ["idle", "working", "blocked"];
 /** Statuses that mean the role is consuming the shared usage pool right now. */
@@ -37,7 +165,17 @@ export const DRIFT_HOURS = 6;
 
 export interface StallFinding { role: string; status: string; staleHours: number; }
 export interface ConformFinding { role: string; status: string; issue: string; }
-export interface HealthReport { repo: string; stalled: StallFinding[]; nonConforming: ConformFinding[]; }
+/** WL-006: a role whose declared gate is alive (`gated`) or has finished (`gateExited`). Separate
+ *  arrays, not a flag on `stalled`, because neither is a stall and both are positive evidence. */
+export interface GateFinding {
+  role: string; status: string; pid: number; log: string; launchedAt: string;
+  mutants: number | null; staleHours: number;
+}
+
+export interface HealthReport {
+  repo: string; stalled: StallFinding[]; nonConforming: ConformFinding[];
+  gated: GateFinding[]; gateExited: GateFinding[];
+}
 
 function readStatus(repo: string, role: string): { obj: any; mtimeMs: number } | null {
   const f = path.join(LOOM_ROOT, repo, role, "status.json");
@@ -66,7 +204,7 @@ export function checkHealth(repo: string | null,
   if (!repo) return null;
   const now = opts.now ?? Date.now();
   const stallMs = (opts.stallMinutes ?? 45) * 60_000;
-  const out: HealthReport = { repo, stalled: [], nonConforming: [] };
+  const out: HealthReport = { repo, stalled: [], nonConforming: [], gated: [], gateExited: [] };
   for (const role of boardRoles(repo)) {
     const s = readStatus(repo, role);
     if (!s) continue;
@@ -86,7 +224,26 @@ export function checkHealth(repo: string | null,
         issue: `updated_at is ${((s.mtimeMs - ua) / HOUR_MS).toFixed(0)}h behind the file — not being maintained`,
       });
     }
-    if (isWorkingLike(status) && now - s.mtimeMs > stallMs) {
+    // WL-006 · A LIVE GATE IS NOT A STALL, and the suppression is RECORDED rather than silent: the
+    // role moves to `gated`, so the report says "this one is working and here is the evidence"
+    // instead of simply omitting it. Omitting would render `running` as `none`.
+    const decl = readGate(s.obj);
+    // A declaration whose block is ALREADY ANSWERED is spent, not a wake. `last_handled` is the
+    // worker's own statement that it finished that block — so the leftover names a block that is
+    // over, and reading it as "gate exited, response not yet written" is one state rendered as
+    // another, the mistake this whole sequence keeps catching. A worker SHOULD also clear its `gate`
+    // when it writes its response; this makes the tracker correct whether or not it does.
+    const answered = !!(decl && decl.handoff && decl.handoff === String(s.obj.last_handled || ""));
+    const gate = answered ? "none" : gateStateOf(decl, now);
+    if (gate === "running" && decl) {
+      out.gated.push({ role, status, pid: decl.pid, log: decl.log, launchedAt: decl.launchedAt,
+                       mutants: decl.mutants, staleHours: (now - s.mtimeMs) / HOUR_MS });
+    } else if (gate === "exited" && decl) {
+      // Declared and finished, and the role has not spoken since. This is the wake, and it is NOT a
+      // stall either — the worker is not stuck, it is asleep with an answer waiting.
+      out.gateExited.push({ role, status, pid: decl.pid, log: decl.log, launchedAt: decl.launchedAt,
+                            mutants: decl.mutants, staleHours: (now - s.mtimeMs) / HOUR_MS });
+    } else if (isWorkingLike(status) && now - s.mtimeMs > stallMs) {
       out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS });
     }
   }
@@ -237,22 +394,34 @@ export function readRemovalLog(): any[] {
 }
 
 // ── stall alerting (deduped on the bus, like the finish notifier) ────────────────────────────
-interface StallState { alerted: Record<string, { status: string; at: string }>; updatedAt?: string; }
+interface StallState {
+  alerted: Record<string, { status: string; at: string }>;
+  /** WL-006 · which GATE each role has already been woken for, keyed by the gate's own identity
+   *  (`log@launched_at`) rather than by the role. On disk, so it survives a reload of the extension —
+   *  a wake record kept in memory would fire again on every window restart. A NEW declaration is a
+   *  new key, so the next gate wakes normally instead of being suppressed for ever by the last one. */
+  gatesWoken?: Record<string, string>;
+  updatedAt?: string;
+}
 function stallFile(repo: string): string { return path.join(LOOM_ROOT, repo, "stall-state.json"); }
 
 function loadStall(repo: string): StallState {
   try {
     const st = JSON.parse(fs.readFileSync(stallFile(repo), "utf8"));
-    if (st && st.alerted && typeof st.alerted === "object") return { alerted: st.alerted };
+    if (st && st.alerted && typeof st.alerted === "object") {
+      return { alerted: st.alerted,
+               gatesWoken: st.gatesWoken && typeof st.gatesWoken === "object" ? st.gatesWoken : {} };
+    }
   } catch { /* none yet */ }
-  return { alerted: {} };
+  return { alerted: {}, gatesWoken: {} };
 }
 function saveStall(repo: string, st: StallState): void {
   try {
     const f = stallFile(repo);
     try {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
-      if (JSON.stringify(cur.alerted) === JSON.stringify(st.alerted)) return;
+      if (JSON.stringify(cur.alerted) === JSON.stringify(st.alerted)
+          && JSON.stringify(cur.gatesWoken || {}) === JSON.stringify(st.gatesWoken || {})) return;
     } catch { /* write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -262,6 +431,17 @@ function saveStall(repo: string, st: StallState): void {
 }
 
 export interface StallEvent { repo: string; role: string; status: string; staleHours: number; }
+
+/** WL-006: a role whose declared gate has exited and which has not yet been woken for THAT gate. */
+export interface GateEvent {
+  repo: string; role: string; pid: number; log: string; mutants: number | null; key: string;
+}
+
+/** A gate's identity. The log path alone is not enough — a role reusing one path across runs would
+ *  be woken only for the first — so the launch instant is part of it. */
+export function gateKey(log: string, launchedAt: string): string {
+  return `${log}@${launchedAt}`;
+}
 
 export class HealthWatcher {
   constructor(private repo: string | null) {}
@@ -280,6 +460,51 @@ export class HealthWatcher {
     }
     saveStall(this.repo, st);
     return events;
+  }
+
+  /**
+   * WL-006 · Roles whose declared gate has EXITED and which have not been woken for that gate.
+   *
+   * Returns the candidates; it does NOT record them as woken. `markWoken` is called by the caller
+   * only once a wake was actually DELIVERED, because a worker mid-turn cannot be typed into and
+   * marking it here would mean "woken" for a role that was never told — the same
+   * asserted-is-not-reached shape that has cost this project five findings.
+   */
+  scanGates(report: HealthReport | null): GateEvent[] {
+    if (!this.repo || !report) return [];
+    const st = loadStall(this.repo);
+    const woken = st.gatesWoken || {};
+    const out: GateEvent[] = [];
+    for (const g of report.gateExited) {
+      const key = gateKey(g.log, g.launchedAt);
+      if (woken[g.role] === key) continue;                  // already told this role about THIS gate
+      out.push({ repo: this.repo, role: g.role, pid: g.pid, log: g.log, mutants: g.mutants, key });
+    }
+    return out;
+  }
+
+  /** Record a DELIVERED wake, so it is not repeated every tick. Persisted, so a reload does not
+   *  re-wake every role whose gate finished before the window came back. */
+  markWoken(role: string, key: string): void {
+    if (!this.repo) return;
+    const st = loadStall(this.repo);
+    st.gatesWoken = { ...(st.gatesWoken || {}), [role]: key };
+    saveStall(this.repo, st);
+  }
+
+  /** Wake the ROLE ITSELF — it is the session that can read the log and write the response. The
+   *  orchestrator is not told: it did not launch the gate, and ringing it would make a person the
+   *  transport again, which is the workaround this replaces. Not typed into a busy composer. */
+  wake(ev: GateEvent, frame: { webviewId: string; busy: boolean } | null,
+       done?: (ok: boolean, note: string) => void): void {
+    if (!frame || frame.busy) { if (done) done(false, "composer busy or frame not found"); return; }
+    const n = ev.mutants === null ? "" : ` (${ev.mutants} mutants)`;
+    injectTo({ role: ev.role, webviewId: frame.webviewId, repo: ev.repo },
+      `[loom-gate] Your background gate${n} has EXITED (pid ${ev.pid}). Read its log yourself — ` +
+      `${ev.log} — and then finish the handoff: write your RESPONSE to outbox.md and set ` +
+      `status.json (status, current, last_handled, the grade counts). Nothing else has read it, and ` +
+      `until you do, your outbox still names the previous handoff.`,
+      "gate-debug.json", done);
   }
 
   /** Tell the orchestrator a worker appears stuck. Fire-and-forget, like the other injectors, and
