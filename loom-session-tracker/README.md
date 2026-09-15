@@ -366,8 +366,23 @@ wrong, which is how the last one got ignored.
 | `net product lines` | a **two-point** diff over the product paths, plus files newly added |
 | `$ per product line` | the ratio the owner actually asked for |
 
-Four things this deliberately refuses to do:
+Five things this deliberately refuses to do:
 
+- **A repo whose transcripts it cannot find is `unmeasured`, never `$0.00/line`.** The session
+  encoder writes a project directory by folding `/`, `_` **and `.`** to `-`, so
+  `/home/aneesh/vs_code_extensions` lands at `~/.claude/projects/-home-aneesh-vs-code-extensions`.
+  Matching the repo name raw found nothing for every underscore- or dot-named repo, and finding
+  nothing rendered as **zero tokens at $0.00 per product line — the cheapest possible week, green,
+  and under every alarm threshold this module has.** The most flattering number the panel can print
+  was what it printed for the one project it could not see at all. Both sides are now canonicalized
+  before the separator anchor is applied (canonicalize, *then* anchor: the guard is not relaxed to
+  buy the match — `pleodo` must still not swallow a sibling `pleodo-archive`, which the previous
+  single-hyphen anchor did in spite of its comment). **Zero matched directories and zero tokens in
+  the window are different facts**: the first nulls tokens, cost and $/line, bands the ratio
+  `unknown` rather than green, names the directory it searched, and raises the daily nudge on its
+  own, because a cost alarm can never fire on a repo whose cost reads as zero. The second is an
+  honest `0`. One word — `unmeasured` — in the row, the one-line summary, the nudge and the report,
+  because the panel previously said `$?` in one place and `$0.00` in another for the same gap.
 - **A figure it cannot compute is `null` and renders "unknown", never `0`.** A measured zero and an
   unreadable value are opposites. A non-positive `wallMinutes` is dropped rather than averaged in as
   0, and a handoff no commit names shows `—` rather than 0 lines shipped.
