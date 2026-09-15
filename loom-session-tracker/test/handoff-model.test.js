@@ -283,27 +283,37 @@ suite("R5: a line is appended when the role reports idle having handled that id,
   inbox(repo, "dev", handoff("MP-020", "claude-sonnet-5"));
   const p = new ModelPolicy(repo);
 
+  // WL-005 · `started`/`finished` ARE THIS PROCESS'S OWN CLOCK NOW, so the ticks carry explicit
+  // times. They used to be the worker's "T1"/"T9" stamps, and this assertion encoded that: a block's
+  // start was read from status.updated_at, which at open time still belongs to the PREVIOUS block.
+  const T_OPEN = new Date("2026-01-01T00:00:00.000Z");
+  const T_CLOSE = new Date("2026-01-01T00:30:00.000Z");
+
   writeJson(busPath(repo, "dev", "status.json"),
             { status: "working", current: "MP-020", updated_at: "T1", tests_before: 563 });
-  p.ledgerTick("dev", "claude-opus-5");
+  p.ledgerTick("dev", "claude-opus-5", undefined, T_OPEN);
   eq(ledgerLines(repo).length, 0, "nothing is written while the block is in flight");
 
   writeJson(busPath(repo, "dev", "status.json"),
             { status: "idle", last_handled: "MP-020", updated_at: "T9", tests_before: 563, tests_after: 590 });
-  p.ledgerTick("dev", "claude-opus-5");
+  p.ledgerTick("dev", "claude-opus-5", undefined, T_CLOSE);
   const l = ledgerLines(repo);
   eq(l.length, 1, "one line per (role, handoff)");
   // The FULL shape, deep-equal, so a field added without a decision about its null case cannot slip
-  // in unnoticed. The four CH-001 size fields are here at their unreadable values on purpose: these
-  // fixtures use "T1"/"T9" as stamps (no duration), declare no `files:`, and call ledgerTick with no
-  // contextPct — which is the ordinary case for a role below ~50 % context, not an exotic one.
+  // in unnoticed. `filesDeclared: 0` and `contextPctAtFinish: null` are the ordinary case for these
+  // fixtures (no `files:` line, no contextPct passed), not exotic. The worker's own unparseable
+  // stamps are RETAINED as `workerStampAt*` — useful for diagnosis, never an endpoint.
   eq(l[0], { id: "MP-020", role: "dev", model: "claude-sonnet-5", chosenBy: "frontmatter",
-             started: "T1", finished: "T9", loopBacks: 0, testsBefore: 563, testsAfter: 590,
-             contextPctAtFinish: null, wallMinutes: null, filesDeclared: 0, statusUpdates: 2 },
+             started: "2026-01-01T00:00:00.000Z",
+             openedAt: "2026-01-01T00:00:00.000Z", closedAt: "2026-01-01T00:30:00.000Z",
+             workerStampAtOpen: "T1", workerStampAtFinish: "T9",
+             finished: "2026-01-01T00:30:00.000Z",
+             loopBacks: 0, testsBefore: 563, testsAfter: 590,
+             contextPctAtFinish: null, wallMinutes: 30, filesDeclared: 0, statusUpdates: 2 },
      "the full shape");
 
-  p.ledgerTick("dev", "claude-opus-5");
-  p.ledgerTick("dev", "claude-opus-5");
+  p.ledgerTick("dev", "claude-opus-5", undefined, T_CLOSE);
+  p.ledgerTick("dev", "claude-opus-5", undefined, T_CLOSE);
   eq(ledgerLines(repo).length, 1, "and it is not appended again on every later tick");
 });
 
@@ -543,14 +553,17 @@ suite("CH-001 R3: filesDeclared, statusUpdates, wallMinutes and contextPctAtFini
   const repo = makeRepo({ dev: {} }, "sz-all");
   inbox(repo, "dev", withFiles("C-30", "src/models.ts, src/requests.ts, test/*.js", "claude-sonnet-5"));
   const p = new ModelPolicy(repo);
-  // a real pair of stamps, so wallMinutes is a number rather than the null the older fixtures give
+  // WL-005: the 72 minutes now come from the TICK TIMES, not from the worker's stamps. The intent of
+  // the assertion is unchanged — a 72-minute block records 72 — but the source of truth moved, because
+  // a block's `started` read off `status.updated_at` was the previous block's stamp. The worker's
+  // stamps are still written here, and are still recorded; they are simply no longer the endpoints.
   writeJson(busPath(repo, "dev", "status.json"),
             { status: "working", current: "C-30", updated_at: "2026-09-13T10:00:00Z", tests_before: 623 });
-  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date(), 41);
+  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date("2026-09-13T10:00:00Z"), 41);
   writeJson(busPath(repo, "dev", "status.json"),
             { status: "idle", last_handled: "C-30", updated_at: "2026-09-13T11:12:00Z",
               tests_before: 623, tests_after: 660 });
-  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date(), 67);
+  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date("2026-09-13T11:12:00Z"), 67);
   const l = ledgerLines(repo);
   eq(l.length, 1);
   eq(l[0].filesDeclared, 3, "three paths declared");
@@ -578,15 +591,38 @@ suite("CH-001 R3: every new field is NULL rather than guessed when it cannot be 
   ok(typeof l[0].wallMinutes === "number", "and a wall time it could compute: " + l[0].wallMinutes);
 });
 
-suite("CH-001 R3: wallMinutes is null when a stamp will not parse, never zero", () => {
+suite("CH-001 R3 / WL-005: an unparseable WORKER stamp no longer decides the duration, and never fakes a 0", () => {
+  // CH-001's guard was "'T1' to 'T9' is not a duration, so it is null rather than 0", and it was right
+  // about the principle and wrong about the subject: the worker's stamps are no longer the endpoints,
+  // because `started` read from `status.updated_at` was the PREVIOUS block's stamp. So an unparseable
+  // worker stamp now changes nothing — it is recorded and ignored — while the principle it protected
+  // (never a fabricated zero when the duration is unknown) moves to the case that is genuinely
+  // unknown: a block whose start was never observed. Both halves are asserted here.
   const repo = makeRepo({ dev: {} }, "sz-wall");
   inbox(repo, "dev", withFiles("C-32", "src/a.ts"));
   const p = new ModelPolicy(repo);
   writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "C-32", updated_at: "T1" });
-  p.ledgerTick("dev", "claude-opus-5");
+  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date("2026-05-01T08:00:00Z"));
   writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "C-32", updated_at: "T9" });
-  p.ledgerTick("dev", "claude-opus-5");
-  eq(ledgerLines(repo)[0].wallMinutes, null, "'T1' to 'T9' is not a duration");
+  p.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date("2026-05-01T08:25:00Z"));
+  const l = ledgerLines(repo)[0];
+  eq(l.wallMinutes, 25, "the observed clock answers even when the worker's stamps are gibberish");
+  eq(l.workerStampAtOpen, "T1", "and the gibberish is kept, for diagnosis");
+  eq(l.workerStampAtFinish, "T9", "at both ends");
+
+  // The surviving half of CH-001's guard: genuinely unknown is null, never 0.
+  const repo2 = makeRepo({ dev: {} }, "sz-wall-unknown");
+  inbox(repo2, "dev", withFiles("C-33", "src/a.ts"));
+  const p2 = new ModelPolicy(repo2);
+  writeJson(busPath(repo2, "dev", "status.json"), { status: "working", current: "C-33", updated_at: "T1" });
+  p2.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date("2026-05-01T08:00:00Z"));
+  const st = readJson(busPath(repo2, "model-policy.json"));
+  delete st.ledger.dev.openedAt;                       // a record from a build before WL-005
+  writeJson(busPath(repo2, "model-policy.json"), st);
+  writeJson(busPath(repo2, "dev", "status.json"), { status: "idle", last_handled: "C-33", updated_at: "T9" });
+  p2.ledgerTick("dev", "claude-opus-5", DEFAULT_WORKER_MODELS, new Date("2026-05-01T09:00:00Z"));
+  const l2 = ledgerLines(repo2)[0];
+  eq(l2.wallMinutes, null, "an unobserved start is null — not 0, and not the hour since the tick");
 });
 
 suite("CH-001 R3: statusUpdates counts REPORTS, not the ticks that re-read them", () => {
@@ -716,4 +752,112 @@ suite("MS-001 R1: an ack is not a handoff and gets no note; a handoff that CHOSE
   eq(pol.noteDefaulted("dev3", "claude-opus-5"), null, "a refused request is not an absence — it has its own note");
   eq(pol.noteDefaulted("nobody", "claude-opus-5"), null, "no inbox, no note");
   eq(readJson(busPath(repo, "model-policy.json")), null, "nothing noted, nothing written");
+});
+
+// ── WL-005 · a duration is bounded by its own block ───────────────────────────────────────────
+//
+// MEASURED on this bus 2026-09-15, every record in model-ledger.jsonl:
+//
+//   CH-001-ack  started 2026-09-13T23:14:58Z  finished 2026-09-13T23:14:58Z  wall 0
+//   WL-001      started 2026-09-13T23:14:58Z  finished 2026-09-15T16:10:15Z  wall 2455.3
+//               ^^^ the SAME instant as the previous block's, two days earlier
+//
+// Not one record's `started` was its own: each was either the previous block's `started` or its
+// `finished`. `started` came from the worker's `status.updated_at`, which at the moment a block opens
+// still holds whatever that role last wrote — i.e. the block BEFORE. WL-001 read 2455 minutes against
+// a real ~90, and ReciEats rendered -39.3 because the two ends came from different records entirely.
+//
+// These assert the PROPERTY, not the number: a block's duration is bounded by its own observed start
+// and end, and a block with no observed start has no duration rather than a large one.
+
+suite("WL-005: a duration is bounded by the block's OWN start and end", () => {
+  const repo = makeRepo({ dev: {} }, "wl005-bounded");
+  inbox(repo, "dev", handoff("WL5-1", "claude-sonnet-5"));
+  const p = new ModelPolicy(repo);
+  const open = new Date("2026-03-01T10:00:00.000Z");
+  const close = new Date("2026-03-01T11:37:00.000Z");         // 97 minutes later
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "working", current: "WL5-1", updated_at: "2026-02-20T00:00:00Z" });  // stale stamp
+  p.ledgerTick("dev", "claude-opus-5", undefined, open);
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "idle", last_handled: "WL5-1", updated_at: "2026-03-01T11:36:00Z" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, close);
+  const l = ledgerLines(repo)[0];
+  // The bound, not the value: whatever the duration is, it lies within the block's own window.
+  const a = Date.parse(l.openedAt), b = Date.parse(l.closedAt);
+  ok(a >= open.getTime() && b <= close.getTime(), "both ends are the block's own observations");
+  eq(l.wallMinutes, Math.round(((b - a) / 60000) * 10) / 10, "the duration IS that interval");
+  ok(l.wallMinutes <= (close - open) / 60000,
+     "and cannot exceed the block's own span — 2455 minutes for a 97-minute block was this failing");
+  eq(l.workerStampAtOpen, "2026-02-20T00:00:00Z",
+     "the worker's stale stamp is kept for diagnosis, and is NOT the start");
+});
+
+suite("WL-005: a NEW block does not inherit the previous block's start", () => {
+  // The WL-001 regression, in the shape it actually happened: the role finishes one block, its
+  // status.json keeps that block's final stamp, and days later the next block opens.
+  const repo = makeRepo({ dev: {} }, "wl005-inherit");
+  const p = new ModelPolicy(repo);
+  inbox(repo, "dev", handoff("WL5-A", "claude-sonnet-5"));
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "WL5-A", updated_at: "S1" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-01T00:00:00.000Z"));
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "idle", last_handled: "WL5-A", updated_at: "S2" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-01T00:05:00.000Z"));
+
+  // Two days pass. The worker's status.json still says S2 — nothing has rewritten it.
+  inbox(repo, "dev", handoff("WL5-B", "claude-sonnet-5"));
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "WL5-B", updated_at: "S2" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-03T09:00:00.000Z"));
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "idle", last_handled: "WL5-B", updated_at: "S3" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-03T10:30:00.000Z"));
+
+  const [A, B] = ledgerLines(repo);
+  ok(A.openedAt !== B.openedAt, "the second block has its own start, not the first's");
+  eq(A.wallMinutes, 5, "the first block took the five minutes it took");
+  eq(B.wallMinutes, 90, "and the second took ninety — not the two days since the first one started");
+  ok(B.wallMinutes < 2455, "which is the defect this replaces, stated as the bound it broke");
+});
+
+suite("WL-005: a worker stamp that goes BACKWARDS cannot make a duration negative", () => {
+  // ReciEats rendered -39.3. A negative duration is not a rounding problem; it meant the two ends
+  // came from different records. Both ends are now one clock, so the worker's clock cannot invert it.
+  const repo = makeRepo({ dev: {} }, "wl005-negative");
+  inbox(repo, "dev", handoff("WL5-N", "claude-sonnet-5"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "working", current: "WL5-N", updated_at: "2026-03-01T12:00:00Z" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-01T12:00:00.000Z"));
+  // The role rebinds and writes a stamp EARLIER than the one it opened with.
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "idle", last_handled: "WL5-N", updated_at: "2026-03-01T11:20:42Z" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-01T12:40:00.000Z"));
+  const l = ledgerLines(repo)[0];
+  ok(l.wallMinutes >= 0, "no negative duration: " + l.wallMinutes);
+  eq(l.wallMinutes, 40, "the block took forty minutes by the clock that observed both ends");
+  eq(l.workerStampAtFinish, "2026-03-01T11:20:42Z", "and the backwards stamp is still recorded");
+});
+
+suite("WL-005: a block whose start was never observed has NO duration, not a large one", () => {
+  // A record opened by a build before WL-005 carries no `openedAt`, and nothing on disk can recover
+  // its real start. `unmeasured` is a state, not a zero and not a guess (WL-002's rule).
+  const repo = makeRepo({ dev: {} }, "wl005-legacy");
+  inbox(repo, "dev", handoff("WL5-L", "claude-sonnet-5"));
+  const p = new ModelPolicy(repo);
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "WL5-L", updated_at: "T1" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-01T00:00:00.000Z"));
+  // Simulate a record written by the older build: strip the field it did not have.
+  const stateFile = busPath(repo, "model-policy.json");
+  const st = readJson(stateFile);
+  delete st.ledger.dev.openedAt;
+  writeJson(stateFile, st);
+  writeJson(busPath(repo, "dev", "status.json"),
+            { status: "idle", last_handled: "WL5-L", updated_at: "T9" });
+  p.ledgerTick("dev", "claude-opus-5", undefined, new Date("2026-03-03T00:00:00.000Z"));
+  const l = ledgerLines(repo)[0];
+  eq(l.wallMinutes, null, "no observed start => no duration");
+  eq(l.started, null, "and it does not invent one");
+  eq(l.openedAt, null, "the absence is recorded as an absence");
+  ok(l.closedAt !== null, "while the end, which WAS observed, is kept");
 });
