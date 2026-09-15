@@ -121,6 +121,38 @@ suite("WL-001 R7c: product and rig PARTITION the week's lines — they must not 
   ok(w.productLines + w.rigLines <= w.totalLines, "the two sets never double-count a line");
 });
 
+suite("WL-001 R7c: the heuristic's OWN rig check still stands, behind the exclusions", () => {
+  // Found by the mutation gate on 2026-09-15, and it is the CH-001 lesson again: asserted is not
+  // reached. R7a put excludePaths in FRONT of the heuristic, so `a.test.tsx` is subtracted before
+  // `heuristicIsProduct` ever runs — and the test that used to prove the heuristic excludes rig
+  // stopped exercising it. These files are rig by DIRECTORY and match no exclusion pattern, so they
+  // reach the heuristic's own check and nothing else can be the thing that rejects them.
+  const dir = makeGitRepo("fixt16", [
+    { msg: "seed", files: { "README.md": "x\n" } },
+    { msg: "work", files: { "src/a.ts": lines(10), "scripts/verify.py": lines(40),
+                            "test/helper.js": lines(20), "tools/build.sh": lines(5) } },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: {} });
+  eq(w.heuristic, true, "unconfigured, so the heuristic is what decided");
+  eq(w.productLines, 10, "scripts/, test/ and tools/ are rig, and the heuristic says so itself");
+  eq(w.rigLines, 65, "and all of it is counted as rig");
+});
+
+suite("WL-001 R7c: an excluded file lands in RIG even when nothing else would call it rig", () => {
+  // The other gate survivor. `*.test.*` is rig by NAME as well as excluded, so a test file could not
+  // tell whether the rig side was honouring the exclusion or just its own filename rule. A project's
+  // own convention — here `*.stories.*` — is excluded and is rig by nothing else, so it can.
+  const dir = makeGitRepo("fixt17", [
+    { msg: "seed", files: { "README.md": "x\n" } },
+    { msg: "work", files: { "src/a.tsx": lines(10), "src/a.stories.tsx": lines(30) } },
+  ]);
+  const w = wl.computeWorkLedger(dir, {
+    productPaths: { fixt17: ["src/**"] }, excludePaths: ["**/*.stories.*"] });
+  eq(w.productLines, 10, "the story file is subtracted from product");
+  eq(w.rigLines, 30, "and lands in rig — what leaves one side arrives at the other");
+  eq(w.rigRatio, 3, "so the ratio accounts for every line it took out");
+});
+
 suite("WL-001 R7a: the default exclusions match at any depth, not just the repo root", () => {
   // A root-anchored `__tests__` pattern would miss `src/__tests__/`, which is where they live.
   const c = wl.classifierFor("r", { r: ["src/**"] });

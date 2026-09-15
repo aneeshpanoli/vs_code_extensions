@@ -899,8 +899,8 @@ MUTATIONS = [
  # as a measurement is the same lie in a new place.
  ("a guessed product path is reported as a configured measurement",
   "src/workledger.ts",
-  "  return { isProduct: heuristicIsProduct, heuristic: true };",
-  "  return { isProduct: heuristicIsProduct, heuristic: false };"),
+  "  return { isProduct: (f) => !isExcluded(f) && heuristicIsProduct(f), isExcluded, heuristic: true };",
+  "  return { isProduct: (f) => !isExcluded(f) && heuristicIsProduct(f), isExcluded, heuristic: false };"),
 
  # R5 — killed by "WL-001 R5: a RED project's orchestrator is told ONCE, on an IDLE composer".
  # Every 15 s instead of once a day is how a true finding becomes noise nobody reads.
