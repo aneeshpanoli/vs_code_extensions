@@ -28,6 +28,8 @@ const vscode = {
   _statusMessages: [],
   _trees: {},
   _config: {},                      // "section.key" -> value, overriding the caller's default
+  _docs: [],                        // documents opened via openTextDocument
+  _shownDocs: [],                   // …and the ones actually shown
   _reset() {
     this._messages = { info: [], warn: [], error: [] };
     this._executed = [];
@@ -39,6 +41,8 @@ const vscode = {
     this._statusMessages = [];
     this._trees = {};
     this._config = {};
+    this._docs = [];
+    this._shownDocs = [];
     this.workspace.workspaceFolders = undefined;
   },
   EventEmitter: class { constructor() { this.event = () => ({ dispose() {} }); } fire() {} },
@@ -78,9 +82,18 @@ const vscode = {
     registerTreeDataProvider(id, provider) { vscode._trees[id] = provider; return { dispose() {} }; },
     setStatusBarMessage(m) { vscode._statusMessages.push(String(m)); },
     tabGroups: { all: [], close: () => Promise.resolve(true) },
+    // WL-001 R3 opens its report as a markdown DOCUMENT; record what was shown so a test can read it.
+    showTextDocument(doc) { vscode._shownDocs.push(doc); return Promise.resolve({ document: doc }); },
   },
   workspace: {
     workspaceFolders: undefined,
+    openTextDocument(opts) {
+      const doc = { languageId: (opts && opts.language) || "plaintext",
+                    content: (opts && opts.content) || "",
+                    getText() { return this.content; } };
+      vscode._docs.push(doc);
+      return Promise.resolve(doc);
+    },
     getConfiguration(section) {
       return {
         get(k, d) {

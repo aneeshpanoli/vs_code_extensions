@@ -1,4 +1,4 @@
-const { suite, ok, eq, match, load, makeRepo } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, vscode, LOOM } = require("./harness");
 const { SessionTreeProvider } = load("statusView.js");
 const { setOrchestrator } = load("orchestrator.js");
 const { setLock } = load("locks.js");
@@ -135,4 +135,111 @@ suite("view: a DEAD declared frame does not hide a live orchestrator candidate",
   const kids = tree.getChildren(tree.getChildren()[0]);
   const cands = kids.filter((n) => n.kind === "ownerCandidate").map((n) => n.webviewId);
   ok(cands.includes("w-real"), `the live candidate is offered; got ${JSON.stringify(cands)}`);
+});
+
+// ── WL-001 R2 · the work-ledger node ──────────────────────────────────────────────────────────
+// Everything else in this panel is the agents' account of themselves. This node is the one thing
+// in it they did not write, so it sits ABOVE them and carries the verdict on one line.
+const wl = load("workledger.js");
+const fsx = require("fs");
+const pathx = require("path");
+
+/** Put a computed ledger in the cache the view reads. The view never runs git. */
+function seedLedger(repo, over = {}) {
+  const ledger = { ...wl.computeWorkLedger(null, {}), repo, empty: false, emptyReason: null,
+                   commits: 221, ...over };
+  fsx.mkdirSync(pathx.join(LOOM, repo), { recursive: true });
+  fsx.writeFileSync(pathx.join(LOOM, repo, "work-ledger.json"),
+    JSON.stringify({ ledger }, null, 2));
+  return ledger;
+}
+
+suite("WL-001 R2: the ledger node sits ABOVE the agents and carries the verdict on one line", () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  seedLedger(repo, { shipsToUser: 10.7, loopBackRate: 30, narrationShare: 28, tag: null,
+                     tokensSpent: 9339968335, costEquivalent: 8945.09, costPerProductLine: 0.37,
+                     netProductLines: 24075 });
+  const p = new SessionTreeProvider(trackerOf([agent("alpha", repo)]), repo);
+  const kids = p.getChildren(p.getChildren()[0]);
+  eq(kids[0].kind, "ledger", "FIRST child — above every agent, which are all self-report");
+  const it = p.getTreeItem(kids[0]);
+  match(it.description, /9\.3B/, "tokens on the collapsed row");
+  match(it.description, /\$8,945/, "list-price equivalent");
+  match(it.description, /\$0\.37\/line/, "and the ratio the owner actually asked for");
+  match(it.description, /ships 10\.7%/, "beside the shipping share");
+  match(it.description, /no release in 221 blocks/, "and the release state");
+  eq(it.collapsibleState, 1, "collapsed — the one line has to work on its own");
+  eq(it.command.command, "loomSessionTracker.workLedgerReport", "clicking opens the full report");
+  match(it.tooltip, /NOTHING here comes from what an agent wrote about itself/,
+        "the tooltip states the provenance rule this node exists to enforce");
+});
+
+suite("WL-001 R2: expanding lists each figure, and a RED row states its number", () => {
+  const repo = makeRepo({ roles: {} });
+  seedLedger(repo, { shipsToUser: 10.7, loopBackRate: 30, narrationShare: 28, tag: null });
+  const p = new SessionTreeProvider(trackerOf([]), repo);
+  const node = p.getChildren(p.getChildren()[0]).find((n) => n.kind === "ledger");
+  const rows = p.getChildren(node);
+  const keys = rows.map((r) => r.figure.key);
+  for (const k of ["shipsToUser", "loopBackRate", "narrationShare", "rigRatio", "release",
+                   "tokensSpent", "costEquivalent", "netProductLines", "costPerProductLine"]) {
+    ok(keys.includes(k), `${k} has a row of its own`);
+  }
+  const ships = p.getTreeItem(rows.find((r) => r.figure.key === "shipsToUser"));
+  eq(ships.iconPath.id, "error", "10.7% shipping is RED");
+  eq(ships.iconPath.color.id, "charts.red", "in the red colour");
+  eq(ships.description, "10.7%", "and the row STATES the number — not a bare warning icon");
+  match(ships.tooltip, /computed \d{4}-/, "with computedAt in the tooltip, so a stale cache is obvious");
+});
+
+suite("WL-001 R2: each band gets its own colour, at the boundary", () => {
+  const repo = makeRepo({ roles: {} });
+  const p = new SessionTreeProvider(trackerOf([]), repo);
+  for (const [ships, icon] of [[40, "pass"], [30, "warning"], [19, "error"]]) {
+    seedLedger(repo, { shipsToUser: ships, tag: "v1", blocksSinceRelease: 0 });
+    const node = p.getChildren(p.getChildren()[0]).find((n) => n.kind === "ledger");
+    const row = p.getChildren(node).find((r) => r.figure.key === "shipsToUser");
+    eq(p.getTreeItem(row).iconPath.id, icon, `${ships}% shipping renders ${icon}`);
+  }
+});
+
+suite("WL-001 R2/R4: thresholds come from settings, and a partial object still works", () => {
+  const repo = makeRepo({ roles: {} });
+  seedLedger(repo, { shipsToUser: 45, tag: "v1", blocksSinceRelease: 0 });
+  const p = new SessionTreeProvider(trackerOf([]), repo);
+  const shipsIcon = () => {
+    const node = p.getChildren(p.getChildren()[0]).find((n) => n.kind === "ledger");
+    return p.getTreeItem(p.getChildren(node).find((r) => r.figure.key === "shipsToUser")).iconPath.id;
+  };
+  eq(shipsIcon(), "pass", "45% is green by default");
+  vscode._config["loomSessionTracker.workLedgerThresholds"] = { shipsGood: 60 };   // ONE field
+  eq(shipsIcon(), "warning", "a raised bar applies, and the untouched fields keep their defaults");
+  delete vscode._config["loomSessionTracker.workLedgerThresholds"];
+});
+
+suite("WL-001 R2/R4: workLedgerEnabled=false removes the node entirely", () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  seedLedger(repo, { shipsToUser: 10 });
+  const p = new SessionTreeProvider(trackerOf([agent("alpha", repo)]), repo);
+  vscode._config["loomSessionTracker.workLedgerEnabled"] = false;
+  eq(p.getChildren(p.getChildren()[0]).filter((n) => n.kind === "ledger").length, 0, "switched off");
+  delete vscode._config["loomSessionTracker.workLedgerEnabled"];
+  eq(p.getChildren(p.getChildren()[0]).filter((n) => n.kind === "ledger").length, 1, "and back on");
+});
+
+suite("WL-001 R2: a project with no cache yet shows no ledger node, and the panel still renders", () => {
+  const repo = makeRepo({ roles: { alpha: {} } });
+  const p = new SessionTreeProvider(trackerOf([agent("alpha", repo)]), repo);
+  const kids = p.getChildren(p.getChildren()[0]);
+  eq(kids.filter((n) => n.kind === "ledger").length, 0, "nothing measured yet, nothing claimed");
+  eq(kids.filter((n) => n.kind === "agent").length, 1, "the agents still render");
+});
+
+suite("WL-001 R2: a HEURISTIC ledger says so on the row and in the tooltip", () => {
+  const repo = makeRepo({ roles: {} });
+  seedLedger(repo, { shipsToUser: 50, heuristic: true, tag: "v1", blocksSinceRelease: 0 });
+  const p = new SessionTreeProvider(trackerOf([]), repo);
+  const node = p.getChildren(p.getChildren()[0]).find((n) => n.kind === "ledger");
+  match(p.getTreeItem(node).description, /\(est\)/, "an estimate is marked as one on the row");
+  match(p.getTreeItem(node).tooltip, /HEURISTIC/, "and explained in the tooltip");
 });

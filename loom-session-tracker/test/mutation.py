@@ -828,6 +828,111 @@ MUTATIONS = [
   "src/extension.ts",
   '      if (want.model === dflt && !premiumNow()) return { ...base, want: want.model, chip, note: "default tier — nothing to type" };',
   '      if (want.model === dflt) return { ...base, want: want.model, chip, note: "default tier — nothing to type" };'),
+
+ # ── WL-001, 2026-09-15: what the agents PRODUCE, measured from git and the transcripts ─────────
+ # The audit that caused this: 10.7 % of ReciEats' changed lines reached a user's screen over seven
+ # days, 171 of 614 commits only updated the guide, 0 releases were ever cut — and every figure the
+ # panel showed came from the agents' own account of themselves, by which the week was excellent.
+
+ # R6 — THE ONE THE HANDOFF NAMED. Killed by "WL-001 R6: CACHE READS ARE COUNTED — omitting them
+ # understates a week by ~100x". Cache reads run ~100x the other classes; dropping them turns a
+ # 15-billion-token week into a 100-million-token one, and the cost-per-line figure with it.
+ ("tokensSpent ignores cache reads — a 15-billion-token week reads as 100 million",
+  "src/workledger.ts",
+  "        t.cacheRead += n(u.cache_read_input_tokens);",
+  "        t.cacheRead += 0;"),
+
+ # R6 — killed by "WL-001 R6: netProductLines is a TWO-POINT DIFF — churn is not production".
+ # Basing the denominator on the first commit in the window instead of the last one BEFORE it
+ # silently drops that commit's work from "what exists now that did not exist then".
+ ("the net-lines base is inside the window — the denominator counts churn as production",
+  "src/workledger.ts",
+  '  const before = (git(repoPath, ["rev-list", "-1", `--before=${since}`, "HEAD"]) || "").trim();',
+  '  const before = (git(repoPath, ["rev-list", "-1", "HEAD"]) || "").trim();'),
+
+ # R6 — killed by "WL-001 R6: an UNPRICED model contributes tokens but NOT dollars, and is named".
+ # Silently folding an unknown id into the cheapest row is a cost figure nobody can audit.
+ ("an unpriced model is silently priced as Haiku — the dollar figure stops being checkable",
+  "src/workledger.ts",
+  "    const p = priceFor(id, prices);\n    if (!p) {",
+  "    const p = priceFor(id, prices) || [1, 5, 0.1, 2];\n    if (!p) {"),
+
+ # R1 — killed by "WL-001 R1: a test file counted as PRODUCT is the defect this whole panel exists
+ # to prevent". THE defect being prevented: with the rig counted as product, the audited week reads
+ # GREEN and the panel goes back to saying everything is fine.
+ ("the heuristic counts tests and tooling as PRODUCT — the audited week would read green",
+  "src/workledger.ts",
+  "  if (isDoc(file) || isRig(file) || LOCK_RE.test(file)) return false;",
+  "  if (isDoc(file) || LOCK_RE.test(file)) return false;"),
+
+ # R1 — killed by "WL-001 R1: a NEGATIVE or zero wall time is DROPPED, never shown as 0".
+ # A 0 in this column is not a missing value but a measured one: "that handoff took no time".
+ ("a non-positive wall time is averaged in as 0 — an unreadable value scored as a measurement",
+  "src/workledger.ts",
+  '  const v = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x) && x > 0)',
+  '  const v = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x))'),
+
+ # R1 — killed by "WL-001 R1: a repo with NO TAG reports never-released — a warning, not a blank".
+ # ReciEats' real answer is 0 tags in 221 blocks; rendering it as an ordinary row is how it stayed
+ # invisible for a week.
+ ("never-released renders as an ordinary row, not a warning",
+  "src/workledger.ts",
+  '      band: w.tag === null ? "bad" : "unknown",',
+  '      band: "unknown",'),
+
+ # R2 — killed by "WL-001 R2: band boundaries are inclusive on the good side, both directions".
+ ("the good-side boundary is exclusive — 40% shipping reads amber",
+  "src/workledger.ts",
+  '  if (highIsGood) return value >= good ? "good" : value < bad ? "bad" : "warn";',
+  '  if (highIsGood) return value > good ? "good" : value < bad ? "bad" : "warn";'),
+
+ # R2 — killed by "WL-001 R2: expanding lists each figure, and a RED row states its number".
+ # A bare warning icon tells a reader something is wrong without telling them how wrong, which is
+ # exactly the thing this panel replaces.
+ ("a red row shows an icon but not the number",
+  "src/statusView.ts",
+  "      it.description = f.value;",
+  '      it.description = "";'),
+
+ # R4 — killed by "WL-001 R2: a HEURISTIC ledger says so on the row and in the tooltip" and by
+ # "WL-001 R2: a HEURISTIC figure says so, everywhere it is shown". An unconfigured guess presented
+ # as a measurement is the same lie in a new place.
+ ("a guessed product path is reported as a configured measurement",
+  "src/workledger.ts",
+  "  return { isProduct: (f) => !isExcluded(f) && heuristicIsProduct(f), isExcluded, heuristic: true };",
+  "  return { isProduct: (f) => !isExcluded(f) && heuristicIsProduct(f), isExcluded, heuristic: false };"),
+
+ # R5 — killed by "WL-001 R5: a RED project's orchestrator is told ONCE, on an IDLE composer".
+ # Every 15 s instead of once a day is how a true finding becomes noise nobody reads.
+ ("the ledger nudge repeats every tick instead of once per project per day",
+  "src/workledger.ts",
+  "  if (notifiedOn === today) return null;",
+  "  if (notifiedOn === today && Boolean(0)) return null;"),
+
+ # R5 — killed by "WL-001 R5: a BUSY orchestrator composer is never typed into, and the day is not
+ # spent". A line typed over a running turn queues as an ordinary message (dispatch.ts) — the same
+ # discipline /model is held to.
+ ("the ledger nudge is typed into a BUSY composer",
+  "src/extension.ts",
+  "      if (!frame || frame.busy) return;                    // not now; the day is still unspoken for",
+  "      if (!frame) return;"),
+
+
+ # R7a — killed by "WL-001 R7a: a test file under a product glob is NOT product — the defect this
+ # panel exists to refute" and by the partition test. MEASURED: without the exclusions, 39,150 of
+ # ReciEats' 63,225 "product" lines over the audited week were test files under src/, and the
+ # shipping share read 56.8 % instead of 25.1 %. src/app/page.test.tsx alone was +10,782.
+ ("a test file under a product glob counts as PRODUCT — the ledger reports the number it refutes",
+  "src/workledger.ts",
+  "    return { isProduct: (f) => !isExcluded(f) && matchesAny(f, globs), isExcluded, heuristic: false };",
+  "    return { isProduct: (f) => matchesAny(f, globs), isExcluded, heuristic: false };"),
+
+ # R7c — killed by "WL-001 R7c: product and rig PARTITION the week's lines — they must not overlap".
+ ("what is subtracted from product falls out of rig too — the ratio understates by construction",
+  "src/workledger.ts",
+  "      if (isRig(l.file) || cls.isExcluded(l.file)) rigLines += n;",
+  "      if (isRig(l.file)) rigLines += n;"),
+
 ]
 
 def sh(cmd):
