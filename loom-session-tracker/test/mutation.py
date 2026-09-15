@@ -1021,6 +1021,40 @@ MUTATIONS = [
   "    briefing;",
   '    "";'),
 
+ # ── WL-003-R5 · a release is what reached a user ────────────────────────────────────
+ # MEASURED 2026-09-15: 42 deployed versions, 56 manifest bumps, 0 tags — and the panel said the
+ # project had never cut a release. A line the reader can SEE is false costs the whole block its
+ # credibility, including the one line that matters.
+
+ # R5 source 1 — killed by "WL-003-R5: a DEPLOYED artifact is the release". Skipping the artifact
+ # falls through to the manifest bump, which is a different and older answer.
+ ("the deployed artifact is ignored — the release falls back to a manifest bump that shipped earlier",
+  "src/workledger.ts",
+  "  const deployed = deployedVersions(m, roots);\n  if (deployed.length) {",
+  "  const deployed = deployedVersions(m, roots);\n  if (false) {"),
+
+ # R5 source 2 — killed by "WL-003-R5: no artifact, but the manifest MOVED".
+ ("a manifest that moved is not a release — a project with no deploy dir reads as unreleased",
+  "src/workledger.ts",
+  "  const bump = releaseCommit(repoPath, m.rel, null);",
+  "  const bump = null as null | { sha: string; version: string };"),
+
+ # R5 source 3 — killed by "WL-003-R5: no manifest and no deploy target is UNMEASURED". THE ONE THE
+ # OWNER ASKED FOR BY NAME: an undetectable release reported as 0 blocks reads as "shipped just
+ # now", which is the exact opposite of what is known, and is under every alarm.
+ ("a release that cannot be detected reports 0 blocks — unseen is rendered as just-shipped",
+  "src/workledger.ts",
+  '  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };',
+  '  return { ...base, source: "deployed", releasedVersion: base.version, blocksSince: 0 };'),
+
+ # R5 — killed by "WL-003-R5: a repo holding SEVERAL products answers for the ACTIVE one". Taking
+ # the first manifest by name reported "111 blocks since 1.0.0" for a repo whose active product had
+ # shipped that morning: the same confidently-wrong line, one layer down.
+ ("a multi-product repo answers for the FIRST manifest by name, not the one being worked on",
+  "src/workledger.ts",
+  "    if (Number.isFinite(t) && t > bestAt) { bestAt = t; best = m; }",
+  "    if (Number.isFinite(t) && t < bestAt) { bestAt = t; best = m; }"),
+
 ]
 
 def sh(cmd):

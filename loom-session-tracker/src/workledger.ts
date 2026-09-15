@@ -168,6 +168,9 @@ export interface WorkLedger {
   narrationRun: number;
   /** Where this repo's sessions spent their tool calls in the window. */
   allocation: BlockAllocation;
+  /** R5: what reached a user, and which of the three sources says so. `tag` stays as CORROBORATION
+   *  only — it was the sole source, and it was wrong about this repo 42 deploys running. */
+  release: ReleaseSignal;
 }
 
 /** One word, in the row AND in the nudge AND in the report. WL-002: the panel said `$?` in one
@@ -556,6 +559,187 @@ export function productDelta(repoPath: string | null, since: string,
   return { net, added, base };
 }
 
+// ── WL-003-R5 · what "released" means when a project has never cut a tag ──────────────────────
+//
+// A RELEASE IS THE ACT THAT PUTS THE CODE IN FRONT OF ITS USER, AND TAGS ARE NOT IT. This extension
+// has no marketplace: `./deploy.sh` writing `~/.vscode-oss/extensions/<publisher>.<name>-<version>`
+// is the release. Measured 2026-09-15: 42 deployed versions, 56 manifest bumps in history, 0 tags —
+// and the panel reported "never released", which is the proxy-for-the-thing error this module
+// exists to refuse, made about the repo the module lives in.
+//
+// THE CREDIBILITY OF THE ONE LINE THAT MATTERS IS SET BY THE LEAST CREDIBLE LINE IN THE BLOCK. The
+// bus-mechanics count is the point of WL-003, and it sat next to a line that told its reader the
+// briefing was broken.
+
+export type ReleaseSource = "deployed" | "manifest" | "unmeasured";
+
+export interface ReleaseSignal {
+  /** WHICH OF THE THREE ANSWERED. Shown wherever the line is, so the claim carries its own basis. */
+  source: ReleaseSource;
+  manifestPath: string | null;
+  /** Which product the answer is about — set when the repo holds more than one manifest, so the
+   *  line cannot silently be about a different product than the reader assumes. */
+  product: string | null;
+  /** The manifest's current version. */
+  version: string | null;
+  /** The version actually in front of a user, when that can be seen. */
+  releasedVersion: string | null;
+  /** Commits since the release commit. `0` means the released version is what HEAD holds. */
+  blocksSince: number | null;
+  /** Where a deployed artifact was looked for — named when the answer is `unmeasured`. */
+  lookedIn: string[];
+}
+
+/** Standard per-user extension directories. The ROOTS are conventional; the artifact NAME is derived
+ *  from the manifest's own publisher/name, never hardcoded. */
+export const DEFAULT_DEPLOY_ROOTS = [
+  path.join(os.homedir(), ".vscode-oss", "extensions"),
+  path.join(os.homedir(), ".vscode", "extensions"),
+];
+
+interface Manifest { rel: string; name: string; publisher: string; version: string;
+                     /** How many manifests this repo holds. >1 means the line must name which. */
+                     siblings: number; }
+
+/**
+ * The project's manifest: the root `package.json`, else a single-level subdirectory one.
+ *
+ * A REPO CAN HOLD SEVERAL PRODUCTS AND THIS ONE DOES — `claude-auto-accept`, `claude-chat-reader`
+ * and `loom-session-tracker`. Taking the first by name picked `claude-auto-accept` and reported
+ * "111 blocks since 1.0.0 reached a user" for a repo whose active product had shipped that morning:
+ * the same confidently-wrong line R5 exists to remove, one layer down. The ACTIVE one is chosen
+ * instead — most recently touched by a commit — and the line says which product it is about.
+ */
+export function findManifest(repoPath: string, explicit?: string | null): Manifest | null {
+  const tryOne = (rel: string): Manifest | null => {
+    try {
+      const o = JSON.parse(fs.readFileSync(path.join(repoPath, rel), "utf8"));
+      if (o && typeof o.version === "string" && o.version && typeof o.name === "string" && o.name) {
+        return { rel, name: o.name, publisher: String(o.publisher || ""), version: o.version,
+                 siblings: 1 };
+      }
+    } catch { /* not one */ }
+    return null;
+  };
+  if (explicit) return tryOne(explicit);
+  const root = tryOne("package.json");
+  if (root) return root;
+  let entries: string[];
+  try { entries = fs.readdirSync(repoPath); } catch { return null; }
+  const found: Manifest[] = [];
+  for (const d of entries.sort()) {
+    if (d.startsWith(".") || d === "node_modules") continue;
+    const m = tryOne(path.join(d, "package.json"));
+    if (m) found.push(m);
+  }
+  if (!found.length) return null;
+  // MOST RECENTLY TOUCHED WINS — the product actually being worked on, not the first alphabetically.
+  let best = found[0], bestAt = -1;
+  for (const m of found) {
+    const t = Number(((git(repoPath, ["log", "-1", "--format=%ct", "--", m.rel]) || "").trim()));
+    if (Number.isFinite(t) && t > bestAt) { bestAt = t; best = m; }
+  }
+  return { ...best, siblings: found.length };
+}
+
+/** Versions of this extension currently deployed, newest-looking last. Matched on the manifest's own
+ *  `<publisher>.<name>-<version>` shape, with a bare `<name>-<version>` accepted too. */
+export function deployedVersions(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS): string[] {
+  const out = new Set<string>();
+  const pats = [m.publisher ? `${m.publisher}.${m.name}-` : null, `${m.name}-`]
+    .filter((x): x is string => !!x);
+  for (const root of roots) {
+    let names: string[];
+    try { names = fs.readdirSync(root); } catch { continue; }
+    for (const n of names) {
+      for (const p of pats) {
+        if (n.startsWith(p)) { const v = n.slice(p.length); if (/^\d/.test(v)) out.add(v); break; }
+      }
+    }
+  }
+  return Array.from(out);
+}
+
+/** The newest commit at which the manifest held `want` (or, with no `want`, the newest commit that
+ *  CHANGED the version). Bounded: a manifest with a long history is walked from the top and stops as
+ *  soon as it can answer, so this costs a few `git show`s, not one per commit. */
+function releaseCommit(repoPath: string, rel: string, want: string | null, cap = 80):
+    { sha: string; version: string } | null {
+  const log = git(repoPath, ["log", "--format=%H", "-n", String(cap), "--", rel]);
+  if (log === null) return null;
+  const shas = log.split("\n").map((x) => x.trim()).filter(Boolean);
+  let prev: string | null = null;
+  for (let i = 0; i < shas.length; i++) {
+    const body = git(repoPath, ["show", `${shas[i]}:${rel}`]);
+    let v: string | null = null;
+    try { const o = JSON.parse(body || "{}"); v = typeof o.version === "string" ? o.version : null; }
+    catch { /* unparseable at that commit */ }
+    if (!v) continue;
+    if (want !== null) { if (v === want) return { sha: shas[i], version: v }; continue; }
+    // No target: the newest commit whose version differs from the one before it IS the bump.
+    if (prev === null) { prev = v; continue; }
+    if (v !== prev) return { sha: shas[i - 1], version: prev };
+    prev = v;
+  }
+  return null;
+}
+
+/**
+ * The release signal, in the order the owner decided: a deployed artifact beats a manifest bump,
+ * and NEITHER BEING VISIBLE IS `unmeasured` — not "never released". A project whose releases cannot
+ * be seen is not a project that has never released, which is WL-002's rule applied to the figure
+ * that was wrong about this repo 42 times over.
+ */
+export function releaseSignal(repoPath: string | null, opts: {
+  manifestPath?: string | null; deployRoots?: string[];
+} = {}): ReleaseSignal {
+  const roots = opts.deployRoots || DEFAULT_DEPLOY_ROOTS;
+  const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,
+                                       version: null, releasedVersion: null, blocksSince: null,
+                                       lookedIn: roots });
+  if (!repoPath) return none();
+  const m = findManifest(repoPath, opts.manifestPath);
+  if (!m) return none();
+  const base = { manifestPath: m.rel, product: m.siblings > 1 ? m.name : null,
+                 version: m.version, lookedIn: roots };
+  const blocks = (sha: string): number | null => {
+    const n = git(repoPath, ["rev-list", "--count", `${sha}..HEAD`]);
+    const k = Number((n || "").trim());
+    return Number.isFinite(k) ? k : null;
+  };
+
+  // 1 · a deployed artifact whose version the manifest history knows.
+  const deployed = deployedVersions(m, roots);
+  if (deployed.length) {
+    // The CURRENT manifest version being deployed means HEAD is what the user has.
+    const want = deployed.includes(m.version) ? m.version : null;
+    const hit = want ? releaseCommit(repoPath, m.rel, want)
+                     : deployed.map((v) => releaseCommit(repoPath, m.rel, v))
+                         .filter((x): x is { sha: string; version: string } => !!x)
+                         .map((x) => ({ x, n: blocks(x.sha) }))
+                         .filter((y) => y.n !== null)
+                         .sort((a, b) => (a.n as number) - (b.n as number))[0]?.x || null;
+    if (hit) return { ...base, source: "deployed", releasedVersion: hit.version,
+                      blocksSince: blocks(hit.sha) };
+    // Deployed, but no commit in the walked history holds that version: still released, and the
+    // distance is what is unknown — reported as such rather than as 0.
+    return { ...base, source: "deployed", releasedVersion: deployed[0], blocksSince: null };
+  }
+
+  // 2 · no artifact, but the manifest version moved: released at that commit.
+  const bump = releaseCommit(repoPath, m.rel, null);
+  if (bump) return { ...base, source: "manifest", releasedVersion: bump.version,
+                     blocksSince: blocks(bump.sha) };
+
+  // 3 · a manifest that has never moved and nothing deployed. If the manifest genuinely never
+  // moves, "no release in N blocks" is TRUE and is said; if there is no history to judge, it is not.
+  const any = git(repoPath, ["log", "--format=%H", "-n", "1", "--", m.rel]);
+  if (any !== null && any.trim()) {
+    return { ...base, source: "manifest", releasedVersion: null, blocksSince: null };
+  }
+  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };
+}
+
 // ── WL-003 · where the ORCHESTRATOR's own blocks went ─────────────────────────────────────────
 //
 // `shipsToUser`, `$/line` and `rigRatio` score the PROJECT. They do not tell the session deciding
@@ -683,6 +867,10 @@ export interface ComputeOpts {
   /** WL-003: scope `allocation` to these session id(s) — the orchestrator's OWN blocks. Omit for
    *  the whole bus. */
   sessionIds?: string[] | null;
+  /** R5: the manifest to read, and where a deployed artifact would be found. Both are settings so
+   *  no machine's layout is baked in; the artifact NAME always derives from the manifest. */
+  manifestPath?: string | null;
+  deployRoots?: string[];
 }
 
 /** R6's half of the compute, split out so the token figures can be tested without a git repo —
@@ -692,7 +880,7 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     Pick<WorkLedger, "tokensSpent" | "tokensByModel" | "costEquivalent" | "unpricedTokens" |
                      "unpricedModels" | "netProductLines" | "newUserFacingFiles" |
                      "tokensPerProductLine" | "costPerProductLine" | "transcriptFiles" |
-                     "transcriptDirs" | "transcriptsRoot" | "allocation"> {
+                     "transcriptDirs" | "transcriptsRoot" | "allocation" | "release"> {
   const scan = scanTranscripts(repo, sinceMs, opts.projectsRoot);
   const cost = costEquivalent(scan.byModel, opts.modelPrices || DEFAULT_MODEL_PRICES);
   const { net, added } = productDelta(repoPath, new Date(sinceMs).toISOString(), cls);
@@ -718,6 +906,7 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     // Same scan discipline as the tokens: computed on EVERY path, including the empty ones, so a
     // repo with no commits still reports where its sessions' turns actually went.
     allocation: scanBlocks(repo, sinceMs, cls, opts.projectsRoot, opts.sessionIds),
+    release: releaseSignal(repoPath, opts),
   };
 }
 
@@ -734,6 +923,8 @@ function emptyLedger(repo: string, repoPath: string | null, windowDays: number, 
     costPerProductLine: null, transcriptFiles: 0, transcriptDirs: 0,
     transcriptsRoot: PROJECTS_ROOT,
     blocksSinceProduct: null, narrationRun: 0, allocation: EMPTY_ALLOC(true),
+    release: { source: "unmeasured", manifestPath: null, product: null, version: null,
+               releasedVersion: null, blocksSince: null, lookedIn: DEFAULT_DEPLOY_ROOTS },
   };
 }
 
@@ -1178,10 +1369,19 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
     L.push(`Where the blocks went is ${UNMEASURED}: no transcript directory matches this repo ` +
            `under ${w.transcriptsRoot}.`);
   }
-  if (w.tag === null && w.commits > 0) {
-    L.push(`No release in ${w.commits} blocks.`);
-  } else if (w.blocksSinceRelease !== null && w.blocksSinceRelease > 0) {
-    L.push(`${w.blocksSinceRelease} blocks since ${w.tag}.`);
+  // R5 · KEYED ON WHAT REACHED A USER, and it names which source answered, so the claim carries its
+  // own basis. A line the reader can see is false costs the whole block its credibility.
+  const r = w.release;
+  if (r.source === "unmeasured") {
+    L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed ` +
+           `artifact under ${r.lookedIn.join(" or ")}.`);
+  } else if (r.blocksSince === null) {
+    L.push(`Last reached a user at ${r.releasedVersion ?? UNMEASURED}` +
+           `${r.releasedVersion ? ` (${r.source})` : ""}; how many blocks ago is ${UNMEASURED}.`);
+  } else if (r.blocksSince > 0) {
+    L.push(`${r.blocksSince} block(s) since ${r.product ? `${r.product} ` : ""}` +
+           `${r.releasedVersion} reached a user ` +
+           `(${r.source === "deployed" ? "deployed artifact" : "manifest bump"}).`);
   }
   if (w.handoffs > 0 && w.loopBackHandoffs > 0) {
     L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) this window came back for another ` +

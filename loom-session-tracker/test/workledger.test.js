@@ -1014,14 +1014,122 @@ suite("WL-003 R2: an unmeasured allocation SAYS SO to the orchestrator instead o
 });
 
 suite("WL-003 R2: nothing worth interrupting for produces NO message at all", () => {
-  const dir = makeGitRepo("wl003d", [{ msg: "ship", files: { "src/app/p.tsx": lines(20) }, daysAgo: 1 }]);
-  git(dir, ["tag", "v1.0.0"]);
+  // R5 CHANGED WHAT "RELEASED" MEANS HERE and this fixture had to follow it: it used to cut a TAG,
+  // which is no longer the signal, so the block gained a line and this test went red. The intent is
+  // unchanged — a week with nothing to say says nothing — but it is now expressed the way the
+  // product is actually shipped: the manifest's current version is the one in front of the user.
+  const dir = makeGitRepo("wl003d", [
+    { msg: "seed", files: { "package.json": pkg("wl003d", "1.0.0") }, daysAgo: 2 },
+    { msg: "ship", files: { "src/app/p.tsx": lines(20), "package.json": pkg("wl003d", "1.1.0") },
+      daysAgo: 1 },
+  ]);
   const empty = path.join(LOOM, "..", "projects-q-" + Math.random().toString(36).slice(2));
   fs.mkdirSync(empty, { recursive: true });
   const w = wl.computeWorkLedger(dir, { productPaths: { wl003d: ["src/app/**"] }, projectsRoot: empty,
-                                        sessionIds: ["nobody"] });
+                                        sessionIds: ["nobody"],
+                                        deployRoots: [makeDeployRoot(["local.wl003d-1.1.0"])] });
+  eq(w.release.blocksSince, 0, "what HEAD holds is what the user has");
   w.allocation = { calls: 0, product: 0, rig: 0, narration: 0, bus: 0, other: 0, sessions: 0,
                    unmeasured: false };
-  eq(wl.orchestratorBriefing(w, true).length, 0, "the newest commit shipped and it is released");
+  eq(wl.orchestratorBriefing(w, true).length, 0, "the newest commit shipped and it IS deployed");
   eq(wl.briefingBlock(w, true), "", "so the bootstrap is left exactly as it was");
+});
+
+// ── WL-003-R5 · a release is what reached a user, and tags are not it ──────────────────────────
+//
+// MEASURED 2026-09-15: this product has 42 deployed versions in ~/.vscode-oss/extensions and 56
+// manifest bumps in history, and ZERO tags. The panel read the tag count and reported "never
+// released" — the proxy-for-the-thing error the ledger exists to refuse, about the repo it lives in.
+
+/** A deploy root holding `<publisher>.<name>-<version>` directories. */
+function makeDeployRoot(names) {
+  const root = path.join(LOOM, "..", "deployed-" + Math.random().toString(36).slice(2));
+  for (const n of names) fs.mkdirSync(path.join(root, n), { recursive: true });
+  if (!names.length) fs.mkdirSync(root, { recursive: true });
+  return root;
+}
+const pkg = (name, version, publisher = "local") =>
+  JSON.stringify({ name, version, publisher }, null, 2) + "\n";
+
+suite("WL-003-R5: a DEPLOYED artifact is the release — with zero tags, as this repo has", () => {
+  const dir = makeGitRepo("r5dep", [
+    { msg: "v1", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+    { msg: "ship 1.1.0", files: { "package.json": pkg("ext", "1.1.0") }, daysAgo: 3 },
+    { msg: "work after", files: { "src/app/b.tsx": lines(5) }, daysAgo: 1 },
+  ]);
+  const roots = [makeDeployRoot(["local.ext-1.0.0", "local.ext-1.1.0"])];
+  const r = wl.releaseSignal(dir, { deployRoots: roots });
+  eq(r.source, "deployed", "the artifact in front of the user answers, not a tag");
+  eq(r.releasedVersion, "1.1.0", "the newest deployed version that history knows");
+  eq(r.blocksSince, 1, "one block since it shipped");
+  // There is no tag anywhere in this fixture, exactly like the real repo.
+  eq(wl.computeWorkLedger(dir, { productPaths: { r5dep: ["src/app/**"] } }).tag, null,
+     "and the tag signal still says nothing — it is corroboration, never the source");
+});
+
+suite("WL-003-R5: no artifact, but the manifest MOVED — released at that commit", () => {
+  const dir = makeGitRepo("r5man", [
+    { msg: "v1", files: { "package.json": pkg("m", "1.0.0") }, daysAgo: 5 },
+    { msg: "bump", files: { "package.json": pkg("m", "2.0.0") }, daysAgo: 3 },
+    { msg: "after", files: { "src/app/a.tsx": lines(3) }, daysAgo: 2 },
+    { msg: "after2", files: { "src/app/b.tsx": lines(3) }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "manifest", "the bump is the release when nothing is deployed");
+  eq(r.releasedVersion, "2.0.0", "at the version it moved to");
+  eq(r.blocksSince, 2, "two blocks since");
+});
+
+suite("WL-003-R5: no manifest and no deploy target is UNMEASURED — never '0 blocks', never 'never'", () => {
+  const dir = makeGitRepo("r5none", [{ msg: "code", files: { "src/app/a.tsx": lines(3) }, daysAgo: 1 }]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "unmeasured", "a project whose releases cannot be seen has not 'never released'");
+  eq(r.blocksSince, null, "and the distance is absent, NOT zero");
+  eq(r.releasedVersion, null, "with nothing claimed about what shipped");
+  const w = wl.computeWorkLedger(dir, { productPaths: { r5none: ["src/app/**"] } });
+  w.release = r;
+  const text = wl.orchestratorBriefing(w, true).join("\n");
+  match(text, /Whether anything has been released is unmeasured/, "and the line says so");
+  ok(!/0 block/.test(text), "0 blocks would read as 'shipped just now' — the opposite of the truth");
+  ok(!/no release in/i.test(text), "and it must not claim it has never released");
+});
+
+suite("WL-003-R5: the line NAMES which source answered, so the claim carries its own basis", () => {
+  const dir = makeGitRepo("r5src", [
+    { msg: "v1", files: { "package.json": pkg("s", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 4 },
+    { msg: "after", files: { "src/app/b.tsx": lines(5) }, daysAgo: 1 },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { r5src: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot(["local.s-1.0.0"])] });
+  const text = wl.orchestratorBriefing(w, true).join("\n");
+  match(text, /1 block\(s\) since 1\.0\.0 reached a user \(deployed artifact\)/,
+        "the number AND where it came from");
+});
+
+suite("WL-003-R5: a repo holding SEVERAL products answers for the ACTIVE one, and names it", () => {
+  // This repo holds three extensions. Taking the first by name reported '111 blocks since 1.0.0'
+  // for a repo whose active product had shipped that morning — the same wrong line, one layer down.
+  const dir = makeGitRepo("r5multi", [
+    { msg: "dormant", files: { "aaa-dormant/package.json": pkg("aaa-dormant", "1.0.0") }, daysAgo: 9 },
+    { msg: "active v1", files: { "zzz-active/package.json": pkg("zzz-active", "0.1.0") }, daysAgo: 4 },
+    { msg: "active v2", files: { "zzz-active/package.json": pkg("zzz-active", "0.2.0") }, daysAgo: 2 },
+    { msg: "after", files: { "src/app/a.tsx": lines(3) }, daysAgo: 1 },
+  ]);
+  const roots = [makeDeployRoot(["local.aaa-dormant-1.0.0", "local.zzz-active-0.2.0"])];
+  const r = wl.releaseSignal(dir, { deployRoots: roots });
+  eq(r.manifestPath, "zzz-active/package.json", "the most recently TOUCHED manifest, not the first");
+  eq(r.product, "zzz-active", "and the line can say which product it is about");
+  eq(r.releasedVersion, "0.2.0", "answering for the active product");
+  eq(r.blocksSince, 1, "one block since it shipped");
+});
+
+suite("WL-003-R5: an explicit manifest path overrides the search", () => {
+  const dir = makeGitRepo("r5exp", [
+    { msg: "a", files: { "aaa/package.json": pkg("aaa", "1.0.0") }, daysAgo: 3 },
+    { msg: "z", files: { "zzz/package.json": pkg("zzz", "9.9.9") }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { manifestPath: "aaa/package.json",
+                                    deployRoots: [makeDeployRoot(["local.aaa-1.0.0"])] });
+  eq(r.version, "1.0.0", "the setting wins over the recency heuristic");
+  eq(r.releasedVersion, "1.0.0", "and answers for that product");
 });

@@ -392,6 +392,19 @@ record every tool call with its input — the same thing the owner counted by ha
 a bus path and a product path is **bus** work: whichever is tested first decides the number, and
 testing product first is how bus work disappears into the product bucket.
 
+**A release is what reached a user, and tags are not it.** Measured 2026-09-15: this product has
+**42 deployed versions** in `~/.vscode-oss/extensions` and 56 manifest bumps in history, and **zero
+tags** — and the panel read the tag count and reported that it had never cut a release. That is the
+proxy-for-the-thing error the ledger exists to refuse, made about the repo the ledger lives in. The
+signal is keyed on the manifest version reaching a user, in order: a **deployed artifact** matching
+the manifest (roots are a setting; the artifact name always derives from the manifest's own
+publisher/name), else a **manifest version-bump commit**, else **`unmeasured`** — a project whose
+releases cannot be seen has not "never released", and must never be rendered as `0 blocks`, which
+reads as *shipped just now*. Every line names which of the three answered. A tag is corroboration,
+never the source. In a repo holding several products (this one holds three) the **most recently
+touched** manifest answers and the line says which product it is about: taking the first by name
+reported "111 blocks since 1.0.0" for a repo whose active product had shipped that morning.
+
 **Counts, never a score.** The lines say what the week *contained* and let the orchestrator draw the
 conclusion — `38 of the last 89 tool call(s) you made went to bus mechanics`, not
 `orchestrator efficiency: 43% (below target)`. A percentage of its own conduct is a dial an agent can
