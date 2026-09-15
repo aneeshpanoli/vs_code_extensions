@@ -740,3 +740,152 @@ suite("WL-001 R4: workLedgerEnabled=false measures nothing and writes nothing", 
     eq(readJson(path.join(LOOM, "ledger-debug.json")), null, "and nobody nudged");
   } finally { delete vscode._config["loomSessionTracker.workLedgerEnabled"]; off(); }
 });
+
+// ── WL-002 · a repo whose name the session encoder rewrites ───────────────────────────────────
+//
+// `/home/aneesh/vs_code_extensions` is written to disk as `-home-aneesh-vs-code-extensions`: the
+// encoder folds `_` (and `.`) to `-` along with the separators. Matching the raw repo name found
+// NOTHING for every such repo, and nothing read as ZERO — the cheapest possible week, green, under
+// every alarm threshold. ReciEats and pleodo have hyphen-clean names, which is the only reason
+// this survived 149 mutants.
+
+/** A transcript dir written at an EXACT name, so the fixture can spell the ENCODED form while the
+ *  repo keeps its real one. `makeTranscripts` derives the name from the repo and so cannot. */
+function makeTranscriptsAt(dirName, perModel) {
+  const root = path.join(LOOM, "..", "projects-" + Math.random().toString(36).slice(2));
+  const dir = path.join(root, dirName);
+  fs.mkdirSync(dir, { recursive: true });
+  const out = [];
+  for (const [model, u] of Object.entries(perModel)) {
+    out.push(JSON.stringify({ type: "assistant", message: { model, usage: u } }));
+  }
+  fs.writeFileSync(path.join(dir, "session.jsonl"), out.join("\n"));
+  return root;
+}
+
+suite("WL-002 R1: an UNDERSCORE repo finds the hyphen-encoded directory the encoder actually wrote", () => {
+  // The exact shape of this bus: repo `vs_code_extensions`, directory `-home-…-vs-code-extensions`.
+  const root = makeTranscriptsAt("-home-aneesh-vs-code-extensions",
+                                 { "claude-opus-5": usage(0, 0, 4_000_000, 0) });
+  const dirs = wl.transcriptDirsFor("vs_code_extensions", root);
+  eq(dirs.length, 1, "the underscore name matches its hyphen-encoded directory");
+  const scan = wl.scanTranscripts("vs_code_extensions", 0, root);
+  ok(scan.total > 0, "and the tokens are NON-ZERO — this read 0 for every underscore repo");
+  eq(scan.total, 4_000_000, "every billed class, cache reads included");
+  eq(scan.dirs, 1, "one directory matched");
+});
+
+suite("WL-002 R1: a DOT in the repo name is encoded the same way", () => {
+  // Measured on this machine: `/home/aneesh/Containers/aneeshpanoli.com` is written
+  // `-home-aneesh-Containers-aneeshpanoli-com`, so `.` folds to `-` exactly as `_` does.
+  const root = makeTranscriptsAt("-home-aneesh-containers-aneeshpanoli-com",
+                                 { "claude-opus-5": usage(0, 0, 10, 0) });
+  eq(wl.transcriptDirsFor("aneeshpanoli.com", root).length, 1, "the dot folds to a hyphen too");
+});
+
+suite("WL-002 R1: canonicalizing does NOT relax the anchor — a sibling repo is still not swallowed", () => {
+  // The guard this replaces claimed to prevent exactly this and did not: `-pleodo-archive`
+  // CONTAINS `-pleodo-`, so the sibling matched. Canonicalize, THEN anchor.
+  const root = makeTranscriptsAt("-home-aneesh-containers-pleodo-archive",
+                                 { "claude-opus-5": usage(0, 0, 999, 0) });
+  eq(wl.transcriptDirsFor("pleodo", root).length, 0, "a SIBLING repo is not this repo's spend");
+  eq(wl.transcriptDirsFor("pleodo-archive", root).length, 1, "it is its own repo's, though");
+  eq(wl.scanTranscripts("pleodo", 0, root).total, 0, "and none of its tokens are billed to pleodo");
+});
+
+suite("WL-002 R1: the worktree suffix still matches, which is most of the spend", () => {
+  const root = makeTranscriptsAt("-home-aneesh-vs-code-extensions--claude-worktrees-developer1",
+                                 { "claude-opus-5": usage(0, 0, 77, 0) });
+  eq(wl.transcriptDirsFor("vs_code_extensions", root).length, 1,
+     "an encoded repo name keeps its worktree sessions");
+  eq(wl.scanTranscripts("vs_code_extensions", 0, root).total, 77, "counted, not dropped");
+});
+
+// ── WL-002 · unmeasured is not free ───────────────────────────────────────────────────────────
+//
+// Zero MATCHED DIRECTORIES and zero tokens in the window are different facts and must not render
+// alike. The first is "we cannot see this repo"; the second is "this repo was quiet". Presented
+// identically, the first prints $0.00/line — the most flattering number the panel can produce, for
+// the project it knows least about, and one no threshold can ever catch because zero is under all
+// of them.
+
+/** A repo git can answer for (so the line counts are real) whose transcripts cannot be found. */
+function unmeasurableRepo(name = "wl002_unseen") {
+  const dir = makeGitRepo(name, [
+    { msg: "seed", files: { "README.md": "x\n" }, daysAgo: 6 },
+    { msg: "build the thing", files: { "src/app/page.tsx": lines(400) } },
+  ]);
+  // An EMPTY projects root: nothing here can match, which is the unmeasured case exactly.
+  const root = path.join(LOOM, "..", "projects-empty-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(root, { recursive: true });
+  return { dir, root, name };
+}
+
+suite("WL-002 R2: no directory matched is UNMEASURED (null), not zero tokens at $0.00/line", () => {
+  const { dir, root, name } = unmeasurableRepo();
+  const w = wl.computeWorkLedger(dir, { productPaths: { [name]: ["src/app/**"] }, projectsRoot: root });
+  eq(w.transcriptDirs, 0, "nothing matched");
+  eq(w.tokensSpent, null, "tokens are UNMEASURED — null, not 0");
+  eq(w.costEquivalent, null, "and so is the cost");
+  eq(w.costPerProductLine, null, "and so is the ratio — NOT $0.00");
+  ok(w.netProductLines > 0, "while git's line count is real and stays real");
+  eq(w.transcriptsRoot, root, "the row can name the directory it looked in");
+});
+
+suite("WL-002 R2: the unmeasured $/line cell is NOT GREEN (and not red) — it has no value to band", () => {
+  const { dir, root, name } = unmeasurableRepo("wl002_band");
+  const w = wl.computeWorkLedger(dir, { productPaths: { [name]: ["src/app/**"] }, projectsRoot: root });
+  const cell = wl.figuresFor(w).find((f) => f.key === "costPerProductLine");
+  eq(cell.band, "unknown", "green here is the whole bug: the cheapest week, for a repo unseen");
+  eq(cell.value, "unmeasured", "one word, and not a dollar figure");
+  ok(!/\$0\.00/.test(cell.value), "never $0.00");
+  const tok = wl.figuresFor(w).find((f) => f.key === "tokensSpent");
+  eq(tok.value, "unmeasured", "the tokens cell says it too");
+  match(tok.detail, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        "and names where it looked");
+});
+
+suite("WL-002 R2: directories matched but the window is quiet — 0 is HONEST there", () => {
+  const { dir, name } = unmeasurableRepo("wl002_quiet");
+  // A real directory for this repo, whose only transcript is OLDER than the window.
+  const root = makeTranscriptsAt(`-home-user-${name.replace(/_/g, "-")}`,
+                                 { "claude-opus-5": usage(0, 0, 500, 0) });
+  const f = path.join(root, fs.readdirSync(root)[0], "session.jsonl");
+  const t = (Date.now() - 30 * 86400000) / 1000;
+  fs.utimesSync(f, t, t);
+  const w = wl.computeWorkLedger(dir, { productPaths: { [name]: ["src/app/**"] }, projectsRoot: root });
+  eq(w.transcriptDirs, 1, "the repo WAS found");
+  eq(w.tokensSpent, 0, "so zero is a measurement, not an absence");
+  ok(w.tokensSpent !== null, "and must not be nulled — that would call a quiet week unmeasurable");
+});
+
+suite("WL-002 R2: one word for the missing cost, in the row AND the nudge — never $? beside $0.00", () => {
+  const { dir, root, name } = unmeasurableRepo("wl002_word");
+  const w = wl.computeWorkLedger(dir, { productPaths: { [name]: ["src/app/**"] }, projectsRoot: root });
+  const line = wl.summaryLine(w);
+  match(line, /unmeasured/, "the one line says so");
+  ok(!/\$\?/.test(line), "never the literal $? the panel printed");
+  ok(!/\$0\.00/.test(line), "and never $0.00 for a repo it cannot see");
+  const alert = wl.ledgerAlert(w, null);
+  ok(alert !== null, "an unmeasured bus is a bus nobody is watching — it is worth saying once");
+  match(alert, /unmeasured/, "said in the same word as the row");
+  ok(!/\$0\.00/.test(alert), "the nudge must never report lines produced at $0.00/line");
+  ok(!/\$\?/.test(alert), "nor $? in the nudge while the row says something else");
+  eq(wl.ledgerAlert(w, wl.todayKey()), null, "and still only once a day");
+});
+
+suite("WL-002 R2: a MEASURED repo is unaffected — the figures still band and still alarm", () => {
+  const name = "wl002_seen";
+  const dir = makeGitRepo(name, [
+    { msg: "seed", files: { "README.md": "x\n" }, daysAgo: 6 },
+    { msg: "build", files: { "src/app/page.tsx": lines(100) } },
+  ]);
+  const root = makeTranscriptsAt(`-home-user-${name.replace(/_/g, "-")}`,
+                                 { "claude-fable-5-1": usage(0, 0, 400_000_000, 0) });
+  const w = wl.computeWorkLedger(dir, { productPaths: { [name]: ["src/app/**"] }, projectsRoot: root });
+  ok(w.tokensSpent > 0, "measured");
+  ok(w.costPerProductLine > 0, "and priced per line");
+  const cell = wl.figuresFor(w).find((f) => f.key === "costPerProductLine");
+  ok(cell.band === "bad" || cell.band === "good", "a measured ratio still bands");
+  ok(!/unmeasured/.test(wl.summaryLine(w)), "and says nothing about being unmeasured");
+});

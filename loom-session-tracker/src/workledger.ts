@@ -128,8 +128,13 @@ export interface WorkLedger {
   // much output did I get in terms of the product". Everything above is a SHARE of lines and does
   // not answer it; these are the ratio.
   /** Every token billed in the window, from the transcripts' own `usage` — cache reads INCLUDED.
-   *  Cache reads dominate by ~100×; a figure that omits them is wrong by two orders of magnitude. */
-  tokensSpent: number;
+   *  Cache reads dominate by ~100×; a figure that omits them is wrong by two orders of magnitude.
+   *
+   *  NULL WHEN NO TRANSCRIPT DIRECTORY MATCHED THE REPO AT ALL — unmeasured, not zero. The two
+   *  were one value until WL-002, and the panel therefore printed the CHEAPEST POSSIBLE WEEK
+   *  ($0.00/line, green, under every alarm threshold) for a repo it could not see. `0` is reserved
+   *  for the honest case: directories were found and nothing in them falls in the window. */
+  tokensSpent: number | null;
   tokensByModel: Record<string, ModelTokens>;
   /** LIST-PRICE EQUIVALENT, not a bill. The owner is on a subscription and does not pay this
    *  invoice — it is the resource figure. Every label that shows it says so. */
@@ -147,6 +152,21 @@ export interface WorkLedger {
   costPerProductLine: number | null;
   /** Transcript files read, and whether any were found at all. */
   transcriptFiles: number;
+  /** Project directories that matched the repo. `0` is the unmeasured case and is the ONLY thing
+   *  that distinguishes it from a genuinely quiet week. */
+  transcriptDirs: number;
+  /** Where we looked. Shown whenever `transcriptDirs` is 0, because "cannot see it" is only
+   *  actionable if the row names the directory it searched. */
+  transcriptsRoot: string;
+}
+
+/** One word, in the row AND in the nudge AND in the report. WL-002: the panel said `$?` in one
+ *  place and `$0.00` in another for the same missing fact. */
+export const UNMEASURED = "unmeasured";
+
+/** True when nothing was looked at — not when nothing was found. */
+export function tokensUnmeasured(w: WorkLedger): boolean {
+  return w.tokensSpent === null;
 }
 
 /** One model's four billed token classes, exactly as the transcripts name them. */
@@ -373,22 +393,36 @@ export interface TokenScan {
   byModel: Record<string, ModelTokens>;
   total: number;
   files: number;
+  /** How many `~/.claude/projects/*` directories matched the repo at all. ZERO IS NOT A TOKEN
+   *  COUNT — it means nothing was looked at, and `total: 0` beside it is unmeasured, not quiet. */
+  dirs: number;
 }
 
 /** Which `~/.claude/projects/*` directories belong to a repo. The directory name is the project
  *  path with separators flattened, so `-home-aneesh-Containers-ReciEats` and every
  *  `…-ReciEats--claude-worktrees-developer1` belong to ReciEats — the worktree sessions are the bulk
  *  of the spend and dropping them would undercount the answer by most of itself. */
+export function canonProject(s: string): string {
+  return String(s || "").toLowerCase().replace(/[_.]/g, "-");
+}
+
 export function transcriptDirsFor(repo: string, root = PROJECTS_ROOT): string[] {
   if (!repo) return [];
   let names: string[];
   try { names = fs.readdirSync(root); } catch { return []; }
-  const needle = repo.toLowerCase();
+  const needle = canonProject(repo);
+  if (!needle) return [];
   return names
-    // Anchored on a separator so `pleodo` cannot swallow a `pleodo-archive`, while the worktree
-    // suffix (`--claude-worktrees-…`) still matches.
-    .filter((n) => { const l = n.toLowerCase();
-                     return l.endsWith("-" + needle) || l.includes("-" + needle + "-"); })
+    // CANONICALIZE, THEN ANCHOR. Both sides go through the same encoding, then the separator guard
+    // applies to the canonical forms — the guard is not relaxed to buy the match.
+    .filter((n) => { const l = canonProject(n);
+                     // The repo IS the last segment, or a dot-directory of the repo follows it.
+                     // `--` is an encoded `/.`, which is what every worktree path
+                     // (`…/<repo>/.claude/worktrees/<role>`) becomes, and is the ONLY thing allowed
+                     // after the repo name. A bare `-` here would match a SIBLING repo:
+                     // `-…-pleodo-archive` contains `-pleodo-`, so the guard this replaces let
+                     // `pleodo` swallow `pleodo-archive` after all, which its comment denied.
+                     return l.endsWith("-" + needle) || l.includes("-" + needle + "--"); })
     .map((n) => path.join(root, n));
 }
 
@@ -407,7 +441,8 @@ export function transcriptDirsFor(repo: string, root = PROJECTS_ROOT): string[] 
 export function scanTranscripts(repo: string, sinceMs: number, root = PROJECTS_ROOT): TokenScan {
   const byModel: Record<string, ModelTokens> = {};
   let total = 0, files = 0;
-  for (const dir of transcriptDirsFor(repo, root)) {
+  const matched = transcriptDirsFor(repo, root);
+  for (const dir of matched) {
     let entries: string[];
     try { entries = fs.readdirSync(dir); } catch { continue; }
     for (const name of entries) {
@@ -436,7 +471,7 @@ export function scanTranscripts(repo: string, sinceMs: number, root = PROJECTS_R
     }
   }
   for (const t of Object.values(byModel)) total += t.input + t.output + t.cacheRead + t.cacheCreate;
-  return { byModel, total, files };
+  return { byModel, total, files, dirs: matched.length };
 }
 
 export interface CostResult { dollars: number; unpricedTokens: number; unpricedModels: string[]; }
@@ -534,23 +569,30 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
                       opts: ComputeOpts):
     Pick<WorkLedger, "tokensSpent" | "tokensByModel" | "costEquivalent" | "unpricedTokens" |
                      "unpricedModels" | "netProductLines" | "newUserFacingFiles" |
-                     "tokensPerProductLine" | "costPerProductLine" | "transcriptFiles"> {
+                     "tokensPerProductLine" | "costPerProductLine" | "transcriptFiles" |
+                     "transcriptDirs" | "transcriptsRoot"> {
   const scan = scanTranscripts(repo, sinceMs, opts.projectsRoot);
   const cost = costEquivalent(scan.byModel, opts.modelPrices || DEFAULT_MODEL_PRICES);
   const { net, added } = productDelta(repoPath, new Date(sinceMs).toISOString(), cls);
+  // UNMEASURED IS NOT FREE. No directory matched, so there is no token fact here — and a repo we
+  // cannot see must not be reported as the cheapest one on the panel. Every figure downstream of
+  // the scan goes null together; the line counts stay, because git answered those.
+  const unmeasured = scan.dirs === 0;
   // The ratio only exists when the denominator is a POSITIVE number of net lines. A week that
   // deleted more product than it added, or added nothing at all, has no cost-per-line — and
   // dividing by it would print either a negative dollar figure or Infinity, both of which read as
   // a bug rather than as the finding they actually are.
   const denom = net !== null && net > 0 ? net : null;
   return {
-    tokensSpent: scan.total, tokensByModel: scan.byModel,
-    costEquivalent: scan.total ? cost.dollars : null,
+    tokensSpent: unmeasured ? null : scan.total, tokensByModel: scan.byModel,
+    costEquivalent: unmeasured || !scan.total ? null : cost.dollars,
     unpricedTokens: cost.unpricedTokens, unpricedModels: cost.unpricedModels,
     netProductLines: net, newUserFacingFiles: added,
-    tokensPerProductLine: denom ? Math.round(scan.total / denom) : null,
-    costPerProductLine: denom ? Math.round((cost.dollars / denom) * 100) / 100 : null,
+    tokensPerProductLine: denom && !unmeasured ? Math.round(scan.total / denom) : null,
+    costPerProductLine: denom && !unmeasured ? Math.round((cost.dollars / denom) * 100) / 100 : null,
     transcriptFiles: scan.files,
+    transcriptDirs: scan.dirs,
+    transcriptsRoot: opts.projectsRoot || PROJECTS_ROOT,
   };
 }
 
@@ -564,7 +606,8 @@ function emptyLedger(repo: string, repoPath: string | null, windowDays: number, 
     tag: null, blocksSinceRelease: null, daysSinceRelease: null, topChurn: [],
     tokensSpent: 0, tokensByModel: {}, costEquivalent: null, unpricedTokens: 0, unpricedModels: [],
     netProductLines: null, newUserFacingFiles: null, tokensPerProductLine: null,
-    costPerProductLine: null, transcriptFiles: 0,
+    costPerProductLine: null, transcriptFiles: 0, transcriptDirs: 0,
+    transcriptsRoot: PROJECTS_ROOT,
   };
 }
 
@@ -806,14 +849,22 @@ export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): F
         : `Newest tag ${w.tag}.\n${win}` },
     // ── R6 · the ratio the owner actually asked for ────────────────────────────────────────────
     { key: "tokensSpent", label: "tokens",
-      value: w.tokensSpent ? fmtTokens(w.tokensSpent) : "unknown",
+      value: w.tokensSpent === null ? UNMEASURED : w.tokensSpent ? fmtTokens(w.tokensSpent) : "0",
       band: "unknown",
-      detail: `${w.tokensSpent.toLocaleString()} token(s) across ${w.transcriptFiles} transcript ` +
+      detail: w.tokensSpent === null
+        ? `NOT MEASURED — no project directory matches this repo, so no transcript was read. This ` +
+          `is NOT a token count of zero and nothing below it is a cost.\n` +
+          `Looked in ${w.transcriptsRoot} for a directory ending in the repo name (or a ` +
+          `\`--\`-suffixed worktree of it), compared with \`_\` and \`.\` folded to \`-\` the way ` +
+          `the session encoder writes them.\n` +
+          `AN UNMEASURED BUS IS A BUS NOBODY IS WATCHING.\n${win}`
+        : `${w.tokensSpent.toLocaleString()} token(s) across ${w.transcriptFiles} transcript ` +
               `file(s), CACHE READS INCLUDED (they run ~100× the other classes; omitting them ` +
               `understates the total by two orders of magnitude).\n` +
               byModelLine(w) + `\nWindow is by transcript mtime.\n${win}` },
     { key: "costEquivalent", label: "list-price equivalent",
-      value: w.costEquivalent === null ? "unknown" : fmtMoney(w.costEquivalent),
+      value: w.costEquivalent === null
+        ? (w.tokensSpent === null ? UNMEASURED : "unknown") : fmtMoney(w.costEquivalent),
       band: "unknown",
       detail: `LIST-PRICE EQUIVALENT — not a bill. This work runs on a subscription and nobody is ` +
               `invoiced this; it is the resource figure.\n` + byModelLine(w) +
@@ -834,15 +885,27 @@ export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): F
                  `separates building from revising.\n`}${win}${guess}` },
     { key: "costPerProductLine", label: "$ per product line",
       value: w.costPerProductLine === null
-        ? (w.netProductLines !== null && w.netProductLines <= 0
+        // UNMEASURED OUTRANKS every other reading of a null here: with no transcripts there is no
+        // ratio, whatever git says about the denominator.
+        ? (w.tokensSpent === null ? UNMEASURED
+           : w.netProductLines !== null && w.netProductLines <= 0
             ? "no net product lines this window" : "unknown")
         : `${fmtMoney(w.costPerProductLine)}/line`,
+      // NOT GREEN, AND NOT RED. An unmeasured repo has no value to band, and green is exactly the
+      // lie WL-002 fixes: $0.00/line is the most flattering number this panel can print and it was
+      // what it printed for a project it could not see at all.
       band: w.costPerProductLine === null
         // A window that produced NO net product line while spending tokens is not "unknown" — it is
         // the worst reading this panel can give, and it must not be the quietest one.
-        ? (w.tokensSpent > 0 && w.netProductLines !== null && w.netProductLines <= 0 ? "bad" : "unknown")
+        ? ((w.tokensSpent ?? 0) > 0 && w.netProductLines !== null && w.netProductLines <= 0
+            ? "bad" : "unknown")
         : (w.costPerProductLine > t.costPerLine ? "bad" : "good"),
-      detail: `${w.costEquivalent === null ? "?" : fmtMoney(w.costEquivalent)} of list-price ` +
+      detail: (w.tokensSpent === null
+        ? `UNMEASURED — no transcript directory matched this repo, so there is no cost and no ` +
+          `ratio. This row is neither cheap nor expensive; it is unknown, and it is the one ` +
+          `reading a threshold can never catch, because zero is under every threshold.\n`
+        : "") +
+              `${w.costEquivalent === null ? UNMEASURED : fmtMoney(w.costEquivalent)} of list-price ` +
               `equivalent ÷ ${w.netProductLines === null ? "?" : w.netProductLines} net product ` +
               `line(s)` +
               `${w.tokensPerProductLine === null ? "" :
@@ -885,11 +948,14 @@ export function summaryLine(w: WorkLedger): string {
   }
   const f = (v: number | null, s: string) => (v === null ? `${s} —` : `${s} ${v}%`);
   return [
-    ...(w.tokensSpent ? [
+    // An unmeasured repo SAYS SO on the one line it gets, rather than dropping the trio and
+    // reading like a repo that simply spent nothing.
+    ...(w.tokensSpent === null ? [`tokens ${UNMEASURED}`] : w.tokensSpent ? [
       fmtTokens(w.tokensSpent),
-      `${w.costEquivalent === null ? "$?" : fmtMoney(w.costEquivalent)} equiv`,
+      `${w.costEquivalent === null ? UNMEASURED : fmtMoney(w.costEquivalent)} equiv`,
       w.costPerProductLine === null
-        ? (w.netProductLines !== null && w.netProductLines <= 0 ? "NO net product lines" : "$?/line")
+        ? (w.netProductLines !== null && w.netProductLines <= 0 ? "NO net product lines"
+           : `${UNMEASURED}/line`)
         : `${fmtMoney(w.costPerProductLine)}/line`,
     ] : []),
     f(w.shipsToUser, "ships") + (w.heuristic ? " (est)" : ""),
@@ -911,8 +977,13 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
   // the two are not the same alarm and neither may be silent because the other is calm.
   const shipsBad = band(w.shipsToUser, t.shipsGood, t.shipsBad, true) === "bad";
   const costBad = w.costPerProductLine !== null && w.costPerProductLine > t.costPerLine;
-  const nothingShipped = w.tokensSpent > 0 && w.netProductLines !== null && w.netProductLines <= 0;
-  if (!shipsBad && !costBad && !nothingShipped) return null;
+  const nothingShipped = (w.tokensSpent ?? 0) > 0 &&
+                         w.netProductLines !== null && w.netProductLines <= 0;
+  // A THIRD TRIGGER. The cost alarm cannot fire on an unmeasured repo — zero is under every
+  // threshold — so silence here means the panel is quietest about the project it can see least.
+  // Once a day, it says so instead.
+  const unmeasured = w.tokensSpent === null;
+  if (!shipsBad && !costBad && !nothingShipped && !unmeasured) return null;
   const today = new Date(nowMs).toISOString().slice(0, 10);
   if (notifiedOn === today) return null;
   return `[loom-ledger] ${w.repo}: ` +
@@ -920,8 +991,11 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
          `${w.narrationShare === null ? "?" : w.narrationShare}% of commits only update the guide; ` +
          `${w.tag === null ? `no release in ${w.commits} blocks` :
             `${w.blocksSinceRelease ?? "?"} blocks since ${w.tag}`}. ` +
-         `${fmtTokens(w.tokensSpent)} tokens (${w.costEquivalent === null ? "$?" :
-            fmtMoney(w.costEquivalent)} list-price equivalent, not a bill) produced ` +
+         `${unmeasured ? `Tokens and cost are ${UNMEASURED} — no transcript directory under ` +
+              `${w.transcriptsRoot} matches this repo, so its spend is invisible here. This is NOT ` +
+              `a cheap week; it is an unwatched one. It` :
+            `${fmtTokens(w.tokensSpent as number)} tokens (${w.costEquivalent === null ? UNMEASURED :
+               fmtMoney(w.costEquivalent)} list-price equivalent, not a bill)`} produced ` +
          `${nothingShipped ? "NO net product lines" :
             `${w.netProductLines === null ? "?" : `${w.netProductLines >= 0 ? "+" : ""}${w.netProductLines}`} ` +
             `net product line(s)` +
@@ -1039,6 +1113,12 @@ export function renderReport(entries: Array<{ w: WorkLedger; rows: HandoffRow[] 
              `tokens per net product line** · ` +
              `**${w.costPerProductLine === null ? "—" : fmtMoney(w.costPerProductLine)} per net ` +
              `product line** (list-price equivalent).`, "");
+    }
+    if (w.tokensSpent === null) {
+      L.push(`> ⚠ **Tokens, cost and $/line are ${UNMEASURED} for this repo.** No directory under ` +
+             `\`${w.transcriptsRoot}\` matches \`${w.repo}\`, so no transcript was read. The ` +
+             `figures are absent, NOT zero — a repo this panel cannot see would otherwise report ` +
+             `the cheapest week it can print, under every alarm threshold.`, "");
     }
     if (w.topChurn.length) {
       L.push("### Most-touched files in the window", "", "| file | touches | net lines |", "|---|---|---|");

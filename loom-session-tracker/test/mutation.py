@@ -933,6 +933,42 @@ MUTATIONS = [
   "      if (isRig(l.file) || cls.isExcluded(l.file)) rigLines += n;",
   "      if (isRig(l.file)) rigLines += n;"),
 
+ # ── WL-002 · the repo the panel could not see ───────────────────────────────────────
+ # Nothing in the 149 mutants before these covered a repo name that was not already hyphen-clean,
+ # which is why this shipped: ReciEats and pleodo are both hyphen-clean, and the ONE bus with an
+ # underscore in its name was the one measuring itself.
+
+ # R1 — killed by "WL-002 R1: an UNDERSCORE repo finds the hyphen-encoded directory the encoder
+ # actually wrote" and by the dot test. MEASURED: /home/aneesh/vs_code_extensions is written
+ # -home-aneesh-vs-code-extensions, so the raw name matched NOTHING and read as zero tokens.
+ ("the repo name is matched RAW against an encoded directory — every underscore repo reads 0 tokens",
+  "src/workledger.ts",
+  "  const needle = canonProject(repo);",
+  "  const needle = repo.toLowerCase();"),
+
+ # R1 — killed by "WL-002 R1: canonicalizing does NOT relax the anchor — a sibling repo is still
+ # not swallowed". `-pleodo-archive` contains `-pleodo-`; only the `--` (an encoded `/.`) separates
+ # a worktree OF this repo from a DIFFERENT repo that merely starts with its name.
+ ("the anchor is relaxed to a single hyphen to buy the match — a SIBLING repo's spend is billed here",
+  "src/workledger.ts",
+  '                     return l.endsWith("-" + needle) || l.includes("-" + needle + "--"); })',
+  '                     return l.endsWith("-" + needle) || l.includes("-" + needle + "-"); })'),
+
+ # R2 — killed by "WL-002 R2: no directory matched is UNMEASURED (null), not zero tokens at
+ # $0.00/line". THE MORE IMPORTANT HALF: a repo with no matched directory reported the cheapest
+ # possible week, and no threshold can ever catch it, because zero is under all of them.
+ ("a repo whose transcripts were never found reports ZERO tokens instead of unmeasured",
+  "src/workledger.ts",
+  "    tokensSpent: unmeasured ? null : scan.total, tokensByModel: scan.byModel,",
+  "    tokensSpent: scan.total, tokensByModel: scan.byModel,"),
+
+ # R2 — killed by the same test and by "the unmeasured $/line cell is NOT GREEN". This is the
+ # $0.00/line the owner was shown: a real denominator from git over a cost that does not exist.
+ ("an unmeasured cost is divided by a real line count and printed as $0.00/line, GREEN",
+  "src/workledger.ts",
+  "    costPerProductLine: denom && !unmeasured ? Math.round((cost.dollars / denom) * 100) / 100 : null,",
+  "    costPerProductLine: denom ? Math.round((cost.dollars / denom) * 100) / 100 : null,"),
+
 ]
 
 def sh(cmd):
