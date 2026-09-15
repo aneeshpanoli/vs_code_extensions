@@ -578,3 +578,15 @@ suite("MS-001 R4: the fresh-context header tells every orchestrator both model r
   const added = m.slice(m.indexOf("MODELS:"));
   ok(added.split("\n").length <= 6 && added.length < 900, "brief: under ~6 lines (" + added.length + " chars)");
 });
+
+// ── WL-003 · the audit rides the one message a fresh orchestrator is guaranteed to read ────────
+suite("WL-003 R2: the briefing is APPENDED to the restore message, after the bind instructions", () => {
+  const brief = "\n\n[loom-ledger] demo, last 7 days:\n  · 4 block(s) since anything reached a user.";
+  const m = restoreMessage("/bus/memory.md", "demo", "po", brief);
+  ok(m.endsWith(brief), "appended, not prepended — the bind is what the session must act on first");
+  match(m, /4 block\(s\) since anything reached a user/, "and the audit is actually in the text");
+  const plain = restoreMessage("/bus/memory.md", "demo", "po");
+  eq(m.slice(0, plain.length), plain, "the existing bootstrap is unchanged ahead of it");
+  eq(restoreMessage("/bus/memory.md", "demo", "po", ""), plain,
+     "an empty briefing leaves the bootstrap byte-identical");
+});

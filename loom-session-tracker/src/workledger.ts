@@ -158,6 +158,19 @@ export interface WorkLedger {
   /** Where we looked. Shown whenever `transcriptDirs` is 0, because "cannot see it" is only
    *  actionable if the row names the directory it searched. */
   transcriptsRoot: string;
+
+  // ── WL-003 · the orchestrator's own blocks, not the project's score ──────────────────────────
+  /** Commits (newest first) since one last touched a product path. `0` means the newest commit
+   *  reached a user; `null` when there is no commit in the window to say. THE TRIGGER FIGURE: it
+   *  names what to do next, where a percentage only invites being optimised. */
+  blocksSinceProduct: number | null;
+  /** How many of the newest commits, in an unbroken run, changed ONLY docs and handoffs. */
+  narrationRun: number;
+  /** Where this repo's sessions spent their tool calls in the window. */
+  allocation: BlockAllocation;
+  /** R5: what reached a user, and which of the three sources says so. `tag` stays as CORROBORATION
+   *  only — it was the sole source, and it was wrong about this repo 42 deploys running. */
+  release: ReleaseSignal;
 }
 
 /** One word, in the row AND in the nudge AND in the report. WL-002: the panel said `$?` in one
@@ -546,6 +559,305 @@ export function productDelta(repoPath: string | null, since: string,
   return { net, added, base };
 }
 
+// ── WL-003-R5 · what "released" means when a project has never cut a tag ──────────────────────
+//
+// A RELEASE IS THE ACT THAT PUTS THE CODE IN FRONT OF ITS USER, AND TAGS ARE NOT IT. This extension
+// has no marketplace: `./deploy.sh` writing `~/.vscode-oss/extensions/<publisher>.<name>-<version>`
+// is the release. Measured 2026-09-15: 42 deployed versions, 56 manifest bumps in history, 0 tags —
+// and the panel reported "never released", which is the proxy-for-the-thing error this module
+// exists to refuse, made about the repo the module lives in.
+//
+// THE CREDIBILITY OF THE ONE LINE THAT MATTERS IS SET BY THE LEAST CREDIBLE LINE IN THE BLOCK. The
+// bus-mechanics count is the point of WL-003, and it sat next to a line that told its reader the
+// briefing was broken.
+
+export type ReleaseSource = "deployed" | "manifest" | "unmeasured";
+
+export interface ReleaseSignal {
+  /** WHICH OF THE THREE ANSWERED. Shown wherever the line is, so the claim carries its own basis. */
+  source: ReleaseSource;
+  manifestPath: string | null;
+  /** Which product the answer is about — set when the repo holds more than one manifest, so the
+   *  line cannot silently be about a different product than the reader assumes. */
+  product: string | null;
+  /** The manifest's current version. */
+  version: string | null;
+  /** The version actually in front of a user, when that can be seen. */
+  releasedVersion: string | null;
+  /** Commits since the release commit. `0` means the released version is what HEAD holds. */
+  blocksSince: number | null;
+  /** The manifest is tracked but its version has never changed — the ONLY case in which "no release
+   *  in N blocks" is a true statement. */
+  neverMoved?: boolean;
+  /** Where a deployed artifact was looked for — named when the answer is `unmeasured`. */
+  lookedIn: string[];
+}
+
+/** Standard per-user extension directories. The ROOTS are conventional; the artifact NAME is derived
+ *  from the manifest's own publisher/name, never hardcoded. */
+export const DEFAULT_DEPLOY_ROOTS = [
+  path.join(os.homedir(), ".vscode-oss", "extensions"),
+  path.join(os.homedir(), ".vscode", "extensions"),
+];
+
+interface Manifest { rel: string; name: string; publisher: string; version: string;
+                     /** How many manifests this repo holds. >1 means the line must name which. */
+                     siblings: number; }
+
+/**
+ * The project's manifest: the root `package.json`, else a single-level subdirectory one.
+ *
+ * A REPO CAN HOLD SEVERAL PRODUCTS AND THIS ONE DOES — `claude-auto-accept`, `claude-chat-reader`
+ * and `loom-session-tracker`. Taking the first by name picked `claude-auto-accept` and reported
+ * "111 blocks since 1.0.0 reached a user" for a repo whose active product had shipped that morning:
+ * the same confidently-wrong line R5 exists to remove, one layer down. The ACTIVE one is chosen
+ * instead — most recently touched by a commit — and the line says which product it is about.
+ */
+export function findManifest(repoPath: string, explicit?: string | null): Manifest | null {
+  const tryOne = (rel: string): Manifest | null => {
+    try {
+      const o = JSON.parse(fs.readFileSync(path.join(repoPath, rel), "utf8"));
+      if (o && typeof o.version === "string" && o.version && typeof o.name === "string" && o.name) {
+        return { rel, name: o.name, publisher: String(o.publisher || ""), version: o.version,
+                 siblings: 1 };
+      }
+    } catch { /* not one */ }
+    return null;
+  };
+  if (explicit) return tryOne(explicit);
+  const root = tryOne("package.json");
+  if (root) return root;
+  let entries: string[];
+  try { entries = fs.readdirSync(repoPath); } catch { return null; }
+  const found: Manifest[] = [];
+  for (const d of entries.sort()) {
+    if (d.startsWith(".") || d === "node_modules") continue;
+    const m = tryOne(path.join(d, "package.json"));
+    if (m) found.push(m);
+  }
+  if (!found.length) return null;
+  // MOST RECENTLY TOUCHED WINS — the product actually being worked on, not the first alphabetically.
+  let best = found[0], bestAt = -1;
+  for (const m of found) {
+    const t = Number(((git(repoPath, ["log", "-1", "--format=%ct", "--", m.rel]) || "").trim()));
+    if (Number.isFinite(t) && t > bestAt) { bestAt = t; best = m; }
+  }
+  return { ...best, siblings: found.length };
+}
+
+/** Versions of this extension currently deployed, newest-looking last. Matched on the manifest's own
+ *  `<publisher>.<name>-<version>` shape, with a bare `<name>-<version>` accepted too. */
+export function deployedVersions(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS): string[] {
+  const out = new Set<string>();
+  const pats = [m.publisher ? `${m.publisher}.${m.name}-` : null, `${m.name}-`]
+    .filter((x): x is string => !!x);
+  for (const root of roots) {
+    let names: string[];
+    try { names = fs.readdirSync(root); } catch { continue; }
+    for (const n of names) {
+      for (const p of pats) {
+        if (n.startsWith(p)) { const v = n.slice(p.length); if (/^\d/.test(v)) out.add(v); break; }
+      }
+    }
+  }
+  return Array.from(out);
+}
+
+/** The newest commit at which the manifest held `want` (or, with no `want`, the newest commit that
+ *  CHANGED the version). Bounded: a manifest with a long history is walked from the top and stops as
+ *  soon as it can answer, so this costs a few `git show`s, not one per commit. */
+function releaseCommit(repoPath: string, rel: string, want: string | null, cap = 80):
+    { sha: string; version: string } | null {
+  const log = git(repoPath, ["log", "--format=%H", "-n", String(cap), "--", rel]);
+  if (log === null) return null;
+  const shas = log.split("\n").map((x) => x.trim()).filter(Boolean);
+  let prev: string | null = null;
+  for (let i = 0; i < shas.length; i++) {
+    const body = git(repoPath, ["show", `${shas[i]}:${rel}`]);
+    let v: string | null = null;
+    try { const o = JSON.parse(body || "{}"); v = typeof o.version === "string" ? o.version : null; }
+    catch { /* unparseable at that commit */ }
+    if (!v) continue;
+    if (want !== null) { if (v === want) return { sha: shas[i], version: v }; continue; }
+    // No target: the newest commit whose version differs from the one before it IS the bump.
+    if (prev === null) { prev = v; continue; }
+    if (v !== prev) return { sha: shas[i - 1], version: prev };
+    prev = v;
+  }
+  return null;
+}
+
+/**
+ * The release signal, in the order the owner decided: a deployed artifact beats a manifest bump,
+ * and NEITHER BEING VISIBLE IS `unmeasured` — not "never released". A project whose releases cannot
+ * be seen is not a project that has never released, which is WL-002's rule applied to the figure
+ * that was wrong about this repo 42 times over.
+ */
+export function releaseSignal(repoPath: string | null, opts: {
+  manifestPath?: string | null; deployRoots?: string[];
+} = {}): ReleaseSignal {
+  const roots = opts.deployRoots || DEFAULT_DEPLOY_ROOTS;
+  const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,
+                                       version: null, releasedVersion: null, blocksSince: null,
+                                       lookedIn: roots });
+  if (!repoPath) return none();
+  const m = findManifest(repoPath, opts.manifestPath);
+  if (!m) return none();
+  const base = { manifestPath: m.rel, product: m.siblings > 1 ? m.name : null,
+                 version: m.version, lookedIn: roots };
+  const blocks = (sha: string): number | null => {
+    const n = git(repoPath, ["rev-list", "--count", `${sha}..HEAD`]);
+    const k = Number((n || "").trim());
+    return Number.isFinite(k) ? k : null;
+  };
+
+  // 1 · a deployed artifact whose version the manifest history knows.
+  const deployed = deployedVersions(m, roots);
+  if (deployed.length) {
+    // The CURRENT manifest version being deployed means HEAD is what the user has.
+    const want = deployed.includes(m.version) ? m.version : null;
+    const hit = want ? releaseCommit(repoPath, m.rel, want)
+                     : deployed.map((v) => releaseCommit(repoPath, m.rel, v))
+                         .filter((x): x is { sha: string; version: string } => !!x)
+                         .map((x) => ({ x, n: blocks(x.sha) }))
+                         .filter((y) => y.n !== null)
+                         .sort((a, b) => (a.n as number) - (b.n as number))[0]?.x || null;
+    if (hit) return { ...base, source: "deployed", releasedVersion: hit.version,
+                      blocksSince: blocks(hit.sha) };
+    // Deployed, but no commit in the walked history holds that version: still released, and the
+    // distance is what is unknown — reported as such rather than as 0.
+    return { ...base, source: "deployed", releasedVersion: deployed[0], blocksSince: null };
+  }
+
+  // 2 · no artifact, but the manifest version moved: released at that commit.
+  const bump = releaseCommit(repoPath, m.rel, null);
+  if (bump) return { ...base, source: "manifest", releasedVersion: bump.version,
+                     blocksSince: blocks(bump.sha) };
+
+  // 3 · the manifest is tracked but its version has NEVER MOVED. This is the one case where "no
+  // release in N blocks" is a TRUE statement, so it is said — with N counted from the commit that
+  // introduced the manifest, not from the window, since "never" is a claim about all of it.
+  const first = git(repoPath, ["log", "--format=%H", "--reverse", "--", m.rel]);
+  const firstSha = (first || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || null;
+  if (firstSha) {
+    return { ...base, source: "manifest", releasedVersion: null, blocksSince: blocks(firstSha),
+             neverMoved: true };
+  }
+  // 4 · a manifest on disk that git has never seen (untracked, or a checkout with no history for
+  // it). Nothing can be concluded, so nothing is: UNMEASURED, and emphatically not `0 blocks`,
+  // which would render "we cannot see it" as "shipped just now".
+  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };
+}
+
+// ── WL-003 · where the ORCHESTRATOR's own blocks went ─────────────────────────────────────────
+//
+// `shipsToUser`, `$/line` and `rigRatio` score the PROJECT. They do not tell the session deciding
+// what to do next how it spent its own turns, and that is the thing the add-on exists to change.
+//
+// The bus tree is NOT a git repository — measured 2026-09-15, `~/.claude/loom` has no `.git` of any
+// kind — so "bus mechanics from the loom tree's history" cannot be had, and mtimes cannot supply it
+// either: a `board.json` rewritten two hundred times carries ONE mtime, so the volume of bus work is
+// exactly the quantity mtimes destroy. The transcripts DO record every tool call with its input, so
+// that is what this counts. It is the same thing the owner counted by hand.
+
+/** A tool call is BUS MECHANICS when its input names the bus rather than the product: the loom tree
+ *  itself, the files the roles talk through, or the two scripts that drive tabs and composers. */
+const BUS_CALL = new RegExp([
+  "\\.claude/loom", "board\\.json", "open-requests", "orchestrator-model\\.json",
+  "inbox\\.md", "outbox\\.md", "status\\.json", "work-ledger\\.json",
+  "reach_po", "loom_cdp", "LOOMROLE",
+].join("|"));
+
+export function isBusMechanics(text: string): boolean {
+  return BUS_CALL.test(String(text || ""));
+}
+
+export type Bucket = "product" | "rig" | "narration" | "bus" | "other";
+
+/** Path-ish tokens in a tool call's input, repo-relativised. A Bash command is matched by the paths
+ *  it NAMES — coarse, and said so wherever the figure is shown. */
+function callPaths(input: any, repo: string): string[] {
+  const out: string[] = [];
+  const push = (v: any) => { if (typeof v === "string" && v) out.push(v); };
+  if (input && typeof input === "object") {
+    push(input.file_path); push(input.path); push(input.notebook_path);
+    for (const m of String(input.command || "").matchAll(/[\w./@-]*\.[A-Za-z]\w*/g)) out.push(m[0]);
+  }
+  const rel = new RegExp(`(?:^|/)${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`);
+  return out.map((f) => { const i = f.search(rel);
+                          return (i >= 0 ? f.slice(i).replace(rel, "") : f).replace(/^\.?\//, ""); });
+}
+
+/** ONE bucket per call, bus first. A call that touches the bus IS bus work however it is spelled. */
+export function bucketForCall(input: any, repo: string, cls: Classifier): Bucket {
+  if (isBusMechanics(JSON.stringify(input ?? {}))) return "bus";
+  for (const f of callPaths(input, repo)) {
+    if (cls.isProduct(f)) return "product";
+    if (isRig(f) || cls.isExcluded(f)) return "rig";
+    if (isDoc(f)) return "narration";
+  }
+  return "other";
+}
+
+export interface BlockAllocation {
+  calls: number;
+  product: number; rig: number; narration: number; bus: number; other: number;
+  /** Transcripts that contributed. */
+  sessions: number;
+  /** WL-002's rule: nothing found is UNMEASURED, never a tidy set of zeros. */
+  unmeasured: boolean;
+}
+
+const EMPTY_ALLOC = (unmeasured: boolean): BlockAllocation =>
+  ({ calls: 0, product: 0, rig: 0, narration: 0, bus: 0, other: 0, sessions: 0, unmeasured });
+
+/** Every tool call this repo's sessions made in the window, bucketed. */
+export function scanBlocks(repo: string, sinceMs: number, cls: Classifier,
+                           root = PROJECTS_ROOT,
+                           sessionIds?: string[] | null): BlockAllocation {
+  const dirs = transcriptDirsFor(repo, root);
+  if (!dirs.length) return EMPTY_ALLOC(true);
+  // SCOPED TO ONE SESSION when asked. "Where did the bus spend its turns" and "where did YOU spend
+  // yours" are different questions, and the orchestrator was handed the second one: a developer's
+  // tool calls are not the orchestrator's time and must not be reported to it as such.
+  const only = sessionIds && sessionIds.length
+    ? new Set(sessionIds.map((x) => String(x).toLowerCase())) : null;
+  const a = EMPTY_ALLOC(false);
+  for (const dir of dirs) {
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { continue; }
+    for (const name of entries) {
+      if (!name.endsWith(".jsonl")) continue;
+      if (only && !only.has(name.slice(0, -6).toLowerCase())) continue;
+      const file = path.join(dir, name);
+      try { if (fs.statSync(file).mtimeMs < sinceMs) continue; } catch { continue; }
+      let raw: string;
+      try { raw = fs.readFileSync(file, "utf8"); } catch { continue; }
+      let sawCall = false;
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        let o: any;
+        try { o = JSON.parse(line); } catch { continue; }
+        if (!o || o.type !== "assistant") continue;
+        const content = o.message && o.message.content;
+        if (!Array.isArray(content)) continue;
+        for (const b of content) {
+          if (!b || b.type !== "tool_use") continue;
+          sawCall = true;
+          a.calls++;
+          a[bucketForCall(b.input, repo, cls)]++;
+        }
+      }
+      if (sawCall) a.sessions++;
+    }
+  }
+  // A SESSION FILTER THAT MATCHED NOTHING IS UNMEASURED, not a tidy row of zeros — the same rule
+  // WL-002 fixed for tokens. An orchestrator whose own transcript was not found must be told that,
+  // not told it made zero bus calls, which reads as a perfect week.
+  if (only && !a.sessions) return EMPTY_ALLOC(true);
+  return a;
+}
+
 // ── compute ───────────────────────────────────────────────────────────────────────────────────
 
 export interface ComputeOpts {
@@ -561,6 +873,13 @@ export interface ComputeOpts {
   modelPrices?: Record<string, PriceRow>;
   /** Override ~/.claude/projects (tests). */
   projectsRoot?: string;
+  /** WL-003: scope `allocation` to these session id(s) — the orchestrator's OWN blocks. Omit for
+   *  the whole bus. */
+  sessionIds?: string[] | null;
+  /** R5: the manifest to read, and where a deployed artifact would be found. Both are settings so
+   *  no machine's layout is baked in; the artifact NAME always derives from the manifest. */
+  manifestPath?: string | null;
+  deployRoots?: string[];
 }
 
 /** R6's half of the compute, split out so the token figures can be tested without a git repo —
@@ -570,7 +889,7 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     Pick<WorkLedger, "tokensSpent" | "tokensByModel" | "costEquivalent" | "unpricedTokens" |
                      "unpricedModels" | "netProductLines" | "newUserFacingFiles" |
                      "tokensPerProductLine" | "costPerProductLine" | "transcriptFiles" |
-                     "transcriptDirs" | "transcriptsRoot"> {
+                     "transcriptDirs" | "transcriptsRoot" | "allocation" | "release"> {
   const scan = scanTranscripts(repo, sinceMs, opts.projectsRoot);
   const cost = costEquivalent(scan.byModel, opts.modelPrices || DEFAULT_MODEL_PRICES);
   const { net, added } = productDelta(repoPath, new Date(sinceMs).toISOString(), cls);
@@ -593,6 +912,10 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     transcriptFiles: scan.files,
     transcriptDirs: scan.dirs,
     transcriptsRoot: opts.projectsRoot || PROJECTS_ROOT,
+    // Same scan discipline as the tokens: computed on EVERY path, including the empty ones, so a
+    // repo with no commits still reports where its sessions' turns actually went.
+    allocation: scanBlocks(repo, sinceMs, cls, opts.projectsRoot, opts.sessionIds),
+    release: releaseSignal(repoPath, opts),
   };
 }
 
@@ -608,6 +931,9 @@ function emptyLedger(repo: string, repoPath: string | null, windowDays: number, 
     netProductLines: null, newUserFacingFiles: null, tokensPerProductLine: null,
     costPerProductLine: null, transcriptFiles: 0, transcriptDirs: 0,
     transcriptsRoot: PROJECTS_ROOT,
+    blocksSinceProduct: null, narrationRun: 0, allocation: EMPTY_ALLOC(true),
+    release: { source: "unmeasured", manifestPath: null, product: null, version: null,
+               releasedVersion: null, blocksSince: null, lookedIn: DEFAULT_DEPLOY_ROOTS },
   };
 }
 
@@ -690,6 +1016,19 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
     }
   }
 
+  // Newest-first, so the FIRST commit carrying a product line ends both runs. These are the two
+  // facts a dispatching orchestrator can act on: how long since anything reached a user, and how
+  // much of the recent past was only talk about the work.
+  let blocksSinceProduct: number | null = null;
+  for (let i = 0; i < commits.length; i++) {
+    if (commits[i].lines.some((l) => cls.isProduct(l.file))) { blocksSinceProduct = i; break; }
+  }
+  if (blocksSinceProduct === null && commits.length) blocksSinceProduct = commits.length;
+  let narrationRun = 0;
+  for (const c of commits) {
+    if (c.files.length && c.files.every(isDoc)) narrationRun++; else break;
+  }
+
   const topChurn = Array.from(churn.values())
     // Ties broken by |net| then by name, so the order is stable across runs — an unstable list
     // makes a diff of two reports unreadable.
@@ -709,6 +1048,7 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
     loopBackRate: pct1(loopBackHandoffs, led.length), handoffs: led.length, loopBackHandoffs,
     medianWallMinutes: medianPositive(led.map((l) => l.wallMinutes)),
     ...tagFigures(repoPath, nowMs),
+    blocksSinceProduct, narrationRun,
     topChurn,
     ...tok(),
   };
@@ -1002,6 +1342,72 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
             `${w.costPerProductLine === null ? "" : ` at ${fmtMoney(w.costPerProductLine)}/line`}`}` +
          `${w.newUserFacingFiles === null ? "" : `, ${w.newUserFacingFiles} new user-facing file(s)`}. ` +
          `Consider whether the next block ships something.`;
+}
+
+// ── WL-003 · the lines the ORCHESTRATOR is shown, where it decides ────────────────────────────
+//
+// R3, and it is a WORDING rule, not a reason to withhold anything: name what the week CONTAINED and
+// let the orchestrator draw the conclusion. Never hand it a score. "orchestrator efficiency: 8.6%
+// (below target)" is a number an agent can move without doing any of the work it stands for — the
+// WL-001 failure class, aimed this time at the one reader who can act on it. So: no percentage of
+// its own conduct, no target, no grade, no verdict word. Counts of things that happened.
+//
+// Kept to a handful of lines on purpose. An orchestrator handed a wall of figures skims it, and a
+// skimmed audit is the panel behind the window all over again.
+
+/** The audit, as trigger lines. Empty array when there is nothing worth interrupting for. */
+export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[] {
+  const L: string[] = [];
+  const a = w.allocation;
+  // PRECISE ABOUT ITS OWN WINDOW. A scoped count reads ONE transcript — the session id currently in
+  // board.json — so it covers this session, not the seven days in the header. A `/clear` starts a
+  // new transcript and the count legitimately restarts; saying "this session" keeps that honest
+  // instead of letting the header's window be read onto it.
+  const scope = ownBlocks ? "you made this session" : "across this bus";
+
+  if (w.blocksSinceProduct !== null && w.blocksSinceProduct > 0) {
+    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +
+           (w.narrationRun > 0
+             ? `; the last ${w.narrationRun} changed only docs and handoffs.` : "."));
+  }
+  if (!a.unmeasured && a.calls > 0) {
+    // COUNTS, NOT A SHARE. "40 of 74" is a fact about the week; "54%" is a dial.
+    L.push(`${a.bus} of the last ${a.calls} tool call(s) ${scope} went to bus mechanics — tabs, ` +
+           `board and status writes, handoffs — against ${a.product} that touched product.`);
+  } else if (a.unmeasured) {
+    L.push(`Where the blocks went is ${UNMEASURED}: no transcript directory matches this repo ` +
+           `under ${w.transcriptsRoot}.`);
+  }
+  // R5 · KEYED ON WHAT REACHED A USER, and it names which source answered, so the claim carries its
+  // own basis. A line the reader can see is false costs the whole block its credibility.
+  const r = w.release;
+  if (r.source === "unmeasured") {
+    L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed ` +
+           `artifact under ${r.lookedIn.join(" or ")}.`);
+  } else if (r.neverMoved) {
+    L.push(`No release in ${r.blocksSince ?? "?"} block(s): ${r.product ? `${r.product} ` : ""}` +
+           `${r.version} has never changed version.`);
+  } else if (r.blocksSince === null) {
+    L.push(`Last reached a user at ${r.releasedVersion ?? UNMEASURED}` +
+           `${r.releasedVersion ? ` (${r.source})` : ""}; how many blocks ago is ${UNMEASURED}.`);
+  } else if (r.blocksSince > 0) {
+    L.push(`${r.blocksSince} block(s) since ${r.product ? `${r.product} ` : ""}` +
+           `${r.releasedVersion} reached a user ` +
+           `(${r.source === "deployed" ? "deployed artifact" : "manifest bump"}).`);
+  }
+  if (w.handoffs > 0 && w.loopBackHandoffs > 0) {
+    L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) this window came back for another ` +
+           `pass.`);
+  }
+  if (!L.length) return [];
+  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days:`, ...L.map((x) => `  · ${x}`)];
+}
+
+/** The same thing as ONE block, ready to append to a message already being sent. Empty when the
+ *  briefing is empty, so a caller can append unconditionally without emitting a stray header. */
+export function briefingBlock(w: WorkLedger, ownBlocks = false): string {
+  const lines = orchestratorBriefing(w, ownBlocks);
+  return lines.length ? "\n\n" + lines.join("\n") : "";
 }
 
 export function todayKey(nowMs = Date.now()): string {

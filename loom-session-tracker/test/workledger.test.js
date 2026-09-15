@@ -889,3 +889,285 @@ suite("WL-002 R2: a MEASURED repo is unaffected — the figures still band and s
   ok(cell.band === "bad" || cell.band === "good", "a measured ratio still bands");
   ok(!/unmeasured/.test(wl.summaryLine(w)), "and says nothing about being unmeasured");
 });
+
+// ── WL-003 · where the ORCHESTRATOR's own blocks went ──────────────────────────────────────────
+//
+// The bus tree is not a git repository (measured: ~/.claude/loom has no .git), and mtimes cannot
+// supply the volume of bus work either — a board.json rewritten two hundred times carries ONE
+// mtime. The transcripts record every tool call with its input, so that is what this counts.
+
+/** A transcript of TOOL CALLS at an exact directory name, optionally under a given session id. */
+function makeCalls(dirName, calls, { session = "sess", root = null } = {}) {
+  const r = root || path.join(LOOM, "..", "projects-c-" + Math.random().toString(36).slice(2));
+  const dir = path.join(r, dirName);
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = calls.map((input) => JSON.stringify({
+    type: "assistant",
+    message: { model: "claude-opus-5", content: [{ type: "tool_use", name: "Bash", input }] },
+  }));
+  // A user line and a tool_use OUTSIDE an assistant message must both contribute nothing.
+  lines.push(JSON.stringify({ type: "user",
+    message: { content: [{ type: "tool_use", name: "Bash", input: { command: "rm -rf /" } }] } }));
+  fs.writeFileSync(path.join(dir, session + ".jsonl"), lines.join("\n"));
+  return r;
+}
+
+const CLS = () => wl.classifierFor("demo", { demo: ["src/app/**"] });
+
+suite("WL-003 R1: a tool call is bucketed, and BUS WINS however it is spelled", () => {
+  const cls = CLS();
+  const b = (input) => wl.bucketForCall(input, "demo", cls);
+  eq(b({ file_path: "/home/u/demo/src/app/page.tsx" }), "product", "a product path");
+  eq(b({ file_path: "/home/u/demo/src/app/page.test.tsx" }), "rig", "excluded from product is rig");
+  eq(b({ file_path: "/home/u/demo/docs/HANDOFF-X.md" }), "narration", "docs are narration");
+  eq(b({ command: "cat ~/.claude/loom/demo/board.json" }), "bus", "the loom tree is bus mechanics");
+  eq(b({ command: "python3 ~/.claude/loom/reach_po.py @demo/productowner.id 'hi'" }), "bus",
+     "ringing another role is bus mechanics");
+  // THE ONE THAT MATTERS: a call that touches both is bus work, not product work.
+  eq(b({ command: "cp src/app/page.tsx ~/.claude/loom/demo/outbox.md" }), "bus",
+     "a call that touches the bus IS bus work even when it also names a product path");
+  eq(b({ command: "npm run lint" }), "other", "no path, no bucket — not silently product");
+});
+
+suite("WL-003 R1: the buckets are counted across a window and PARTITION the calls", () => {
+  const root = makeCalls("-home-u-demo", [
+    { file_path: "/home/u/demo/src/app/a.tsx" },
+    { file_path: "/home/u/demo/src/app/b.tsx" },
+    { command: "cat ~/.claude/loom/demo/status.json" },
+    { command: "echo hi" },
+  ]);
+  const a = wl.scanBlocks("demo", 0, CLS(), root);
+  eq(a.calls, 4, "only ASSISTANT tool_use blocks count — the user-line call is not the agent's");
+  eq(a.product, 2, "two product calls");
+  eq(a.bus, 1, "one bus call");
+  eq(a.other, 1, "one unclassifiable");
+  eq(a.product + a.rig + a.narration + a.bus + a.other, a.calls, "the buckets partition the calls");
+  eq(a.unmeasured, false, "measured");
+  eq(a.sessions, 1, "one transcript contributed");
+});
+
+suite("WL-003 R1: scoped to ONE session — a developer's calls are not the orchestrator's time", () => {
+  const root = makeCalls("-home-u-demo", [{ command: "cat ~/.claude/loom/demo/board.json" }],
+                         { session: "orch" });
+  makeCalls("-home-u-demo", [{ file_path: "/home/u/demo/src/app/x.tsx" },
+                             { file_path: "/home/u/demo/src/app/y.tsx" }],
+            { session: "dev1", root });
+  eq(wl.scanBlocks("demo", 0, CLS(), root).calls, 3, "unscoped sees the whole bus");
+  const own = wl.scanBlocks("demo", 0, CLS(), root, ["orch"]);
+  eq(own.calls, 1, "scoped sees only the orchestrator's own turns");
+  eq(own.bus, 1, "and buckets them");
+});
+
+suite("WL-003 R1: a session filter that matches NOTHING is unmeasured, not a perfect week", () => {
+  const root = makeCalls("-home-u-demo", [{ command: "echo hi" }], { session: "orch" });
+  const a = wl.scanBlocks("demo", 0, CLS(), root, ["nobody-here"]);
+  eq(a.unmeasured, true, "WL-002's rule again: nothing found is not a tidy row of zeros");
+  eq(a.calls, 0, "and it reports no calls rather than claiming zero bus work");
+  eq(wl.scanBlocks("demo", 0, CLS(), path.join(root, "nope")).unmeasured, true,
+     "no directory at all is unmeasured too");
+});
+
+suite("WL-003 R1: blocks since anything reached a user, and the narration run", () => {
+  const dir = makeGitRepo("wl003", [
+    { msg: "ship it", files: { "src/app/p.tsx": lines(20) }, daysAgo: 3 },
+    { msg: "docs", files: { "docs/a.md": "a\n" }, daysAgo: 2 },
+    { msg: "more docs", files: { "README.md": "b\n" }, daysAgo: 1 },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl003: ["src/app/**"] } });
+  eq(w.blocksSinceProduct, 2, "two blocks have passed since one reached a user");
+  eq(w.narrationRun, 2, "and both of them changed only docs");
+});
+
+suite("WL-003 R3: the briefing names what HAPPENED — never a score the orchestrator could optimise", () => {
+  const dir = makeGitRepo("wl003b", [
+    { msg: "ship", files: { "src/app/p.tsx": lines(20) }, daysAgo: 3 },
+    { msg: "docs", files: { "docs/a.md": "a\n" }, daysAgo: 1 },
+  ]);
+  const root = makeCalls("-home-u-wl003b", [
+    { command: "cat ~/.claude/loom/wl003b/board.json" },
+    { command: "cat ~/.claude/loom/wl003b/status.json" },
+    { file_path: path.join(dir, "src/app/p.tsx") },
+  ], { session: "orch" });
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl003b: ["src/app/**"] },
+                                        projectsRoot: root, sessionIds: ["orch"] });
+  const text = wl.orchestratorBriefing(w, true).join("\n");
+  match(text, /1 block\(s\) since anything reached a user/, "it names the trigger");
+  match(text, /2 of the last 3 tool call\(s\) you made this session went to bus mechanics/,
+        "COUNTS, not a share: '2 of 3' is a fact about the week, '67%' is a dial");
+  // R3, asserted rather than trusted to review: no grade, no target, no verdict word.
+  ok(!/efficiency|below target|score|grade|rating|%/i.test(text),
+     "never a percentage of its own conduct, and never a word that reads as a mark");
+  ok(wl.briefingBlock(w, true).startsWith("\n\n"), "it appends to a message already being sent");
+});
+
+suite("WL-003 R2: an unmeasured allocation SAYS SO to the orchestrator instead of going quiet", () => {
+  const dir = makeGitRepo("wl003c", [
+    { msg: "ship", files: { "src/app/p.tsx": lines(20) }, daysAgo: 3 },
+    { msg: "docs", files: { "docs/a.md": "a\n" }, daysAgo: 1 },
+  ]);
+  const empty = path.join(LOOM, "..", "projects-none-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(empty, { recursive: true });
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl003c: ["src/app/**"] }, projectsRoot: empty });
+  const text = wl.orchestratorBriefing(w, true).join("\n");
+  match(text, /Where the blocks went is unmeasured/, "it reports the gap rather than an empty line");
+  match(text, /1 block\(s\) since anything reached a user/, "the git half still lands");
+});
+
+suite("WL-003 R2: nothing worth interrupting for produces NO message at all", () => {
+  // R5 CHANGED WHAT "RELEASED" MEANS HERE and this fixture had to follow it: it used to cut a TAG,
+  // which is no longer the signal, so the block gained a line and this test went red. The intent is
+  // unchanged — a week with nothing to say says nothing — but it is now expressed the way the
+  // product is actually shipped: the manifest's current version is the one in front of the user.
+  const dir = makeGitRepo("wl003d", [
+    { msg: "seed", files: { "package.json": pkg("wl003d", "1.0.0") }, daysAgo: 2 },
+    { msg: "ship", files: { "src/app/p.tsx": lines(20), "package.json": pkg("wl003d", "1.1.0") },
+      daysAgo: 1 },
+  ]);
+  const empty = path.join(LOOM, "..", "projects-q-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(empty, { recursive: true });
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl003d: ["src/app/**"] }, projectsRoot: empty,
+                                        sessionIds: ["nobody"],
+                                        deployRoots: [makeDeployRoot(["local.wl003d-1.1.0"])] });
+  eq(w.release.blocksSince, 0, "what HEAD holds is what the user has");
+  w.allocation = { calls: 0, product: 0, rig: 0, narration: 0, bus: 0, other: 0, sessions: 0,
+                   unmeasured: false };
+  eq(wl.orchestratorBriefing(w, true).length, 0, "the newest commit shipped and it IS deployed");
+  eq(wl.briefingBlock(w, true), "", "so the bootstrap is left exactly as it was");
+});
+
+// ── WL-003-R5 · a release is what reached a user, and tags are not it ──────────────────────────
+//
+// MEASURED 2026-09-15: this product has 42 deployed versions in ~/.vscode-oss/extensions and 56
+// manifest bumps in history, and ZERO tags. The panel read the tag count and reported "never
+// released" — the proxy-for-the-thing error the ledger exists to refuse, about the repo it lives in.
+
+/** A deploy root holding `<publisher>.<name>-<version>` directories. */
+function makeDeployRoot(names) {
+  const root = path.join(LOOM, "..", "deployed-" + Math.random().toString(36).slice(2));
+  for (const n of names) fs.mkdirSync(path.join(root, n), { recursive: true });
+  if (!names.length) fs.mkdirSync(root, { recursive: true });
+  return root;
+}
+const pkg = (name, version, publisher = "local") =>
+  JSON.stringify({ name, version, publisher }, null, 2) + "\n";
+
+suite("WL-003-R5: a DEPLOYED artifact is the release — with zero tags, as this repo has", () => {
+  const dir = makeGitRepo("r5dep", [
+    { msg: "v1", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+    { msg: "ship 1.1.0", files: { "package.json": pkg("ext", "1.1.0") }, daysAgo: 3 },
+    { msg: "work after", files: { "src/app/b.tsx": lines(5) }, daysAgo: 1 },
+  ]);
+  const roots = [makeDeployRoot(["local.ext-1.0.0", "local.ext-1.1.0"])];
+  const r = wl.releaseSignal(dir, { deployRoots: roots });
+  eq(r.source, "deployed", "the artifact in front of the user answers, not a tag");
+  eq(r.releasedVersion, "1.1.0", "the newest deployed version that history knows");
+  eq(r.blocksSince, 1, "one block since it shipped");
+  // There is no tag anywhere in this fixture, exactly like the real repo.
+  eq(wl.computeWorkLedger(dir, { productPaths: { r5dep: ["src/app/**"] } }).tag, null,
+     "and the tag signal still says nothing — it is corroboration, never the source");
+});
+
+suite("WL-003-R5: no artifact, but the manifest MOVED — released at that commit", () => {
+  const dir = makeGitRepo("r5man", [
+    { msg: "v1", files: { "package.json": pkg("m", "1.0.0") }, daysAgo: 5 },
+    { msg: "bump", files: { "package.json": pkg("m", "2.0.0") }, daysAgo: 3 },
+    { msg: "after", files: { "src/app/a.tsx": lines(3) }, daysAgo: 2 },
+    { msg: "after2", files: { "src/app/b.tsx": lines(3) }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "manifest", "the bump is the release when nothing is deployed");
+  eq(r.releasedVersion, "2.0.0", "at the version it moved to");
+  eq(r.blocksSince, 2, "two blocks since");
+});
+
+suite("WL-003-R5: no manifest and no deploy target is UNMEASURED — never '0 blocks', never 'never'", () => {
+  const dir = makeGitRepo("r5none", [{ msg: "code", files: { "src/app/a.tsx": lines(3) }, daysAgo: 1 }]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "unmeasured", "a project whose releases cannot be seen has not 'never released'");
+  eq(r.blocksSince, null, "and the distance is absent, NOT zero");
+  eq(r.releasedVersion, null, "with nothing claimed about what shipped");
+  const w = wl.computeWorkLedger(dir, { productPaths: { r5none: ["src/app/**"] } });
+  w.release = r;
+  const text = wl.orchestratorBriefing(w, true).join("\n");
+  match(text, /Whether anything has been released is unmeasured/, "and the line says so");
+  ok(!/0 block/.test(text), "0 blocks would read as 'shipped just now' — the opposite of the truth");
+  ok(!/no release in/i.test(text), "and it must not claim it has never released");
+});
+
+suite("WL-003-R5: the line NAMES which source answered, so the claim carries its own basis", () => {
+  const dir = makeGitRepo("r5src", [
+    { msg: "v1", files: { "package.json": pkg("s", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 4 },
+    { msg: "after", files: { "src/app/b.tsx": lines(5) }, daysAgo: 1 },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { r5src: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot(["local.s-1.0.0"])] });
+  const text = wl.orchestratorBriefing(w, true).join("\n");
+  match(text, /1 block\(s\) since 1\.0\.0 reached a user \(deployed artifact\)/,
+        "the number AND where it came from");
+});
+
+suite("WL-003-R5: a repo holding SEVERAL products answers for the ACTIVE one, and names it", () => {
+  // This repo holds three extensions. Taking the first by name reported '111 blocks since 1.0.0'
+  // for a repo whose active product had shipped that morning — the same wrong line, one layer down.
+  const dir = makeGitRepo("r5multi", [
+    { msg: "dormant", files: { "aaa-dormant/package.json": pkg("aaa-dormant", "1.0.0") }, daysAgo: 9 },
+    { msg: "active v1", files: { "zzz-active/package.json": pkg("zzz-active", "0.1.0") }, daysAgo: 4 },
+    { msg: "active v2", files: { "zzz-active/package.json": pkg("zzz-active", "0.2.0") }, daysAgo: 2 },
+    { msg: "after", files: { "src/app/a.tsx": lines(3) }, daysAgo: 1 },
+  ]);
+  const roots = [makeDeployRoot(["local.aaa-dormant-1.0.0", "local.zzz-active-0.2.0"])];
+  const r = wl.releaseSignal(dir, { deployRoots: roots });
+  eq(r.manifestPath, "zzz-active/package.json", "the most recently TOUCHED manifest, not the first");
+  eq(r.product, "zzz-active", "and the line can say which product it is about");
+  eq(r.releasedVersion, "0.2.0", "answering for the active product");
+  eq(r.blocksSince, 1, "one block since it shipped");
+});
+
+suite("WL-003-R5: an explicit manifest path overrides the search", () => {
+  const dir = makeGitRepo("r5exp", [
+    { msg: "a", files: { "aaa/package.json": pkg("aaa", "1.0.0") }, daysAgo: 3 },
+    { msg: "z", files: { "zzz/package.json": pkg("zzz", "9.9.9") }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { manifestPath: "aaa/package.json",
+                                    deployRoots: [makeDeployRoot(["local.aaa-1.0.0"])] });
+  eq(r.version, "1.0.0", "the setting wins over the recency heuristic");
+  eq(r.releasedVersion, "1.0.0", "and answers for that product");
+});
+
+suite("WL-003-R5: a manifest that has never moved says so — and that IS a true statement", () => {
+  // The one case where "no release in N blocks" is honest, per the owner's decision. It must not be
+  // folded into `unmeasured`, and `unmeasured` must not be folded into it.
+  const dir = makeGitRepo("r5never", [
+    { msg: "add manifest", files: { "package.json": pkg("nv", "1.0.0") }, daysAgo: 4 },
+    { msg: "work", files: { "src/app/a.tsx": lines(3) }, daysAgo: 2 },
+    { msg: "more work", files: { "src/app/b.tsx": lines(3) }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "manifest", "there is a manifest and git has seen it");
+  eq(r.neverMoved, true, "its version has never changed");
+  eq(r.blocksSince, 2, "counted from the commit that introduced it — 'never' spans all of it");
+  const w = wl.computeWorkLedger(dir, { productPaths: { r5never: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  // Scoped to the RELEASE line on purpose: this fixture has no transcripts, so the allocation line
+  // says `unmeasured` and rightly so. Asserting the whole block carried no `unmeasured` banned a
+  // true statement on a different line — the assertion over-reached, not the code.
+  const releaseLine = wl.orchestratorBriefing(w, true).find((l) => /release/i.test(l)) || "";
+  match(releaseLine, /No release in 2 block\(s\): 1\.0\.0 has never changed version/,
+        "said plainly, because here it is true");
+  ok(!/unmeasured/.test(releaseLine),
+     "and NOT hedged as unmeasured — that would be the other error, on the one case that is knowable");
+});
+
+suite("WL-003-R5: a manifest git has never seen is UNMEASURED, not 0 blocks", () => {
+  // THE PATH A SURVIVING MUTANT FOUND. Every earlier unmeasured assertion went through the
+  // no-manifest-at-all branch, so the untracked-manifest return was never reached by any test and a
+  // mutant that made it report `0 blocks` — shipped just now — passed the whole suite.
+  const dir = makeGitRepo("r5untracked", [{ msg: "code", files: { "src/app/a.tsx": lines(3) }, daysAgo: 1 }]);
+  fs.writeFileSync(path.join(dir, "package.json"), pkg("untracked", "3.0.0"));  // never committed
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.manifestPath, "package.json", "the manifest is read off disk");
+  eq(r.version, "3.0.0", "and its version is known");
+  eq(r.source, "unmeasured", "but git has never seen it, so nothing can be concluded");
+  eq(r.blocksSince, null, "absent, NOT zero");
+  ok(!r.neverMoved, "and not claimed to have never moved either — that is a different fact");
+});
