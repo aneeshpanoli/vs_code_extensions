@@ -11,12 +11,13 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 
 ## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.37.0)
 
-**Version 0.37.0** is WL-001 + R7 (the work ledger), merged to main as `68e7ef0` and DEPLOYED
-2026-09-15; main holds it. 0.36.0 was MS-001 and is behind you. The deployed copy on this machine is what `ls
+**Version 0.37.1** is WL-002 (the ledger could not see any repo whose name has an underscore, and
+reported that as $0.00/line — the cheapest possible week — rather than as unmeasured), merged to main
+as `316ef5c` and DEPLOYED 2026-09-15. 0.37.0 was WL-001 + R7, the work ledger itself (`68e7ef0`). The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-a version here as "that is what the editor is executing". **734 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **149/149 mutations caught** under the
+a version here as "that is what the editor is executing". **743 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **153/153 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 (Re-measure after each merge, and note that `./test.sh` does NOT compile — a stale `out/` after a
 merge reads as a red suite.) `./live.sh`
