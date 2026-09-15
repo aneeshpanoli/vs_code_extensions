@@ -1063,6 +1063,32 @@ MUTATIONS = [
   "             neverMoved: true };",
   "             neverMoved: false };"),
 
+ # ── WL-004 · the byte number the memory prompt must never name ──────────────────────
+ # MEASURED 2026-09-15: 'Keep it under 12,000 bytes' made the orchestrator delete the section
+ # recording the owner's stated product goal in order to fit, twice in one day. An imperative with
+ # a measurable target, handed to an agent, about the one artifact that survives its own erasure.
+
+ # R1 — killed by "WL-004 R3: no agent-facing memory prompt names a size, a cap, or the threshold".
+ ("the byte cap is restored to the save prompt — an agent is told to hit a number again",
+  "src/memory.ts",
+  '    `Write it TIGHT — every line has to earn its place, because the whole file is re-read at the ` +',
+  '    `Keep it under ${MAX_MEMORY_BYTES.toLocaleString()} bytes. Every line has to earn its place, because the whole file is re-read at the ` +'),
+
+ # R2 — killed by the same assertion on the clear note. An oversized memory is worth OBSERVING;
+ # 'trim it' is an order to cut content to reach a number, which is the defect, not the report.
+ ("the clear note goes back to ordering a trim against a named cap",
+  "src/memory.ts",
+  '                 ? ` — large; every fresh context re-reads it in full` : ""}) — clearing`,',
+  '                 ? ` — over the ${MAX_MEMORY_BYTES.toLocaleString()}-byte cap; every fresh context pays for it, trim it` : ""}) — clearing`,'),
+
+ # R1/R4 — killed by "WL-004 R1: the save prompt asks for CONCISION" and the R4 split test. The
+ # number is not the only way to order the trade: 'cut the least important section until it fits'
+ # is the same instruction without a digit in it, and it must not pass either.
+ ("the prompt orders sections cut until it fits — the same trade, spelled without a number",
+  "src/memory.ts",
+  '    `each cycle. If you find yourself about to delete something durable to make the working memory ` +',
+  '    `each cycle. If it will not fit, cut the least important section until it does. ` +'),
+
  # R5 — killed by "WL-003-R5: a repo holding SEVERAL products answers for the ACTIVE one". Taking
  # the first manifest by name reported "111 blocks since 1.0.0" for a repo whose active product had
  # shipped that morning: the same confidently-wrong line, one layer down.

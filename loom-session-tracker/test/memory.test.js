@@ -40,12 +40,17 @@ suite("memory: the default threshold is 30% (2026-09-13: context length is the c
   eq(decide(input({ panelPct: null, reading: reading(290_000) })).kind, "none", "29% does not");
 });
 
-suite("memory: the prompts carry the memory contract — size cap, UNSURE section, notes split, no watchers", () => {
+// WL-004 REVERSED TWO OF THIS SUITE'S ASSERTIONS ON PURPOSE. It used to require that the save prompt
+// "names the cap" and that the clear note "says to trim it"; both are now exactly what must NOT
+// appear, because that sentence made an orchestrator destroy the record of the owner's stated product
+// goal to fit inside it. The rest of the contract is unchanged and still asserted here; the two
+// reversed halves are asserted in the WL-004 suites, as absences.
+suite("memory: the prompts carry the memory contract — concision, UNSURE section, notes split, no watchers", () => {
   const { MAX_MEMORY_BYTES } = load("memory.js");
   const save = saveMessage("/bus/po/memory.md", 400000, 40);
   match(save, /section "UNSURE"/, "asks for what is believed but unverified");
-  match(save, new RegExp("under " + MAX_MEMORY_BYTES.toLocaleString() + " bytes"), "names the cap");
-  match(save, /\/bus\/po\/notes\.md — append rarely, never rewrite/, "durable lessons go to notes.md");
+  match(save, /every line has to earn its place/, "asks for concision as FORM, with no threshold");
+  match(save, /notes\.md, appended, never rewritten/, "durable lessons go to notes.md");
   const restore = restoreMessage("/bus/po/memory.md", "demo", "po");
   match(restore, /2\. \/bus\/po\/notes\.md — your durable notes, if the file exists/, "notes read once");
   match(restore, /each role's status\.json/, "status files, not just the board");
@@ -55,7 +60,8 @@ suite("memory: the prompts carry the memory contract — size cap, UNSURE sectio
   const fat = decide(input({ state: { phase: "saving", phaseAt: NOW - 60_000, memoryBaseline: 0, idleTicks: 5 },
                              memoryMtime: NOW - 1000, memorySize: MAX_MEMORY_BYTES + 1 }));
   eq(fat.kind, "clear", "a fat memory is still a banked memory");
-  match(fat.note, /over the 12,000-byte cap/, "and the note says to trim it");
+  match(fat.note, /large; every fresh context re-reads it in full/,
+        "and the note OBSERVES the cost instead of ordering a trim against a number");
 });
 
 suite("memory: under the threshold nothing happens", () => {
@@ -589,4 +595,83 @@ suite("WL-003 R2: the briefing is APPENDED to the restore message, after the bin
   eq(m.slice(0, plain.length), plain, "the existing bootstrap is unchanged ahead of it");
   eq(restoreMessage("/bus/memory.md", "demo", "po", ""), plain,
      "an empty briefing leaves the bootstrap byte-identical");
+});
+
+// ── WL-004 · no byte target in anything an agent reads ─────────────────────────────────────────
+//
+// MEASURED 2026-09-15: `Keep it under 12,000 bytes` made the orchestrator trim its own memory and
+// destroy the section recording the owner's stated product goal — the most important thing in the
+// file — twice in one day, then argue the cap was "advisory" to justify the file it had left. An
+// imperative with a measurable target, handed to an agent, about the one artifact that survives its
+// own erasure: an agent that cannot fit trades facts for bytes, and the facts are the point.
+//
+// THE RULE HAS TO OUTLIVE THE EDIT, so it is asserted rather than merely removed.
+
+/** Every string the memory cycle puts in front of an agent. */
+function agentFacingMemoryTexts() {
+  const { saveMessage, restoreMessage, CLEAR_MESSAGE, MAX_MEMORY_BYTES } = load("memory.js");
+  return {
+    save: saveMessage("/bus/memory.md", 120000, 78),
+    restore: restoreMessage("/bus/memory.md", "demo", "po"),
+    clear: String(CLEAR_MESSAGE || ""),
+    max: MAX_MEMORY_BYTES,
+  };
+}
+
+suite("WL-004 R3: no agent-facing memory prompt names a size, a cap, or the threshold", () => {
+  const t = agentFacingMemoryTexts();
+  for (const [which, text] of [["save", t.save], ["restore", t.restore], ["clear", t.clear]]) {
+    // A byte/KB count of the file.
+    ok(!/\b[\d][\d,_.]*\s*(?:bytes?|kb|kib|kilobytes?)\b/i.test(text),
+       `${which}: no byte or KB count`);
+    // Any phrasing of a ceiling.
+    ok(!/\b(?:keep it under|stay under|no more than|at most|cap|budget|limit it to|max(?:imum)? (?:of|size))\b/i
+         .test(text), `${which}: no ceiling phrasing`);
+    // The threshold itself, in every spelling it could reach a string by.
+    for (const spelling of [String(t.max), t.max.toLocaleString(), "12_000", "12k", "12 KB"]) {
+      ok(!text.includes(spelling), `${which}: does not contain ${spelling}`);
+    }
+    // A percentage OF THE FILE. Deliberately not "no percentage at all" — see the next suite.
+    ok(!/\d+\s*%[^.]{0,40}\b(?:file|memory|memory\.md|notes)\b/i.test(text),
+       `${which}: no percentage of file size`);
+  }
+});
+
+suite("WL-004 R3: the CONTEXT percentage is still allowed — the ban is on file-size targets", () => {
+  // Scoped on purpose. The context reading is the TRIGGER for the cycle and a fact about the
+  // session, not an instruction about how long a file may be. Banning every digit would have
+  // removed it, which is the over-reaching-assertion mistake, not the rule.
+  const t = agentFacingMemoryTexts();
+  match(t.save, /78% full/, "the context reading survives");
+  match(t.save, /120,000 tokens/, "and so does its token count");
+});
+
+suite("WL-004 R1: the save prompt asks for CONCISION, and says why, with no threshold", () => {
+  const t = agentFacingMemoryTexts();
+  match(t.save, /TIGHT|tight/, "it asks for tightness");
+  match(t.save, /earn its place/, "as a matter of form");
+  match(t.save, /re-read|read in full/i, "with the reason attached");
+  // The reason concision matters must be the NEXT SESSION'S COST, not a rule being obeyed.
+  match(t.save, /next session pays/i, "and the reason is the cost, not a rule");
+  match(t.save, /short is not the same as being incomplete/i,
+        "and it explicitly refuses the trade that caused the incident");
+});
+
+suite("WL-004 R4: both prompts say the split, and notes.md is read even when memory is short", () => {
+  const t = agentFacingMemoryTexts();
+  match(t.save, /notes\.md/, "the save prompt names the durable file");
+  match(t.save, /append/i, "append-only");
+  match(t.save, /belongs in \/bus\/notes\.md instead — move it, do not lose it/,
+        "and it redirects a deletion into the notes rather than out of existence");
+  match(t.restore, /READ THIS EVEN\s+IF \/bus\/memory\.md IS SHORT/,
+        "a fresh session reads the notes precisely when the working memory is short");
+});
+
+suite("WL-004: MIN_MEMORY_BYTES stays — it is evidence a file was written, not a target", () => {
+  const { MIN_MEMORY_BYTES } = load("memory.js");
+  eq(MIN_MEMORY_BYTES, 200, "the floor that stops a clear destroying an unwritten session");
+  const t = agentFacingMemoryTexts();
+  for (const text of [t.save, t.restore, t.clear]) {
+    ok(!text.includes("200 bytes"), "and it is never quoted at an agent either");
+  }
 });

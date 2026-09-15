@@ -501,8 +501,22 @@ length was the cost) this extension makes that deliberate instead:
 
 1. **Bank** — the orchestrator is asked to write its working memory to
    `~/.claude/loom/<project>/<role>/memory.md`: what it is doing, what each role owes it, decisions
-   already made, open questions, and an UNSURE section. Under 12 KB, because every fresh context
-   re-reads it; durable lessons go to `<role>/notes.md`, appended rarely and read once per restore.
+   already made, open questions, and an UNSURE section. It is asked to write **tight** — every line
+   earning its place, because the next session re-reads the whole file before it has done any work —
+   **and it is given no byte target, deliberately.** `Keep it under 12,000 bytes` used to be in that
+   prompt, and on 2026-09-15 it made an orchestrator trim its own memory and destroy the section
+   recording the owner's stated product goal, the most important thing in the file, twice in one day,
+   then argue the cap was "advisory" to justify what was left. An imperative with a measurable target,
+   handed to an agent, about the one artifact that survives its own erasure, buys bytes with facts.
+   A test fails if any agent-facing memory prompt names a byte count, a ceiling, or the threshold, in
+   any spelling — while the **context** percentage stays, since that is the trigger for the cycle and
+   not a rule about how long a file may be. What keeps the working memory small is the split, said
+   plainly in both prompts: durable lessons go to `<role>/notes.md`, appended and never rewritten,
+   and a deletion made for room is redirected there rather than out of existence. The restore prompt
+   reads the notes **even when the working memory is short**, which is when more of what matters is
+   in them. `MIN_MEMORY_BYTES` (200) stays — it is evidence a file was written before a `/clear`
+   destroys the session, not a target for prose; the large-memory threshold survives only as an
+   internal figure the panel may observe, never as a sentence an agent reads.
 2. **Clear** — `/clear`, but only once that file is verifiably on disk.
 3. **Restore** — a prompt into the fresh context: read the memory, the notes, the board and each
    role's status, then only the docs the memory names, and reconcile them so the memory stays true.
