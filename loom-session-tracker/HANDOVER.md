@@ -9,15 +9,21 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.37.0)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.38.0)
 
-**Version 0.37.1** is WL-002 (the ledger could not see any repo whose name has an underscore, and
-reported that as $0.00/line — the cheapest possible week — rather than as unmeasured), merged to main
-as `316ef5c` and DEPLOYED 2026-09-15. 0.37.0 was WL-001 + R7, the work ledger itself (`68e7ef0`). The deployed copy on this machine is what `ls
+**Version 0.38.0** is WL-003 + R5 (the work audit now reaches the ORCHESTRATOR — appended to the
+restore message a fresh context reads and again at dispatch — and its headline is a COUNT of tool
+calls scoped to the orchestrator's own session, never a percentage of its own conduct; R5 fixed the
+release line, which was keyed on git TAGS and so claimed "no release in 88 blocks" on the day this
+extension deployed twice — a release is what reached a user: deployed artifact, else manifest bump,
+else `unmeasured`), merged to main as `1f1277d` and DEPLOYED 2026-09-15. 0.37.1 was WL-002 (the
+ledger could not see any repo whose name has an underscore, and reported that as $0.00/line — the
+cheapest possible week — rather than as unmeasured, `316ef5c`); 0.37.0 was WL-001 + R7, the work
+ledger itself (`68e7ef0`). The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-a version here as "that is what the editor is executing". **743 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **153/153 mutations caught** under the
+a version here as "that is what the editor is executing". **760 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **165/165 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 (Re-measure after each merge, and note that `./test.sh` does NOT compile — a stale `out/` after a
 merge reads as a red suite.) `./live.sh`
