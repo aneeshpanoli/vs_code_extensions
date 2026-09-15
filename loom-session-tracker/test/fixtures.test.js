@@ -86,10 +86,36 @@ suite("FX-002: NO test file creates a temp dir outside the registry", () => {
   eq(offenders, [], "every fixture goes through fixtureDir() — these do not: " + offenders.join(", "));
 });
 
+suite("FX-002: THE RUNNER sweeps after a suite that FAILED — exercised through the real runner", () => {
+  // A SURVIVING MUTANT WROTE THIS TEST. `if (!fail) H.sweepFixtures()` passed the whole suite,
+  // because the "a fixture whose test THREW" test above calls sweepFixtures() itself — it proves the
+  // helper works and says nothing about whether the runner calls it on the failing path. Asserted is
+  // not reached, for the fifth time in this project. So this spawns the actual runner on a suite that
+  // actually throws, with TMPDIR pointed somewhere we can count, and asserts the directory is empty.
+  const { execFileSync } = require("child_process");
+  const sandbox = fixtureDir("loom-fxrun-");
+  const tmp = path.join(sandbox, "tmp");
+  fs.mkdirSync(tmp, { recursive: true });
+  let failed = false;
+  try {
+    execFileSync(process.execPath, [path.join(__dirname, "run-tests.js"), "--file", "_leak-fixture.js"],
+      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", HOME: sandbox,
+               LOOM_TEST_SANDBOX: sandbox, TMPDIR: tmp },
+        encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"] });
+  } catch { failed = true; }                          // the fixture suite throws on purpose
+  ok(failed, "the spawned suite really did fail — otherwise this proves nothing about the failing path");
+  const left = fs.readdirSync(tmp).filter((n) => n.startsWith("loom-"));
+  eq(left, [], "and the runner still reclaimed its fixture: " + left.join(", "));
+});
+
 suite("FX-002: the temp root is redirectable, which is what contains the mutation gate", () => {
   // The gate points TMPDIR inside its throwaway tree so the suite's fixtures land where its own
   // rmtree already reaches. That only works if os.tmpdir() honours TMPDIR — asserted, not assumed.
-  eq(os.tmpdir(), process.env.TMPDIR || os.tmpdir(), "os.tmpdir() follows TMPDIR when it is set");
+  // NOT `eq(os.tmpdir(), process.env.TMPDIR || os.tmpdir())` — that compares a value with itself and
+  // passes vacuously whenever TMPDIR is unset. Assert it only when it is set.
+  if (process.env.TMPDIR) {
+    eq(os.tmpdir(), process.env.TMPDIR, "os.tmpdir() follows TMPDIR when TMPDIR is set");
+  }
   if (process.env.LOOM_TEST_SANDBOX) {
     ok(os.tmpdir().startsWith(process.env.LOOM_TEST_SANDBOX),
        `the runner already redirects it into the per-file sandbox (${os.tmpdir()})`);

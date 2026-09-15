@@ -1087,12 +1087,14 @@ MUTATIONS = [
   '    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort, never fatal */ }',
   '    void dir;'),
 
- # Killed by "FX-002: the temp root is redirectable" under the gate's own env. The containment
- # layer: without it, a fixture site added later escapes the throwaway tree the way all 15 did.
- ("the gate stops pointing TMPDIR inside its throwaway tree — fixtures escape to the host /tmp",
-  "test/mutation.py",
-  '    env = mut_env_for(work)\n    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)',
-  '    env = MUT_ENV\n    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)'),
+ # REMOVED: a mutant on test/mutation.py can never be caught, and this one SURVIVED for that
+ # reason rather than because a test was missing. make_tree() copies test/ into the throwaway tree,
+ # but the DRIVER that runs there is the original: the copy's mutation.py is never executed, and
+ # nothing in the suite reads it (verified by grep). So mutating it changes a file no process opens.
+ # A mutant that cannot fail is indistinguishable from a defect that is not covered, which makes the
+ # whole score unauditable — the vacuous-baseline problem in a new place. The TMPDIR containment is
+ # instead guarded by the run-time self-check below (see CONTAINMENT SELF-CHECK) and by the
+ # run-tests.js sandbox mutant, which IS caught.
 
  # Killed by "FX-002: the temp root is redirectable" via LOOM_TEST_SANDBOX.
  ("the per-file sandbox stops redirecting TMPDIR — ./test.sh leaks for anyone who runs it",
@@ -1170,6 +1172,17 @@ TSC_REL = "node_modules/typescript/bin/tsc"
 # Belt and braces with the harness-level sweep on purpose: the sweep fixes ./test.sh for everyone,
 # and this makes any fixture site added later unable to escape the gate even if it registers nothing.
 MUT_ENV = dict(os.environ, ELECTRON_RUN_AS_NODE="1", LOOM_TEST_JOBS="1")
+
+
+def _host_fixture_count():
+    """`loom-*` entries in the HOST's temp root — the thing that overflowed."""
+    try:
+        return sum(1 for n in os.listdir(tempfile.gettempdir()) if n.startswith("loom-"))
+    except OSError:
+        return 0
+
+
+HOST_FIXTURES_AT_START = _host_fixture_count()
 
 
 def mut_env_for(work):
@@ -1327,6 +1340,19 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
     sc_status, sc_name, sc_detail = selfcheck.result()
 
 print()
+# ── FX-002 · CONTAINMENT SELF-CHECK ───────────────────────────────────────────────────────────────
+# A 173-mutant gate is 173 suite runs. Before FX-002 each one left every fixture it created on the
+# host, and 892,449 of them took the filesystem to 100% of its inode table with 74 GB free. TMPDIR is
+# now pointed inside each throwaway tree, but a mutant on THIS file can never be caught (the copy's
+# driver is never executed), so the containment is asserted here at run time instead: if the host's
+# temp root gained `loom-*` entries across the run, the fixtures escaped and the gate says so.
+host_leak = _host_fixture_count() - HOST_FIXTURES_AT_START
+if host_leak > 0:
+    print(f"CONTAINMENT FAILED: the run left {host_leak} loom-* director(ies) in {tempfile.gettempdir()} "
+          f"— TMPDIR is no longer inside the throwaway trees, and a full gate now costs the host inodes.")
+else:
+    print(f"containment: 0 loom-* left in {tempfile.gettempdir()} across {len(MUTATIONS)} suite run(s).")
+
 sc_ok = sc_status == "SURVIVED"
 if sc_ok:
     print("self-check: the no-op mutant SURVIVED — the harness can tell a real defect from a no-op.")

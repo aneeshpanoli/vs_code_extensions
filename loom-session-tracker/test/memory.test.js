@@ -5,6 +5,7 @@
 // file, or a session mid-turn must all mean "not yet" rather than "close enough".
 const { suite, ok, eq, match, load, makeRepo, busPath, readJson, home } = require("./harness");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const {
   decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
@@ -613,6 +614,14 @@ function agentFacingMemoryTexts() {
   return {
     save: saveMessage("/bus/memory.md", 120000, 78),
     restore: restoreMessage("/bus/memory.md", "demo", "po"),
+    // CLEAR_MESSAGE is the literal "/clear", so it can never carry a byte count. It stays in the loop
+    // as a REGRESSION GUARD — if anyone ever makes the clear step carry prose, it is covered the day
+    // they do — but it provides no coverage today and should not be read as if it did.
+    //
+    // AND NOTE WHAT IS DELIBERATELY NOT HERE: `step.note` still contains `(N bytes)`, correctly. It
+    // reaches setStatusBarMessage and debugLog only, never a composer, so it is panel telemetry about
+    // a file — not an instruction to an agent. `message` is the field that gets typed into a frame,
+    // and that is what this loop covers. Do not "fix" the note by removing its byte count.
     clear: String(CLEAR_MESSAGE || ""),
     max: MAX_MEMORY_BYTES,
   };
@@ -634,6 +643,17 @@ suite("WL-004 R3: no agent-facing memory prompt names a size, a cap, or the thre
     // A percentage OF THE FILE. Deliberately not "no percentage at all" — see the next suite.
     ok(!/\d+\s*%[^.]{0,40}\b(?:file|memory|memory\.md|notes)\b/i.test(text),
        `${which}: no percentage of file size`);
+    // AND THE ORDER ITSELF, WITH OR WITHOUT A DIGIT. A surviving mutant proved the number was never
+    // the only way to demand the trade: "If it will not fit, cut the least important section until it
+    // does" carries no threshold, passed every assertion above, and is the same instruction that
+    // destroyed the record of the owner's product goal. What is banned is telling an agent to REMOVE
+    // CONTENT to make the file smaller — the rule, not one spelling of it.
+    ok(!/\b(?:until it (?:does|fits)|make it fit|if it (?:will not|won't|does not|doesn't) fit)\b/i
+         .test(text), `${which}: no "make it fit" ordering`);
+    ok(!/\bcut\b[^.]{0,30}\b(?:section|sections|least important|content|entries|items)\b/i
+         .test(text), `${which}: no order to cut content`);
+    ok(!/\b(?:drop|delete|remove|trim)\b[^.]{0,25}\b(?:until|to fit|so it fits|to make room)\b/i
+         .test(text), `${which}: no removal conditioned on fitting`);
   }
 });
 
@@ -644,6 +664,14 @@ suite("WL-004 R3: the CONTEXT percentage is still allowed — the ban is on file
   const t = agentFacingMemoryTexts();
   match(t.save, /78% full/, "the context reading survives");
   match(t.save, /120,000 tokens/, "and so does its token count");
+  // `eq(os.tmpdir(), process.env.TMPDIR || os.tmpdir())` was a TAUTOLOGY whenever TMPDIR was unset —
+  // it compared a value with itself and reported a pass. Assert only when there is something to
+  // assert, and say plainly when there is not.
+  if (process.env.TMPDIR) {
+    eq(os.tmpdir(), process.env.TMPDIR, "os.tmpdir() follows TMPDIR when TMPDIR is set");
+  } else {
+    ok(true, "TMPDIR unset here — the redirect is asserted in fixtures.test.js under the runner");
+  }
 });
 
 suite("WL-004 R1: the save prompt asks for CONCISION, and says why, with no threshold", () => {
