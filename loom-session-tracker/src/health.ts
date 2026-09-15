@@ -130,12 +130,25 @@ const GATE_START_TOLERANCE_MS = 120_000;
  * a missed suppression costs one spurious stall warning, while a false "running" suppresses the
  * alarm for ever and withholds the wake this block exists to deliver.
  */
-export function gateStateOf(decl: GateDeclaration | null, now = Date.now()): GateState {
+export interface GateProbe {
+  cmdline(pid: number): string | null;
+  startedAt(pid: number): number | null;
+}
+
+/** The real /proc readers. Injectable ONLY so the unreadable-start case can be asserted: there is no
+ *  way to make /proc/<pid>/stat unreadable while /proc/<pid>/cmdline is readable from a test, and a
+ *  branch no test can reach is exactly where a wrong default hides — a mutant flipping that `exited`
+ *  to `running` survived the whole suite, which suppresses the alarm for ever. The seam exists to
+ *  make the default testable, not to vary it in production. */
+export const REAL_GATE_PROBE: GateProbe = { cmdline: cmdlineOf, startedAt: processStartMs };
+
+export function gateStateOf(decl: GateDeclaration | null, now = Date.now(),
+                            probe: GateProbe = REAL_GATE_PROBE): GateState {
   if (!decl) return "none";
-  const cmd = cmdlineOf(decl.pid);
+  const cmd = probe.cmdline(decl.pid);
   if (cmd === null) return "exited";                       // no /proc entry at all
   if (!/mutation\.py/.test(cmd)) return "exited";          // pid reused by something else
-  const started = processStartMs(decl.pid);
+  const started = probe.startedAt(decl.pid);
   if (started === null) return "exited";                   // cannot identify => do not claim running
   const declared = Date.parse(decl.launchedAt);
   if (Math.abs(started - declared) > GATE_START_TOLERANCE_MS) return "exited";

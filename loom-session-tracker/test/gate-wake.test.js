@@ -207,3 +207,21 @@ suite("WL-006: a declaration with NO handoff still behaves as before, bounded by
   w.markWoken("dev", ev[0].key);
   eq(new HealthWatcher(repo).scanGates(checkHealth(repo, {})).length, 0, "and only once — the key bounds it");
 });
+
+suite("WL-006: an UNREADABLE start time is not a running gate — the branch a mutant walked through", () => {
+  // A mutant flipping this `exited` to `running` survived the whole suite: no test could reach the
+  // branch, because /proc/<pid>/stat cannot be made unreadable while cmdline stays readable. A branch
+  // no test reaches is exactly where a wrong default hides, so identification takes an injectable
+  // probe — the seam exists to make the real default testable, not to vary it in production.
+  const { REAL_GATE_PROBE } = load("health.js");
+  const g = readGate({ gate: decl(4242, "/tmp/g.log", new Date().toISOString()) });
+  const rightKind = { cmdline: () => "python3 -u test/mutation.py", startedAt: () => Date.now() };
+  eq(gateStateOf(g, Date.now(), rightKind), "running", "the probe drives the real decision");
+  eq(gateStateOf(g, Date.now(), { ...rightKind, startedAt: () => null }), "exited",
+     "an unreadable start time must NOT be assumed to be a live gate: a false `running` suppresses " +
+     "the stall alarm for ever and withholds the wake, while a missed suppression costs one warning");
+  eq(gateStateOf(g, Date.now(), { cmdline: () => null, startedAt: () => Date.now() }), "exited",
+     "an unreadable cmdline is the same refusal");
+  ok(typeof REAL_GATE_PROBE.cmdline === "function" && typeof REAL_GATE_PROBE.startedAt === "function",
+     "and the production default is the real /proc reader pair");
+});

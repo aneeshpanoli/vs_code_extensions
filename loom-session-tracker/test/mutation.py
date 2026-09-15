@@ -1097,7 +1097,7 @@ MUTATIONS = [
  ("the wake is recorded on every SCAN, so a role whose composer was busy is marked woken untold",
   "src/health.ts",
   '      if (woken[g.role] === key) continue;                  // already told this role about THIS gate',
-  '      if (woken[g.role] === key) continue; woken[g.role] = key;'),
+  '      if (woken[g.role] === key) continue;\n      this.markWoken(g.role, key);'),
 
  ("the once-only record is keyed by ROLE, so the next gate is suppressed for ever by the last one",
   "src/health.ts",
