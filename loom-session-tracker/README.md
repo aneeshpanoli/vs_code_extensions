@@ -366,6 +366,38 @@ wrong, which is how the last one got ignored.
 | `net product lines` | a **two-point** diff over the product paths, plus files newly added |
 | `$ per product line` | the ratio the owner actually asked for |
 
+### The audit goes to the orchestrator, not to a panel
+
+The add-on exists to make the **orchestrator** see it is spending its blocks on bus mechanics rather
+than on building the product. A panel behind a window is not that: on 2026-09-15 this bus had 743
+tests, three merges and two deploys while 8.6% of the week's changed lines reached a user and nothing
+had been released in 86 blocks — and the orchestrator did not know it while deciding what to do next.
+
+So the figures are **delivered where a decision is made**, on messages already being sent:
+
+1. **On fresh context** — appended to the `[loom-context]` restore message, which a new orchestrator
+   is guaranteed to read, *after* the bind instructions it must act on first.
+2. **At dispatch** — armed when an `open-requests.json` is served, because choosing what the next
+   block does is the decision the audit informs. Never typed into a running turn: it waits for an
+   idle composer like every other injection here.
+
+**Scoped to the orchestrator's own session id**, read from `board.json`. A developer's tool calls are
+not the orchestrator's time, and reporting them as such would be the same category error the ledger
+exists to refuse — unscoped, this bus reports 2,129 calls where the orchestrator itself made 89.
+
+**The bus tree is not a git repository**, so bus mechanics cannot come from its history, and mtimes
+cannot supply it either: a `board.json` rewritten two hundred times carries one mtime, so the volume
+of bus work is exactly what an mtime destroys. It is counted instead from the transcripts, which
+record every tool call with its input — the same thing the owner counted by hand. A call naming both
+a bus path and a product path is **bus** work: whichever is tested first decides the number, and
+testing product first is how bus work disappears into the product bucket.
+
+**Counts, never a score.** The lines say what the week *contained* and let the orchestrator draw the
+conclusion — `38 of the last 89 tool call(s) you made went to bus mechanics`, not
+`orchestrator efficiency: 43% (below target)`. A percentage of its own conduct is a dial an agent can
+move without doing any of the work it stands for; that is the WL-001 failure class aimed at the one
+reader who can act on it, and a test asserts no `%` and no grading word ever reaches that text.
+
 Five things this deliberately refuses to do:
 
 - **A repo whose transcripts it cannot find is `unmeasured`, never `$0.00/line`.** The session

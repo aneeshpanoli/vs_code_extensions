@@ -43,7 +43,7 @@ import { DEFAULT_WINDOW_TOKENS, pct, transcriptFor } from "./context";
 import { planGc, applyGc, renderGc, gcSummary, fmtBytes, loadGcState, saveGcState, dueForAuto,
          finishAuto, refreshLease, liveSessionIdsOf, busLiveRoles, GcConfig, GcPlan, ApplyOptions,
          DEFAULT_GC_CONFIG } from "./gc";
-import { refreshWorkLedger, computeWorkLedger, readCache, writeCache, handoffRows, renderReport, ledgerAlert, todayKey,
+import { refreshWorkLedger, computeWorkLedger, readCache, writeCache, handoffRows, renderReport, ledgerAlert, todayKey, briefingBlock,
          DEFAULT_PRODUCT_PATHS, DEFAULT_EXCLUDE_PATHS, DEFAULT_THRESHOLDS,
          DEFAULT_WINDOW_DAYS, DEFAULT_INTERVAL_MIN,
          Thresholds, WorkLedger } from "./workledger";
@@ -390,6 +390,8 @@ export function activate(context: vscode.ExtensionContext) {
         panelPct: known ? known.contextPct : null,
         panelChars: known ? known.chars : null,
         memoryFile, memoryMtime: mem.mtime, memorySize: mem.size, now: Date.now(),
+        // WL-003 · the one message a fresh orchestrator is guaranteed to read.
+        briefing: briefingFor(repo, orch.role),
         // A manual run skips the threshold and the cooldown — and NOTHING else. Every safety rule
         // (verified save, not mid-turn, timeouts) still applies.
         cfg: force ? { ...base, enabled: true, thresholdPct: 0, cooldownMinutes: 0 } : base,
@@ -699,12 +701,49 @@ export function activate(context: vscode.ExtensionContext) {
           } catch (e: any) { plan.refused.push({ role, reason: `spawn failed: ${String(e && e.message || e)}` }); }
         }
         writeResult(repo, opened, plan.refused);
+        // The orchestrator just chose what the next block does. That is the decision the audit
+        // exists to inform, so arm it here rather than on a timer.
+        if (opened.length) briefPending = true;
         debugLog({ servedOpenRequest: { opened, refused: plan.refused } });
         if (opened.length) vscode.window.setStatusBarMessage(
           `Loom: ${repo} orchestrator asked for ${opened.length} session(s) — opened`, 10000);
         else if (plan.refused.length) vscode.window.setStatusBarMessage(
           `Loom: ${repo} open request refused (${plan.refused[0].reason})`, 10000);
       } finally { serving = false; }
+    };
+
+    // WL-003 · THE AUDIT, ADDRESSED TO THE SESSION THAT CAN ACT ON IT.
+    //
+    // Scoped to the orchestrator's OWN session id, because a developer's tool calls are not the
+    // orchestrator's time and reporting them as such would be the same category error WL-001 was
+    // written to refuse. The id lives in board.json, not in orchestrator.json (which carries only
+    // the role and the frame), so it is read from there — and when it cannot be read the briefing
+    // reports its allocation as UNMEASURED rather than as a clean zero.
+    const briefingFor = (r: string, role: string): string => {
+      try {
+        const b = JSON.parse(fs.readFileSync(
+          path.join(os.homedir(), ".claude", "loom", r, "board.json"), "utf8"));
+        const sid = b && b[role] && typeof b[role].session_id === "string" ? b[role].session_id : null;
+        const w = computeWorkLedger(r === repo ? repoRoot() : null,
+                                    { nowMs: Date.now(), sessionIds: sid ? [sid] : null });
+        return briefingBlock(w, true);
+      } catch { return ""; }
+    };
+
+    // Delivered at the SECOND decision point: the orchestrator has just been given the tab(s) it
+    // asked for, and what it does with the next block is open. Not typed into a running turn — the
+    // same discipline every other injection here is held to — so it waits for an idle composer.
+    let briefPending = false;
+    const deliverBriefing = () => {
+      if (!briefPending || !repo) return;
+      const orch = getOrchestrator(repo);
+      const frame = orch && orch.webviewId
+        ? tracker.ownerView().find((o) => o.webviewId === orch.webviewId && o.liveness === "live") : null;
+      if (!orch || !frame || frame.busy) return;       // mid-turn: try again next tick
+      const text = briefingFor(repo, orch.role);
+      briefPending = false;                            // spent either way; do not accumulate
+      if (!text.trim()) return;
+      injectTo({ role: orch.role, webviewId: orch.webviewId, repo }, text.trim(), "brief-debug.json");
     };
 
     const wakeOrchestrator = () => {
@@ -813,7 +852,7 @@ export function activate(context: vscode.ExtensionContext) {
         runHealth();
         runContextMemory();
         try { runWorkLedger(); } catch { /* a measurement must never break a tick */ }
-        try { computeMissing(); wakeOrchestrator(); } catch { /* a reopen offer must never break a tick */ }
+        try { computeMissing(); wakeOrchestrator(); deliverBriefing(); } catch { /* a reopen offer must never break a tick */ }
         serveOpenRequests().catch(() => { /* never break a tick */ });
         tree.refresh();
         if (r.ok) {

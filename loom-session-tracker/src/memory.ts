@@ -133,6 +133,9 @@ export interface ContextInput {
    *  orchestrator at all — requiring it there would strand every cycle at the last step. */
   frameSeen: boolean;
   memoryFile: string;
+  /** WL-003: the orchestrator's audit, already rendered, appended to the RESTORE message. Empty
+   *  string when there is nothing worth saying — the bootstrap then reads exactly as before. */
+  briefing?: string;
   memoryMtime: number | null;
   memorySize: number;
   now: number;
@@ -174,7 +177,8 @@ export function saveMessage(memoryFile: string, tokens: number | null, percent: 
 export const CLEAR_MESSAGE = "/clear";
 
 /** Injected into the FRESH context. Also the "update the memory from the docs" half of the cycle. */
-export function restoreMessage(memoryFile: string, repo: string, role: string): string {
+export function restoreMessage(memoryFile: string, repo: string, role: string,
+                               briefing = ""): string {
   const notes = memoryFile.replace(/memory\.md$/, "notes.md");
   return `[loom-context] Fresh context — you are ${role}, the orchestrator of ${repo}. ` +
     `Start by reading, in this order:\n` +
@@ -199,7 +203,12 @@ export function restoreMessage(memoryFile: string, repo: string, role: string): 
     `~/.claude/loom/${repo}/orchestrator-model.json {"model":"<id>","reason":"<one line>","at":"<iso>"} ` +
     `(§20): claude-sonnet-5 for doc banking and status reconciliation, claude-opus-5 for ordinary review ` +
     `and dispatch, claude-fable-5-1[1m] for architecture and adversarial judgement — and rewrite it when ` +
-    `the task changes; the tracker switches you within a tick, both directions.`;
+    `the task changes; the tracker switches you within a tick, both directions.` +
+    // WL-003 · THIS MESSAGE IS ALREADY READ, so the audit rides free. A fresh orchestrator is
+    // deciding what the next block does with nothing but its own memory file to go on, which is
+    // precisely when it cannot see that the last four blocks reached no user. Appended, not
+    // prepended: the bind instructions are what the session must act on first.
+    briefing;
 }
 
 // ── the decision ────────────────────────────────────────────────────────────────────────────
@@ -327,7 +336,7 @@ export function decide(input: ContextInput): Step {
     if (fresh || emptied) {
       return {
         kind: "restore",
-        message: restoreMessage(input.memoryFile, input.repo, input.role),
+        message: restoreMessage(input.memoryFile, input.repo, input.role, input.briefing || ""),
         note: `cleared (${fresh ? "new session id" : "panel emptied"}) — ` +
           `restoring ${input.role} from ${path.basename(input.memoryFile)}`,
         next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,

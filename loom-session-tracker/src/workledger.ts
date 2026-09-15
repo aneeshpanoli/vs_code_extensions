@@ -158,6 +158,16 @@ export interface WorkLedger {
   /** Where we looked. Shown whenever `transcriptDirs` is 0, because "cannot see it" is only
    *  actionable if the row names the directory it searched. */
   transcriptsRoot: string;
+
+  // ── WL-003 · the orchestrator's own blocks, not the project's score ──────────────────────────
+  /** Commits (newest first) since one last touched a product path. `0` means the newest commit
+   *  reached a user; `null` when there is no commit in the window to say. THE TRIGGER FIGURE: it
+   *  names what to do next, where a percentage only invites being optimised. */
+  blocksSinceProduct: number | null;
+  /** How many of the newest commits, in an unbroken run, changed ONLY docs and handoffs. */
+  narrationRun: number;
+  /** Where this repo's sessions spent their tool calls in the window. */
+  allocation: BlockAllocation;
 }
 
 /** One word, in the row AND in the nudge AND in the report. WL-002: the panel said `$?` in one
@@ -546,6 +556,115 @@ export function productDelta(repoPath: string | null, since: string,
   return { net, added, base };
 }
 
+// ── WL-003 · where the ORCHESTRATOR's own blocks went ─────────────────────────────────────────
+//
+// `shipsToUser`, `$/line` and `rigRatio` score the PROJECT. They do not tell the session deciding
+// what to do next how it spent its own turns, and that is the thing the add-on exists to change.
+//
+// The bus tree is NOT a git repository — measured 2026-09-15, `~/.claude/loom` has no `.git` of any
+// kind — so "bus mechanics from the loom tree's history" cannot be had, and mtimes cannot supply it
+// either: a `board.json` rewritten two hundred times carries ONE mtime, so the volume of bus work is
+// exactly the quantity mtimes destroy. The transcripts DO record every tool call with its input, so
+// that is what this counts. It is the same thing the owner counted by hand.
+
+/** A tool call is BUS MECHANICS when its input names the bus rather than the product: the loom tree
+ *  itself, the files the roles talk through, or the two scripts that drive tabs and composers. */
+const BUS_CALL = new RegExp([
+  "\\.claude/loom", "board\\.json", "open-requests", "orchestrator-model\\.json",
+  "inbox\\.md", "outbox\\.md", "status\\.json", "work-ledger\\.json",
+  "reach_po", "loom_cdp", "LOOMROLE",
+].join("|"));
+
+export function isBusMechanics(text: string): boolean {
+  return BUS_CALL.test(String(text || ""));
+}
+
+export type Bucket = "product" | "rig" | "narration" | "bus" | "other";
+
+/** Path-ish tokens in a tool call's input, repo-relativised. A Bash command is matched by the paths
+ *  it NAMES — coarse, and said so wherever the figure is shown. */
+function callPaths(input: any, repo: string): string[] {
+  const out: string[] = [];
+  const push = (v: any) => { if (typeof v === "string" && v) out.push(v); };
+  if (input && typeof input === "object") {
+    push(input.file_path); push(input.path); push(input.notebook_path);
+    for (const m of String(input.command || "").matchAll(/[\w./@-]*\.[A-Za-z]\w*/g)) out.push(m[0]);
+  }
+  const rel = new RegExp(`(?:^|/)${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`);
+  return out.map((f) => { const i = f.search(rel);
+                          return (i >= 0 ? f.slice(i).replace(rel, "") : f).replace(/^\.?\//, ""); });
+}
+
+/** ONE bucket per call, bus first. A call that touches the bus IS bus work however it is spelled. */
+export function bucketForCall(input: any, repo: string, cls: Classifier): Bucket {
+  if (isBusMechanics(JSON.stringify(input ?? {}))) return "bus";
+  for (const f of callPaths(input, repo)) {
+    if (cls.isProduct(f)) return "product";
+    if (isRig(f) || cls.isExcluded(f)) return "rig";
+    if (isDoc(f)) return "narration";
+  }
+  return "other";
+}
+
+export interface BlockAllocation {
+  calls: number;
+  product: number; rig: number; narration: number; bus: number; other: number;
+  /** Transcripts that contributed. */
+  sessions: number;
+  /** WL-002's rule: nothing found is UNMEASURED, never a tidy set of zeros. */
+  unmeasured: boolean;
+}
+
+const EMPTY_ALLOC = (unmeasured: boolean): BlockAllocation =>
+  ({ calls: 0, product: 0, rig: 0, narration: 0, bus: 0, other: 0, sessions: 0, unmeasured });
+
+/** Every tool call this repo's sessions made in the window, bucketed. */
+export function scanBlocks(repo: string, sinceMs: number, cls: Classifier,
+                           root = PROJECTS_ROOT,
+                           sessionIds?: string[] | null): BlockAllocation {
+  const dirs = transcriptDirsFor(repo, root);
+  if (!dirs.length) return EMPTY_ALLOC(true);
+  // SCOPED TO ONE SESSION when asked. "Where did the bus spend its turns" and "where did YOU spend
+  // yours" are different questions, and the orchestrator was handed the second one: a developer's
+  // tool calls are not the orchestrator's time and must not be reported to it as such.
+  const only = sessionIds && sessionIds.length
+    ? new Set(sessionIds.map((x) => String(x).toLowerCase())) : null;
+  const a = EMPTY_ALLOC(false);
+  for (const dir of dirs) {
+    let entries: string[];
+    try { entries = fs.readdirSync(dir); } catch { continue; }
+    for (const name of entries) {
+      if (!name.endsWith(".jsonl")) continue;
+      if (only && !only.has(name.slice(0, -6).toLowerCase())) continue;
+      const file = path.join(dir, name);
+      try { if (fs.statSync(file).mtimeMs < sinceMs) continue; } catch { continue; }
+      let raw: string;
+      try { raw = fs.readFileSync(file, "utf8"); } catch { continue; }
+      let sawCall = false;
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        let o: any;
+        try { o = JSON.parse(line); } catch { continue; }
+        if (!o || o.type !== "assistant") continue;
+        const content = o.message && o.message.content;
+        if (!Array.isArray(content)) continue;
+        for (const b of content) {
+          if (!b || b.type !== "tool_use") continue;
+          sawCall = true;
+          a.calls++;
+          a[bucketForCall(b.input, repo, cls)]++;
+        }
+      }
+      if (sawCall) a.sessions++;
+    }
+  }
+  // A SESSION FILTER THAT MATCHED NOTHING IS UNMEASURED, not a tidy row of zeros — the same rule
+  // WL-002 fixed for tokens. An orchestrator whose own transcript was not found must be told that,
+  // not told it made zero bus calls, which reads as a perfect week.
+  if (only && !a.sessions) return EMPTY_ALLOC(true);
+  return a;
+}
+
 // ── compute ───────────────────────────────────────────────────────────────────────────────────
 
 export interface ComputeOpts {
@@ -561,6 +680,9 @@ export interface ComputeOpts {
   modelPrices?: Record<string, PriceRow>;
   /** Override ~/.claude/projects (tests). */
   projectsRoot?: string;
+  /** WL-003: scope `allocation` to these session id(s) — the orchestrator's OWN blocks. Omit for
+   *  the whole bus. */
+  sessionIds?: string[] | null;
 }
 
 /** R6's half of the compute, split out so the token figures can be tested without a git repo —
@@ -570,7 +692,7 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     Pick<WorkLedger, "tokensSpent" | "tokensByModel" | "costEquivalent" | "unpricedTokens" |
                      "unpricedModels" | "netProductLines" | "newUserFacingFiles" |
                      "tokensPerProductLine" | "costPerProductLine" | "transcriptFiles" |
-                     "transcriptDirs" | "transcriptsRoot"> {
+                     "transcriptDirs" | "transcriptsRoot" | "allocation"> {
   const scan = scanTranscripts(repo, sinceMs, opts.projectsRoot);
   const cost = costEquivalent(scan.byModel, opts.modelPrices || DEFAULT_MODEL_PRICES);
   const { net, added } = productDelta(repoPath, new Date(sinceMs).toISOString(), cls);
@@ -593,6 +715,9 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     transcriptFiles: scan.files,
     transcriptDirs: scan.dirs,
     transcriptsRoot: opts.projectsRoot || PROJECTS_ROOT,
+    // Same scan discipline as the tokens: computed on EVERY path, including the empty ones, so a
+    // repo with no commits still reports where its sessions' turns actually went.
+    allocation: scanBlocks(repo, sinceMs, cls, opts.projectsRoot, opts.sessionIds),
   };
 }
 
@@ -608,6 +733,7 @@ function emptyLedger(repo: string, repoPath: string | null, windowDays: number, 
     netProductLines: null, newUserFacingFiles: null, tokensPerProductLine: null,
     costPerProductLine: null, transcriptFiles: 0, transcriptDirs: 0,
     transcriptsRoot: PROJECTS_ROOT,
+    blocksSinceProduct: null, narrationRun: 0, allocation: EMPTY_ALLOC(true),
   };
 }
 
@@ -690,6 +816,19 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
     }
   }
 
+  // Newest-first, so the FIRST commit carrying a product line ends both runs. These are the two
+  // facts a dispatching orchestrator can act on: how long since anything reached a user, and how
+  // much of the recent past was only talk about the work.
+  let blocksSinceProduct: number | null = null;
+  for (let i = 0; i < commits.length; i++) {
+    if (commits[i].lines.some((l) => cls.isProduct(l.file))) { blocksSinceProduct = i; break; }
+  }
+  if (blocksSinceProduct === null && commits.length) blocksSinceProduct = commits.length;
+  let narrationRun = 0;
+  for (const c of commits) {
+    if (c.files.length && c.files.every(isDoc)) narrationRun++; else break;
+  }
+
   const topChurn = Array.from(churn.values())
     // Ties broken by |net| then by name, so the order is stable across runs — an unstable list
     // makes a diff of two reports unreadable.
@@ -709,6 +848,7 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
     loopBackRate: pct1(loopBackHandoffs, led.length), handoffs: led.length, loopBackHandoffs,
     medianWallMinutes: medianPositive(led.map((l) => l.wallMinutes)),
     ...tagFigures(repoPath, nowMs),
+    blocksSinceProduct, narrationRun,
     topChurn,
     ...tok(),
   };
@@ -1002,6 +1142,56 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
             `${w.costPerProductLine === null ? "" : ` at ${fmtMoney(w.costPerProductLine)}/line`}`}` +
          `${w.newUserFacingFiles === null ? "" : `, ${w.newUserFacingFiles} new user-facing file(s)`}. ` +
          `Consider whether the next block ships something.`;
+}
+
+// ── WL-003 · the lines the ORCHESTRATOR is shown, where it decides ────────────────────────────
+//
+// R3, and it is a WORDING rule, not a reason to withhold anything: name what the week CONTAINED and
+// let the orchestrator draw the conclusion. Never hand it a score. "orchestrator efficiency: 8.6%
+// (below target)" is a number an agent can move without doing any of the work it stands for — the
+// WL-001 failure class, aimed this time at the one reader who can act on it. So: no percentage of
+// its own conduct, no target, no grade, no verdict word. Counts of things that happened.
+//
+// Kept to a handful of lines on purpose. An orchestrator handed a wall of figures skims it, and a
+// skimmed audit is the panel behind the window all over again.
+
+/** The audit, as trigger lines. Empty array when there is nothing worth interrupting for. */
+export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[] {
+  const L: string[] = [];
+  const a = w.allocation;
+  const scope = ownBlocks ? "you made" : "across this bus";
+
+  if (w.blocksSinceProduct !== null && w.blocksSinceProduct > 0) {
+    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +
+           (w.narrationRun > 0
+             ? `; the last ${w.narrationRun} changed only docs and handoffs.` : "."));
+  }
+  if (!a.unmeasured && a.calls > 0) {
+    // COUNTS, NOT A SHARE. "40 of 74" is a fact about the week; "54%" is a dial.
+    L.push(`${a.bus} of the last ${a.calls} tool call(s) ${scope} went to bus mechanics — tabs, ` +
+           `board and status writes, handoffs — against ${a.product} that touched product.`);
+  } else if (a.unmeasured) {
+    L.push(`Where the blocks went is ${UNMEASURED}: no transcript directory matches this repo ` +
+           `under ${w.transcriptsRoot}.`);
+  }
+  if (w.tag === null && w.commits > 0) {
+    L.push(`No release in ${w.commits} blocks.`);
+  } else if (w.blocksSinceRelease !== null && w.blocksSinceRelease > 0) {
+    L.push(`${w.blocksSinceRelease} blocks since ${w.tag}.`);
+  }
+  if (w.handoffs > 0 && w.loopBackHandoffs > 0) {
+    L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) this window came back for another ` +
+           `pass.`);
+  }
+  if (!L.length) return [];
+  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days:`, ...L.map((x) => `  · ${x}`)];
+}
+
+/** The same thing as ONE block, ready to append to a message already being sent. Empty when the
+ *  briefing is empty, so a caller can append unconditionally without emitting a stray header. */
+export function briefingBlock(w: WorkLedger, ownBlocks = false): string {
+  const lines = orchestratorBriefing(w, ownBlocks);
+  return lines.length ? "\n\n" + lines.join("\n") : "";
 }
 
 export function todayKey(nowMs = Date.now()): string {

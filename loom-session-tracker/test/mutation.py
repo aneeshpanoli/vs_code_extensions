@@ -969,6 +969,58 @@ MUTATIONS = [
   "    costPerProductLine: denom && !unmeasured ? Math.round((cost.dollars / denom) * 100) / 100 : null,",
   "    costPerProductLine: denom ? Math.round((cost.dollars / denom) * 100) / 100 : null,"),
 
+ # ── WL-003 · the audit delivered to the orchestrator ────────────────────────────────
+ # The add-on exists to make the ORCHESTRATOR see it is spending its blocks on bus mechanics rather
+ # than on product. Every mutant here either hides that fact from it or turns it into a score.
+
+ # R1 — killed by "WL-003 R1: a tool call is bucketed, and BUS WINS however it is spelled".
+ # MEASURED on this bus 2026-09-15: the orchestrator's own session made 38 bus calls of 89. Calls
+ # routinely name a product path AND a bus path in one command; whichever is tested first decides
+ # the number, and testing product first is how bus work disappears into the product bucket.
+ ("a call that touches BOTH the bus and a product path counts as PRODUCT — bus work vanishes",
+  "src/workledger.ts",
+  '  if (isBusMechanics(JSON.stringify(input ?? {}))) return "bus";',
+  '  if (false && isBusMechanics(JSON.stringify(input ?? {}))) return "bus";'),
+
+ # R1 — killed by "WL-003 R1: scoped to ONE session — a developer's calls are not the
+ # orchestrator's time". Unscoped, this bus reports 2,129 calls instead of the orchestrator's 89,
+ # and the developers' product work is credited to the orchestrator's allocation.
+ ("the session filter is ignored — a developer's tool calls are reported as the orchestrator's own",
+  "src/workledger.ts",
+  "      if (only && !only.has(name.slice(0, -6).toLowerCase())) continue;",
+  "      if (false) continue;"),
+
+ # R1 — killed by "WL-003 R1: a session filter that matches NOTHING is unmeasured, not a perfect
+ # week". WL-002's rule, in the new figure: an orchestrator whose transcript was not found must not
+ # be told it made zero bus calls, which reads as the best possible week.
+ ("an orchestrator whose transcript is missing is told it made ZERO bus calls",
+  "src/workledger.ts",
+  "  if (only && !a.sessions) return EMPTY_ALLOC(true);",
+  "  if (false) return EMPTY_ALLOC(true);"),
+
+ # R1 — killed by "WL-003 R1: the buckets are counted across a window and PARTITION the calls".
+ # A tool_use block replayed on a USER line is not a turn the agent spent.
+ ("tool calls replayed on user lines are counted as the agent's own turns",
+  "src/workledger.ts",
+  '        if (!o || o.type !== "assistant") continue;\n        const content = o.message && o.message.content;',
+  '        if (!o) continue;\n        const content = o.message && o.message.content;'),
+
+ # R3 — killed by "WL-003 R3: the briefing names what HAPPENED — never a score the orchestrator
+ # could optimise". THE WL-001 FAILURE CLASS AIMED AT THE ONE READER WHO CAN ACT ON IT: a
+ # percentage of its own conduct is a dial an agent can move without doing any of the work it
+ # stands for. Counts of things that happened are not.
+ ("the briefing hands the orchestrator a PERCENTAGE of its own conduct instead of a count",
+  "src/workledger.ts",
+  "    L.push(`${a.bus} of the last ${a.calls} tool call(s) ${scope} went to bus mechanics — tabs, ` +",
+  "    L.push(`bus mechanics: ${Math.round((a.bus / a.calls) * 100)}% of tool call(s) — tabs, ` +"),
+
+ # R2 — killed by "WL-003 R2: the briefing is APPENDED to the restore message". The delivery is the
+ # whole handoff: a correct audit computed and then dropped is the panel behind the window again.
+ ("the audit is computed and then dropped from the one message a fresh orchestrator reads",
+  "src/memory.ts",
+  "    briefing;",
+  '    "";'),
+
 ]
 
 def sh(cmd):
