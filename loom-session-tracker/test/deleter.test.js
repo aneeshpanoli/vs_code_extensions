@@ -1,7 +1,7 @@
 // deleter.test.js — the most destructive path in the extension. Everything here exists to prove
 // the "recoverable by design" contract: refuse if the work isn't banked, keep the branch, move the
 // transcript rather than delete it.
-const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, home } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, home, fixtureDir } = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -13,7 +13,7 @@ function haveGit() { try { execFileSync("git", ["--version"], { timeout: 5000 })
 
 /** A repo laid out like a real Loom project, optionally with a worktree for `role`. */
 function fixture(role, { withWorktree = true, commitInWorktree = false } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-del-"));
+  const root = fixtureDir("loom-del-");
   const repoRoot = path.join(root, "proj");
   fs.mkdirSync(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
@@ -68,7 +68,7 @@ suite("deleter: REFUSES when git status cannot be read (never guesses it is clea
   if (!haveGit()) return;
   const role = "unreadable";
   // A worktree path that is not a git worktree, under a non-git root -> status fails.
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "loom-nogit-"));
+  const repoRoot = fixtureDir("loom-nogit-");
   const wt = path.join(repoRoot, ".claude", "worktrees", role);
   fs.mkdirSync(wt, { recursive: true });
   const { repo } = busWithTranscript(role, "sid-unreadable");

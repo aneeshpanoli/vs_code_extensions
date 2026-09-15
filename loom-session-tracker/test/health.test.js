@@ -1,4 +1,4 @@
-const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, LOOM } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, LOOM, fixtureDir} = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -104,7 +104,7 @@ suite("concurrency: the count is published for every window to share", () => {
 
 // ── worktree hygiene ────────────────────────────────────────────────────────
 function gitRepo() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-wt-"));
+  const root = fixtureDir("loom-wt-");
   const repoRoot = path.join(root, "proj");
   fs.mkdirSync(repoRoot);
   const git = (cwd, ...a) => execFileSync("git", ["-C", cwd, ...a], { encoding: "utf8", timeout: 15000 });
@@ -162,7 +162,7 @@ suite("worktrees: removal refuses dirty and on-board ones, keeps the branch", ()
 
 suite("worktrees: an unreadable worktree is treated as dirty, never removed", () => {
   const repo = makeRepo({ roles: {} });
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-nogit-"));
+  const root = fixtureDir("loom-nogit-");
   fs.mkdirSync(path.join(root, ".claude", "worktrees", "bogus"), { recursive: true });
   const found = scanWorktrees(repo, root);
   eq(found.length, 1, "found it");

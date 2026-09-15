@@ -2,7 +2,7 @@
 // startup digest is gated and acted on. Everything the components do individually is covered
 // elsewhere; this file exists because the composition was the last untested surface, and both real
 // bugs found in this extension so far lived in untested paths.
-const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJson, setStatus, settle, LOOM } =
+const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJson, setStatus, settle, LOOM, fixtureDir} =
   require("./harness");
 const fs = require("fs");
 const os = require("os");
@@ -19,7 +19,7 @@ const frame = (webviewId, text) => ({ webviewId, text, type: "iframe", targetUrl
 
 /** Open a folder whose basename IS the bus id (non-git, so currentRepo falls back to the name). */
 function openProject(repo) {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "loom-ws-"));
+  const parent = fixtureDir("loom-ws-");
   const dir = path.join(parent, repo);
   fs.mkdirSync(dir);
   vscode.workspace.workspaceFolders = [{ uri: { fsPath: dir } }];
@@ -531,7 +531,7 @@ suite("context memory: a visible orchestrator panel with no compact button is NO
 
 /** Boot with an extensionPath, so VERSION is a real version instead of "unknown". */
 async function activateAsVersion(frames, version) {
-  const extDir = fs.mkdtempSync(path.join(os.tmpdir(), "loom-extpath-"));
+  const extDir = fixtureDir("loom-extpath-");
   fs.writeFileSync(path.join(extDir, "package.json"), JSON.stringify({ version }));
   cdp.readFrames = async () => frames;
   fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
@@ -849,7 +849,7 @@ suite("gc R4 wiring: the BUS roster the collector is built from covers EVERY pro
   // another project entirely, with a role that is writing status right now
   const other = makeRepo({ roles: { remote: {} } }, "gcR4other");
   writeJson(busPath(other, "remote", "status.json"), { status: "working", session_id: "remotese-0300" });
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-r4-"));
+  const root = fixtureDir("loom-r4-");
   // that other project's worktree, orphaned + clean + merged
   execFileSync("git", ["-C", root, "init", "-q", "-b", "main"]);
   execFileSync("git", ["-C", root, "config", "user.email", "t@example.com"]);

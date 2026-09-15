@@ -5,7 +5,7 @@
 // Everything runs through activate(), so the commands are exercised exactly as VS Code invokes them.
 // Nothing here reaches CDP or git: readFrames and closeWebview are stubbed, and the injector is a
 // python stub that just echoes its arguments.
-const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJson, settle, LOOM } =
+const { suite, ok, eq, match, load, vscode, makeRepo, busPath, writeJson, readJson, settle, LOOM, fixtureDir} =
   require("./harness");
 const fs = require("fs");
 const os = require("os");
@@ -22,7 +22,7 @@ const frame = (webviewId, text) => ({ webviewId, text, contextPct: null, type: "
 const run = (id, ...args) => vscode.commands.executeCommand("loomSessionTracker." + id, ...args);
 
 function openProject(repo) {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "loom-cmd-"));
+  const parent = fixtureDir("loom-cmd-");
   const dir = path.join(parent, repo);
   fs.mkdirSync(dir);
   vscode.workspace.workspaceFolders = [{ uri: { fsPath: dir } }];

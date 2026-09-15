@@ -1,4 +1,4 @@
-const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, home } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, home, fixtureDir } = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -115,7 +115,7 @@ suite("digest: stale buses and duplicated role names are reported as hygiene", (
 
 suite("digest: unbanked worktree changes are detected", () => {
   try { execFileSync("git", ["--version"], { timeout: 5000 }); } catch { return; }
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-dig-"));
+  const root = fixtureDir("loom-dig-");
   const repoRoot = path.join(root, "proj");
   fs.mkdirSync(repoRoot);
   const git = (cwd, ...a) => execFileSync("git", ["-C", cwd, ...a], { encoding: "utf8", timeout: 15000 });

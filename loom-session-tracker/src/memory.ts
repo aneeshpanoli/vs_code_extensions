@@ -34,9 +34,18 @@ const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
  *  panel that changes several times a second and a turn pausing between tool calls reads idle. */
 export const IDLE_TICKS_REQUIRED = 2;
 
+/** KEPT DELIBERATELY (WL-004). Not an instruction to anyone — the check that something was actually
+ *  written before a clear destroys the session. It is a floor on evidence, not a target for prose. */
 export const MIN_MEMORY_BYTES = 200;
-/** Above this the memory is bloat that every fresh context pays for (Lumen's reached 56 KB / 653 lines,
- *  2026-09-13). Not a refusal — a clear with a fat memory beats no clear — but the note says so. */
+/**
+ * INTERNAL ONLY — this number must never reach a string an agent reads (WL-004, asserted by test).
+ *
+ * It exists so the panel can OBSERVE that a memory is large (Lumen's reached 56 KB / 653 lines,
+ * 2026-09-13), which is a real cost worth seeing. It is not a cap, not a target, and not a budget:
+ * as a sentence in the save prompt it made an orchestrator delete the record of the owner's stated
+ * product goal in order to fit, twice in one day. A threshold an agent can see is a threshold an
+ * agent will trade facts to satisfy.
+ */
 export const MAX_MEMORY_BYTES = 12_000;
 /** How long one window's claim on a cycle stands before another may take it over. Longer than the
  *  save and clear timeouts combined, so a live owner is never overtaken mid-cycle; short enough that
@@ -167,9 +176,23 @@ export function saveMessage(memoryFile: string, tokens: number | null, percent: 
     `  • decisions already made (and why), so they are not re-litigated;\n` +
     `  • open questions, anything you are deliberately not doing yet, and a section "UNSURE" listing ` +
     `what you believe but have not verified this thread.\n` +
-    `Keep it under ${MAX_MEMORY_BYTES.toLocaleString()} bytes: it is re-read at the start of every fresh context. ` +
-    `Durable lessons (traps, conventions, anything true across threads) go in ${notes} — append rarely, never ` +
-    `rewrite; the working memory is what changes each cycle.\n` +
+    // WL-004 · NO NUMBER HERE, EVER. A byte target handed to an agent, about the one artifact that
+    // survives its own erasure, converts "write down what matters" into "hit a number" — and an
+    // agent that cannot fit trades facts for bytes. MEASURED 2026-09-15: the orchestrator trimmed
+    // its own memory to satisfy this sentence and destroyed the section recording the owner's
+    // stated product goal, the most important thing in the file, twice. The number produced that.
+    // Concision is asked for as a matter of FORM, with the reason attached, and the reason is true:
+    // the next session pays for every line, in full, before it has done anything.
+    `Write it TIGHT — every line has to earn its place, because the whole file is re-read at the ` +
+    `start of every fresh context and the next session pays for it before it has done any work. ` +
+    `Prefer the fact over the narration of the fact; drop anything a fresh reader would not act on. ` +
+    `Being short is not the same as being incomplete: if something matters, it stays, and you make ` +
+    `room by cutting words rather than by cutting what is true.\n` +
+    // R4 · the split is what keeps the working memory small now that no number does.
+    `THE SPLIT IS HOW THIS STAYS SMALL: durable lessons — traps, conventions, anything true across ` +
+    `threads — go in ${notes}, appended, never rewritten. ${memoryFile} holds ONLY what changes ` +
+    `each cycle. If you find yourself about to delete something durable to make the working memory ` +
+    `shorter, it belongs in ${notes} instead — move it, do not lose it.\n` +
     `Write the FILE — do not summarise in chat. Assume the reader has none of this conversation, ` +
     `because after you write it this session is cleared and that file is what you get back.`;
 }
@@ -183,7 +206,10 @@ export function restoreMessage(memoryFile: string, repo: string, role: string,
   return `[loom-context] Fresh context — you are ${role}, the orchestrator of ${repo}. ` +
     `Start by reading, in this order:\n` +
     `  1. ${memoryFile} — your own working memory, written moments ago;\n` +
-    `  2. ${notes} — your durable notes, if the file exists (read once; append rarely);\n` +
+    `  2. ${notes} — your durable notes, if the file exists (read once; append rarely). READ THIS EVEN ` +
+    `IF ${memoryFile} IS SHORT — a short working memory means more of what you need is in the notes, ` +
+    `not less. The working memory is only what changed this cycle; the notes are everything that ` +
+    `stays true, and they are never rewritten to save room;\n` +
     `  3. ~/.claude/loom/${repo}/board.json and each role's status.json — the roster and where each role is;\n` +
     `  4. ONLY the project docs the memory names — not CLAUDE.md and docs/ wholesale.\n` +
     `Reconcile them: where the memory disagrees with the board or the docs, the board and the docs win — ` +
@@ -306,8 +332,12 @@ export function decide(input: ContextInput): Step {
       return {
         kind: "clear",
         message: CLEAR_MESSAGE,
+        // WL-004 R2 · AN OBSERVATION FOR THE PANEL, NOT A TRIM ORDER. The size is a real cost and
+        // worth seeing; "trim it" is an instruction to an agent to cut content to reach a number,
+        // which is the same defect as the prompt. The threshold stays internal and is never phrased
+        // as a cap: this note says what the file costs, and leaves what to do about it to a person.
         note: `memory banked (${input.memorySize} bytes${input.memorySize > MAX_MEMORY_BYTES
-                 ? ` — over the ${MAX_MEMORY_BYTES.toLocaleString()}-byte cap; every fresh context pays for it, trim it` : ""}) — clearing`,
+                 ? ` — large; every fresh context re-reads it in full` : ""}) — clearing`,
         next: { ...state, ...claim, phase: "clearing", phaseAt: now, idleTicks: 0,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
                 lastNote: "cleared after a verified save" },

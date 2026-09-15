@@ -13,7 +13,14 @@ const FILES = fs.readdirSync(__dirname).filter((f) => f.endsWith(".test.js")).so
 
 function sandboxEnv() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "loom-test-home-"));
-  return { sandbox, env: { ...process.env, HOME: sandbox, LOOM_TEST_SANDBOX: sandbox, ELECTRON_RUN_AS_NODE: "1" } };
+  // FX-002 · TMPDIR INSIDE THE SANDBOX. Each child's `os.tmpdir()` now resolves here, so every
+  // fixture — including any site added after this handoff, which cannot be made to register itself —
+  // lands inside the directory the runner already removes below. VERIFIED on this box that both
+  // `node` and `codium --ELECTRON_RUN_AS_NODE` honour TMPDIR in `os.tmpdir()`; it was not assumed.
+  const tmp = path.join(sandbox, "tmp");
+  fs.mkdirSync(tmp, { recursive: true });
+  return { sandbox, env: { ...process.env, HOME: sandbox, LOOM_TEST_SANDBOX: sandbox,
+                           TMPDIR: tmp, ELECTRON_RUN_AS_NODE: "1" } };
 }
 
 if (!process.env.LOOM_TEST_SANDBOX) {
@@ -90,6 +97,10 @@ for (const f of files) require(path.join(__dirname, f));
       if (!(e instanceof H.AssertionError) && e.stack) {
         console.log(`      ${e.stack.split("\n").slice(1, 3).join("\n      ")}`);
       }
+    } finally {
+      // FX-002 · the owner. A suite that THREW still gives its fixture directories back; that is the
+      // whole reason this lives here rather than at the end of each suite body.
+      H.sweepFixtures();
     }
   }
   if (fileArg) { console.log(`##RESULT ${pass} ${fail}`); process.exit(fail ? 1 : 0); }

@@ -4,7 +4,7 @@
 // Why a real repo rather than a stubbed `git`: the thing most likely to break this module is git's
 // output format (rename spellings, binary `-\t-`, an empty tree, a repo with no tag), and a stub
 // proves only that the parser agrees with the stub. The fixture costs ~1s and tests the real path.
-const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, LOOM } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, LOOM, fixtureDir} = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -21,7 +21,7 @@ function git(dir, args) {
 
 /** A repo named `name` with `commits`: [{msg, files: {path: contents}, deletes: [], daysAgo}]. */
 function makeGitRepo(name, commits) {
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "loom-wl-")), name);
+  const dir = path.join(fixtureDir("loom-wl-"), name);
   fs.mkdirSync(dir, { recursive: true });
   git(dir, ["init", "-q", "-b", "main"]);
   for (const c of commits) {
@@ -609,7 +609,7 @@ const run = (id, ...a) => vscode.commands.executeCommand("loomSessionTracker." +
 
 /** A real git repo AT the window's project folder, so the tick measures something real. */
 function gitProject(repo, files) {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "loom-wlcmd-"));
+  const parent = fixtureDir("loom-wlcmd-");
   const dir = path.join(parent, repo);
   fs.mkdirSync(dir, { recursive: true });
   vscode.workspace.workspaceFolders = [{ uri: { fsPath: dir } }];
