@@ -1063,6 +1063,52 @@ MUTATIONS = [
   "             neverMoved: true };",
   "             neverMoved: false };"),
 
+ # ── WL-006 · a background gate that finishes after the turn ends ─────────────────────
+ # MEASURED THREE TIMES (WL-002, WL-004+FX-002, WL-005). On WL-005 the gate ran ~18 minutes past
+ # the turn; throughout, outbox.md line 1 named the PREVIOUS handoff and status.json's current did
+ # too — indistinguishable from a worker that had done nothing. The orchestrator's workaround was
+ # reading /proc/<pid>/fd/1 by hand.
+
+ ("a dead gate's pid is trusted because /proc has an entry — a recycled pid reads as a running gate",
+  "src/health.ts",
+  '  if (!/mutation\\.py/.test(cmd)) return "exited";          // pid reused by something else',
+  '  if (false) return "exited";          // pid reused by something else'),
+
+ ("the declared launch time is not checked, so any long-lived process holding the pid reads as running",
+  "src/health.ts",
+  '  if (Math.abs(started - declared) > GATE_START_TOLERANCE_MS) return "exited";',
+  '  if (false) return "exited";'),
+
+ ("an unreadable start time is assumed to be a RUNNING gate — the alarm is suppressed for ever",
+  "src/health.ts",
+  '  if (started === null) return "exited";                   // cannot identify => do not claim running',
+  '  if (started === null) return "running";                  // cannot identify => do not claim running'),
+
+ ("a live gate no longer suppresses the stall alarm — a busy worker is rung and burns its context",
+  "src/health.ts",
+  '  return started <= now + GATE_START_TOLERANCE_MS ? "running" : "exited";',
+  '  return started <= now + GATE_START_TOLERANCE_MS ? "exited" : "exited";'),
+
+ ("a finished block's leftover declaration wakes the role again for a block that is over",
+  "src/health.ts",
+  '    const answered = !!(decl && decl.handoff && decl.handoff === String(s.obj.last_handled || ""));',
+  '    const answered = false;'),
+
+ ("the wake is recorded on every SCAN, so a role whose composer was busy is marked woken untold",
+  "src/health.ts",
+  '      if (woken[g.role] === key) continue;                  // already told this role about THIS gate',
+  '      if (woken[g.role] === key) continue; woken[g.role] = key;'),
+
+ ("the once-only record is keyed by ROLE, so the next gate is suppressed for ever by the last one",
+  "src/health.ts",
+  'export function gateKey(log: string, launchedAt: string): string {\n  return `${log}@${launchedAt}`;\n}',
+  'export function gateKey(log: string, launchedAt: string): string {\n  void log; void launchedAt; return "role";\n}'),
+
+ ("a BUSY composer is typed into anyway, so the wake queues as a message and never runs",
+  "src/health.ts",
+  '    if (!frame || frame.busy) { if (done) done(false, "composer busy or frame not found"); return; }',
+  '    if (!frame) { if (done) done(false, "composer busy or frame not found"); return; }'),
+
  # ── WL-005 · two numbers the bus stated without measuring ───────────────────────────
  # MEASURED 2026-09-15. `started` came from the worker's status.updated_at, which at the moment a
  # block opens still holds the stamp of the block BEFORE it: WL-001 read 2455 minutes against a

@@ -129,6 +129,27 @@ export function activate(context: vscode.ExtensionContext) {
           `Loom: ${ev.role} has been "${ev.status}" for ${ev.staleHours.toFixed(1)}h with no status update — possibly stuck.`);
         if (orch) healthWatcher.alert(ev, orch.role, () => { /* logged to stall-debug.json */ });
       }
+      // WL-006 · WAKE THE ROLE WHOSE GATE HAS FINISHED. Its turn ended while the gate ran, so nothing
+      // else will ever tell it; measured three times, most recently 18 minutes during which the
+      // outbox still named the previous handoff. The role is woken, not the orchestrator: the
+      // orchestrator did not launch the gate, and ringing it would put a person back in the
+      // transport, which is the workaround this replaces.
+      //
+      // MARKED ONLY ON DELIVERY. A worker mid-turn cannot be typed into (dispatch.ts: the line would
+      // queue as an ordinary message and never run), so a busy composer leaves the event unmarked and
+      // the next tick tries again. Marking on attempt would mean "woken" for a role never told.
+      for (const ev of healthWatcher.scanGates(report)) {
+        // The WORKER's own frame: tracker.view() is the tracked agents (ownerView is orchestrators
+        // only), and busy-ness comes from tracker.busyRoles, the same source every other injector
+        // on this tick trusts.
+        const a = tracker.view().find((v) => v.role === ev.role && v.repo === ev.repo
+                                             && v.liveness === "live");
+        healthWatcher.wake(ev, a ? { webviewId: a.webviewId, busy: tracker.busyRoles.has(a.role) } : null,
+          (ok, note) => {
+            if (ok) healthWatcher.markWoken(ev.role, ev.key);
+            debugLog({ gateWake: { role: ev.role, pid: ev.pid, log: ev.log, ok, note } });
+          });
+      }
     };
     // CH-001 R2, the half the tracker cannot refuse. The spawn path REFUSES an overlapping handoff
     // (requests.ts), because there the tab does not exist yet and withholding it costs nothing. A
