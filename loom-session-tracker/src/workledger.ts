@@ -1159,7 +1159,11 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
 export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[] {
   const L: string[] = [];
   const a = w.allocation;
-  const scope = ownBlocks ? "you made" : "across this bus";
+  // PRECISE ABOUT ITS OWN WINDOW. A scoped count reads ONE transcript — the session id currently in
+  // board.json — so it covers this session, not the seven days in the header. A `/clear` starts a
+  // new transcript and the count legitimately restarts; saying "this session" keeps that honest
+  // instead of letting the header's window be read onto it.
+  const scope = ownBlocks ? "you made this session" : "across this bus";
 
   if (w.blocksSinceProduct !== null && w.blocksSinceProduct > 0) {
     L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +

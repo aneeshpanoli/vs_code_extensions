@@ -992,7 +992,7 @@ suite("WL-003 R3: the briefing names what HAPPENED — never a score the orchest
                                         projectsRoot: root, sessionIds: ["orch"] });
   const text = wl.orchestratorBriefing(w, true).join("\n");
   match(text, /1 block\(s\) since anything reached a user/, "it names the trigger");
-  match(text, /2 of the last 3 tool call\(s\) you made went to bus mechanics/,
+  match(text, /2 of the last 3 tool call\(s\) you made this session went to bus mechanics/,
         "COUNTS, not a share: '2 of 3' is a fact about the week, '67%' is a dial");
   // R3, asserted rather than trusted to review: no grade, no target, no verdict word.
   ok(!/efficiency|below target|score|grade|rating|%/i.test(text),
