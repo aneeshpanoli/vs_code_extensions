@@ -9,9 +9,27 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.38.1)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.38.2)
 
-**Version 0.38.1** is WL-004 + R6 and FX-002. WL-004 took the byte cap out of every agent-facing
+**Version 0.38.2** is WL-005, which took two lies out of the instruments this bus reads its own
+state from. (1) A handoff's duration was measured between two different clocks: `started` was read
+from the worker's `status.updated_at`, which at the moment a block OPENS still holds the stamp of
+the block BEFORE it. Not one record in this bus's ledger had a `started` of its own — WL-001 read
+2455 minutes for a ~90-minute block, and ReciEats read **–39.3**, which is the same defect wearing
+its visible face. Both ends are now one clock (the tracker's own observation of the opening and
+closing tick); worker stamps are kept as `workerStampAt*` for diagnosis and are never endpoints; a
+block whose start was never observed has **no** duration rather than a zero or a guess. The
+render-side `<= 0 ? "—"` suppression is GONE and a negative is now SHOWN — blanking it claimed
+*not measured* for something that had been measured wrongly, and that render-time hiding is why the
+defect survived while the same field fed the median. (2) `live-check.js` printed `deployed is <X>`
+off the SOURCE manifest, so between a merge and `deploy.sh` it named a build that existed on no
+disk and told the reader to RELOAD to reach it. `deployed` now means what is on disk, resolved
+through WL-003-R5's own `deployedVersions()`, with three separated cases — reload a window behind
+the artifact, run `deploy.sh` when the manifest is ahead of it, `unmeasured` when no artifact
+exists — and version segments compare NUMERICALLY, because a string compare calls 0.38.10 older
+than 0.38.9. Merged `8219c88`, DEPLOYED 2026-09-15. **Three pre-existing tests encoded both defects
+and were updated, not deleted** — one of them required a negative to render as a dash, which is a
+test documenting the cover-up. 0.38.1 is WL-004 + R6 and FX-002. WL-004 took the byte cap out of every agent-facing
 memory prompt — an agent asked to hit a number deletes what is true to reach it, and this bus lost
 the record of the owner's product goal that way twice. R6 is the correction to WL-004's own thesis:
 banning the NUMBER did not ban the TRADE, and a deliberate mutant reading "If it will not fit, cut
@@ -21,7 +39,7 @@ FX-002 is the inode fix: 15 test sites called `os.tmpdir()` from inside the muta
 throwaway tree, which is the HOST `/tmp`, so six days of gates took the filesystem to 100% of its
 inode table with 74 GB free; the runner now owns every fixture, and the gate asserts containment at
 run time because a mutant on `mutation.py` itself can never be caught (the copy's driver is never
-executed). Merged as the WL-004-R6 merge and DEPLOYED 2026-09-15. 0.38.0 was WL-003 + R5 (the work
+executed). Merged as the WL-004-R6 merge and deployed 2026-09-15. 0.38.0 was WL-003 + R5 (the work
 audit now reaches the ORCHESTRATOR — appended to the restore message a fresh context reads and again
 at dispatch — and its headline is a COUNT of tool calls scoped to the orchestrator's own session,
 never a percentage of its own conduct; R5 rekeyed the release line off git TAGS onto what reached a
@@ -31,8 +49,8 @@ cheapest possible week — rather than as unmeasured, `316ef5c`); 0.37.0 was WL-
 ledger itself (`68e7ef0`). The deployed copy on this machine is what `ls
 ~/.vscode-oss/extensions/ | grep loom-session-tracker | sort -V | tail -1` says, and every window
 needs `../deploy.sh loom-session-tracker` + a reload before it is actually running it — do not read
-a version here as "that is what the editor is executing". **773 tests** green in BOTH modes
-(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **172/172 mutations caught** under the
+a version here as "that is what the editor is executing". **783 tests** green in BOTH modes
+(`./test.sh` and `LOOM_TEST_JOBS=1 ./test.sh`), and **180/180 mutations caught** under the
 baseline-grading gate GC-003 introduced, with the deliberate no-op self-check surviving.
 (Re-measure after each merge, and note that `./test.sh` does NOT compile — a stale `out/` after a
 merge reads as a red suite.) `./live.sh`
