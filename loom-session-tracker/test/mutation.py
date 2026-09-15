@@ -1063,6 +1063,43 @@ MUTATIONS = [
   "             neverMoved: true };",
   "             neverMoved: false };"),
 
+ # ── FX-002 · the suite must not leave its fixtures on the host ───────────────────────
+ # MEASURED 2026-09-15: 892,449 directories in /tmp, 12,201,926 inodes, 97.6% of the filesystem,
+ # 100% of the inode table with 74 GB of disk free. It killed a gate mid-run. A 168-mutant gate is
+ # 168 suite runs, so this script was the amplifier, not the source.
+
+ # Killed by "FX-002: a fixture directory is gone after the sweep" and the exhaustive-sweep test.
+ ("the per-suite fixture sweep is removed — every suite leaves its fixtures on the host again",
+  "test/run-tests.js",
+  '    } finally {\n      // FX-002 · the owner. A suite that THREW still gives its fixture directories back; that is the\n      // whole reason this lives here rather than at the end of each suite body.\n      H.sweepFixtures();\n    }',
+  '    }'),
+
+ # Killed by "FX-002: a fixture whose test THREW is still swept". THE IMPORTANT ONE: the leak that
+ # mattered was on the FAILING path, and a sweep that skips it looks correct on a green run.
+ ("the sweep is skipped when the suite failed — the failing path leaks, which is the path that did",
+  "test/run-tests.js",
+  '      H.sweepFixtures();',
+  '      if (!fail) H.sweepFixtures();'),
+
+ # Killed by "a fixture with CONTENT is removed" and every count assertion.
+ ("the registry registers directories but never deletes them",
+  "test/harness.js",
+  '    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort, never fatal */ }',
+  '    void dir;'),
+
+ # Killed by "FX-002: the temp root is redirectable" under the gate's own env. The containment
+ # layer: without it, a fixture site added later escapes the throwaway tree the way all 15 did.
+ ("the gate stops pointing TMPDIR inside its throwaway tree — fixtures escape to the host /tmp",
+  "test/mutation.py",
+  '    env = mut_env_for(work)\n    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)',
+  '    env = MUT_ENV\n    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)'),
+
+ # Killed by "FX-002: the temp root is redirectable" via LOOM_TEST_SANDBOX.
+ ("the per-file sandbox stops redirecting TMPDIR — ./test.sh leaks for anyone who runs it",
+  "test/run-tests.js",
+  '  return { sandbox, env: { ...process.env, HOME: sandbox, LOOM_TEST_SANDBOX: sandbox,\n                           TMPDIR: tmp, ELECTRON_RUN_AS_NODE: "1" } };',
+  '  return { sandbox, env: { ...process.env, HOME: sandbox, LOOM_TEST_SANDBOX: sandbox,\n                           ELECTRON_RUN_AS_NODE: "1" } };'),
+
  # ── WL-004 · the byte number the memory prompt must never name ──────────────────────
  # MEASURED 2026-09-15: 'Keep it under 12,000 bytes' made the orchestrator delete the section
  # recording the owner's stated product goal in order to fit, twice in one day. An imperative with
@@ -1122,7 +1159,25 @@ PARALLEL = max(1, int(os.environ.get("MUTATION_JOBS", "0")) or min(multiprocessi
 TSC_REL = "node_modules/typescript/bin/tsc"
 
 # Each mutant copy runs the suite with LOOM_TEST_JOBS=1 (no fork bomb: 46 mutants x 36 files).
+#
+# FX-002 · TMPDIR IS SET PER MUTANT, in run_one(), to a directory INSIDE the throwaway tree, so the
+# suite's own fixtures land somewhere the rmtree at the end of run_one() already takes. This script
+# always deleted its copy of the project faithfully — which is exactly why the leak was invisible:
+# the suite running INSIDE that copy wrote its fixtures to os.tmpdir(), i.e. the HOST's /tmp, outside
+# the tree being reaped. A 168-mutant gate is 168 suite runs, so this script was the amplifier that
+# turned a slow leak into 12.2 million inodes and a dead host.
+#
+# Belt and braces with the harness-level sweep on purpose: the sweep fixes ./test.sh for everyone,
+# and this makes any fixture site added later unable to escape the gate even if it registers nothing.
 MUT_ENV = dict(os.environ, ELECTRON_RUN_AS_NODE="1", LOOM_TEST_JOBS="1")
+
+
+def mut_env_for(work):
+    """MUT_ENV with TMPDIR pointed inside `work`. Verified on this box that both node and
+    codium (ELECTRON_RUN_AS_NODE) honour TMPDIR via os.tmpdir(); it was not assumed."""
+    tmp = pathlib.Path(work) / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    return dict(MUT_ENV, TMPDIR=str(tmp))
 
 # ── THE BASELINE GATE ────────────────────────────────────────────────────────────────────────────
 # WHY THIS EXISTS, measured 2026-09-13. `run_one()` graded a mutant purely on `./test.sh`'s EXIT
@@ -1172,10 +1227,13 @@ def make_tree(idx):
 
 def build_and_run(work):
     """-> (returncode, passed, failed) or (None, reason, None) if the tree does not compile."""
-    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=MUT_ENV)
+    # FX-002 · ONE CHOKE POINT. Both the baseline run and every mutant run come through here, so
+    # pointing TMPDIR at the throwaway tree once contains every suite this script will ever start.
+    env = mut_env_for(work)
+    r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         return (None, "does not compile", None)
-    r = subprocess.run(["./test.sh"], cwd=work, capture_output=True, text=True, env=MUT_ENV)
+    r = subprocess.run(["./test.sh"], cwd=work, capture_output=True, text=True, env=env)
     passed, failed = parse_results(r.stdout + r.stderr)
     return (r.returncode, passed, failed)
 

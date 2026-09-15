@@ -165,7 +165,44 @@ function load(name) { return require(path.join(__dirname, "..", "out", name)); }
 /** Let queued promises and immediates settle (activation kicks off an async first tick). */
 const settle = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
+// ── FX-002 · every fixture directory has an owner that deletes it ─────────────────────────────
+//
+// MEASURED 2026-09-15: 15 helpers called `fs.mkdtempSync(os.tmpdir(), "loom-…")` and nothing ever
+// removed the result. Six days of runs left 892,449 directories in /tmp holding 12,201,926 inodes —
+// 97.6% of the whole filesystem — and the host hit 100% of its inode table with 74 GB of disk free,
+// so no space check on this box could see it. It killed a mutation gate mid-run.
+//
+// `fixtureDir()` replaces the bare mkdtemp: same call, same place, but the directory is REGISTERED,
+// and the runner sweeps the registry after every suite — passing or throwing. The owner is the
+// runner, not the test, which is what makes it exception-safe: a suite that throws halfway still
+// gives its fixture back. Nothing about the helpers themselves changes.
+const fixtures = [];
+
+/** A throwaway directory that WILL be removed after the suite that made it. */
+function fixtureDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fixtures.push(dir);
+  return dir;
+}
+
+/** Remove every fixture registered since the last sweep. BEST EFFORT BY DESIGN: a removal that
+ *  fails must never turn a green test red — the leak is a hygiene problem, not a correctness one,
+ *  and a teardown that can fail a suite would be a worse bug than the one it fixes. */
+function sweepFixtures() {
+  while (fixtures.length) {
+    const dir = fixtures.pop();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort, never fatal */ }
+  }
+}
+
+/** For the leak test: how many `loom-*` entries the temp root holds right now. */
+function tmpFixtureCount() {
+  try { return fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("loom-")).length; }
+  catch { return 0; }
+}
+
 module.exports = {
   vscode, suite, suites, ok, eq, match, rejects, AssertionError,
   LOOM, makeRepo, busPath, writeJson, readJson, setStatus, load, home, settle,
+  fixtureDir, sweepFixtures, tmpFixtureCount,
 };

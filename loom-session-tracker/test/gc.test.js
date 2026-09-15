@@ -9,7 +9,7 @@
 // Every suite in this file shares one sandbox HOME, so the world ACCUMULATES across suites. Nothing
 // below asserts a global total; every assertion filters the plan down to the fixture it made. That
 // is also the honest shape of the thing being tested — planGc always looks at the whole machine.
-const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, LOOM, home } =
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson, LOOM, home, fixtureDir} =
   require("./harness");
 const fs = require("fs");
 const os = require("os");
@@ -323,7 +323,7 @@ suite("gc tier 3: a bus nobody has touched for staleBusDays is a question", () =
 suite("gc: an empty world produces an empty plan", () => {
   // Several modules resolve LOOM_ROOT from os.homedir() at LOAD time, so a pristine world means a
   // pristine process. This is what the runner itself does for every test file (run-tests.js).
-  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "loom-gc-empty-"));
+  const empty = fixtureDir("loom-gc-empty-");
   const script = path.join(empty, "probe.js");
   fs.writeFileSync(script, `
     const gc = require(${JSON.stringify(path.join(__dirname, "..", "out", "gc.js"))});

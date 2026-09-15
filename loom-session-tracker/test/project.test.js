@@ -1,4 +1,4 @@
-const { suite, ok, eq, load, vscode, home } = require("./harness");
+const { suite, ok, eq, load, vscode, home, fixtureDir} = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -11,7 +11,7 @@ const openFolder = (p) => { vscode.workspace.workspaceFolders = [{ uri: { fsPath
 
 /** A repo named like a Loom project, with one worktree, mirroring the real layout. */
 function fixtureRepo(name) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "loom-git-"));
+  const root = fixtureDir("loom-git-");
   const repo = path.join(root, name);
   fs.mkdirSync(repo);
   git(repo, "init", "-q", "-b", "main");
@@ -50,7 +50,7 @@ suite("project: a WORKTREE window resolves to the parent project, not the worktr
 });
 
 suite("project: a non-git folder falls back to its own name", () => {
-  const plain = fs.mkdtempSync(path.join(os.tmpdir(), "loom-plain-"));
+  const plain = fixtureDir("loom-plain-");
   openFolder(plain);
   eq(currentRepo(), path.basename(plain), "uses the folder name");
   eq(repoRoot(), null, "no git root to operate in");
