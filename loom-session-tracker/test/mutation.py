@@ -1030,8 +1030,8 @@ MUTATIONS = [
  # falls through to the manifest bump, which is a different and older answer.
  ("the deployed artifact is ignored — the release falls back to a manifest bump that shipped earlier",
   "src/workledger.ts",
-  "  const deployed = deployedVersions(m, roots);\n  if (deployed.length) {",
-  "  const deployed = deployedVersions(m, roots);\n  if (false) {"),
+  "  const deployed = deployedVersions(m, roots);",
+  "  const deployed: string[] = [];"),
 
  # R5 source 2 — killed by "WL-003-R5: no artifact, but the manifest MOVED".
  ("a manifest that moved is not a release — a project with no deploy dir reads as unreleased",
@@ -1046,6 +1046,22 @@ MUTATIONS = [
   "src/workledger.ts",
   '  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };',
   '  return { ...base, source: "deployed", releasedVersion: base.version, blocksSince: 0 };'),
+
+ # R5 — killed by "WL-003-R5: no manifest and no deploy target is UNMEASURED". The SAME defect on
+ # the other unmeasured path, the one a missing manifest takes. The first version of the mutant above
+ # aimed only at the untracked-manifest return, which NO test reached, and it SURVIVED: the gate
+ # caught that the assertion and the code it named were not meeting.
+ ("a project with no manifest at all reports 0 blocks instead of unmeasured",
+  "src/workledger.ts",
+  '  const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,\n                                       version: null, releasedVersion: null, blocksSince: null,\n                                       lookedIn: roots });',
+  '  const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,\n                                       version: null, releasedVersion: null, blocksSince: 0,\n                                       lookedIn: roots });'),
+
+ # R5 — killed by "WL-003-R5: a manifest that has never moved says so". The one case where 'no
+ # release in N blocks' is honest must not be folded into unmeasured either.
+ ("a manifest that has never changed version is reported as unmeasured rather than as unreleased",
+  "src/workledger.ts",
+  "             neverMoved: true };",
+  "             neverMoved: false };"),
 
  # R5 — killed by "WL-003-R5: a repo holding SEVERAL products answers for the ACTIVE one". Taking
  # the first manifest by name reported "111 blocks since 1.0.0" for a repo whose active product had

@@ -1133,3 +1133,41 @@ suite("WL-003-R5: an explicit manifest path overrides the search", () => {
   eq(r.version, "1.0.0", "the setting wins over the recency heuristic");
   eq(r.releasedVersion, "1.0.0", "and answers for that product");
 });
+
+suite("WL-003-R5: a manifest that has never moved says so — and that IS a true statement", () => {
+  // The one case where "no release in N blocks" is honest, per the owner's decision. It must not be
+  // folded into `unmeasured`, and `unmeasured` must not be folded into it.
+  const dir = makeGitRepo("r5never", [
+    { msg: "add manifest", files: { "package.json": pkg("nv", "1.0.0") }, daysAgo: 4 },
+    { msg: "work", files: { "src/app/a.tsx": lines(3) }, daysAgo: 2 },
+    { msg: "more work", files: { "src/app/b.tsx": lines(3) }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "manifest", "there is a manifest and git has seen it");
+  eq(r.neverMoved, true, "its version has never changed");
+  eq(r.blocksSince, 2, "counted from the commit that introduced it — 'never' spans all of it");
+  const w = wl.computeWorkLedger(dir, { productPaths: { r5never: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  // Scoped to the RELEASE line on purpose: this fixture has no transcripts, so the allocation line
+  // says `unmeasured` and rightly so. Asserting the whole block carried no `unmeasured` banned a
+  // true statement on a different line — the assertion over-reached, not the code.
+  const releaseLine = wl.orchestratorBriefing(w, true).find((l) => /release/i.test(l)) || "";
+  match(releaseLine, /No release in 2 block\(s\): 1\.0\.0 has never changed version/,
+        "said plainly, because here it is true");
+  ok(!/unmeasured/.test(releaseLine),
+     "and NOT hedged as unmeasured — that would be the other error, on the one case that is knowable");
+});
+
+suite("WL-003-R5: a manifest git has never seen is UNMEASURED, not 0 blocks", () => {
+  // THE PATH A SURVIVING MUTANT FOUND. Every earlier unmeasured assertion went through the
+  // no-manifest-at-all branch, so the untracked-manifest return was never reached by any test and a
+  // mutant that made it report `0 blocks` — shipped just now — passed the whole suite.
+  const dir = makeGitRepo("r5untracked", [{ msg: "code", files: { "src/app/a.tsx": lines(3) }, daysAgo: 1 }]);
+  fs.writeFileSync(path.join(dir, "package.json"), pkg("untracked", "3.0.0"));  // never committed
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.manifestPath, "package.json", "the manifest is read off disk");
+  eq(r.version, "3.0.0", "and its version is known");
+  eq(r.source, "unmeasured", "but git has never seen it, so nothing can be concluded");
+  eq(r.blocksSince, null, "absent, NOT zero");
+  ok(!r.neverMoved, "and not claimed to have never moved either — that is a different fact");
+});

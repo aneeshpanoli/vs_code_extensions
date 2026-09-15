@@ -586,6 +586,9 @@ export interface ReleaseSignal {
   releasedVersion: string | null;
   /** Commits since the release commit. `0` means the released version is what HEAD holds. */
   blocksSince: number | null;
+  /** The manifest is tracked but its version has never changed — the ONLY case in which "no release
+   *  in N blocks" is a true statement. */
+  neverMoved?: boolean;
   /** Where a deployed artifact was looked for — named when the answer is `unmeasured`. */
   lookedIn: string[];
 }
@@ -731,12 +734,18 @@ export function releaseSignal(repoPath: string | null, opts: {
   if (bump) return { ...base, source: "manifest", releasedVersion: bump.version,
                      blocksSince: blocks(bump.sha) };
 
-  // 3 · a manifest that has never moved and nothing deployed. If the manifest genuinely never
-  // moves, "no release in N blocks" is TRUE and is said; if there is no history to judge, it is not.
-  const any = git(repoPath, ["log", "--format=%H", "-n", "1", "--", m.rel]);
-  if (any !== null && any.trim()) {
-    return { ...base, source: "manifest", releasedVersion: null, blocksSince: null };
+  // 3 · the manifest is tracked but its version has NEVER MOVED. This is the one case where "no
+  // release in N blocks" is a TRUE statement, so it is said — with N counted from the commit that
+  // introduced the manifest, not from the window, since "never" is a claim about all of it.
+  const first = git(repoPath, ["log", "--format=%H", "--reverse", "--", m.rel]);
+  const firstSha = (first || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || null;
+  if (firstSha) {
+    return { ...base, source: "manifest", releasedVersion: null, blocksSince: blocks(firstSha),
+             neverMoved: true };
   }
+  // 4 · a manifest on disk that git has never seen (untracked, or a checkout with no history for
+  // it). Nothing can be concluded, so nothing is: UNMEASURED, and emphatically not `0 blocks`,
+  // which would render "we cannot see it" as "shipped just now".
   return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };
 }
 
@@ -1375,6 +1384,9 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
   if (r.source === "unmeasured") {
     L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed ` +
            `artifact under ${r.lookedIn.join(" or ")}.`);
+  } else if (r.neverMoved) {
+    L.push(`No release in ${r.blocksSince ?? "?"} block(s): ${r.product ? `${r.product} ` : ""}` +
+           `${r.version} has never changed version.`);
   } else if (r.blocksSince === null) {
     L.push(`Last reached a user at ${r.releasedVersion ?? UNMEASURED}` +
            `${r.releasedVersion ? ` (${r.source})` : ""}; how many blocks ago is ${UNMEASURED}.`);
