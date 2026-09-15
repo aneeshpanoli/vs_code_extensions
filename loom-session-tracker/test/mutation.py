@@ -1063,6 +1063,53 @@ MUTATIONS = [
   "             neverMoved: true };",
   "             neverMoved: false };"),
 
+ # ── WL-005 · two numbers the bus stated without measuring ───────────────────────────
+ # MEASURED 2026-09-15. `started` came from the worker's status.updated_at, which at the moment a
+ # block opens still holds the stamp of the block BEFORE it: WL-001 read 2455 minutes against a
+ # real ~90, ReciEats read -39.3, and not one record's start was its own. And live-check said
+ # "deployed is 0.38.1" off the SOURCE manifest while the newest artifact on disk was 0.38.0 —
+ # naming a build that existed nowhere and telling the reader to reload to reach it.
+
+ ("the block's start is read back off the worker's status stamp — every duration spans the block before",
+  "src/models.ts",
+  '      const openedAt = now.toISOString();',
+  '      const openedAt = String(status.updated_at || now.toISOString());'),
+
+ ("the block's END is the worker's stamp again, so the two ends stop being one clock and can invert",
+  "src/models.ts",
+  '    const closedAt = now.toISOString();',
+  '    const closedAt = String(status.updated_at || now.toISOString());'),
+
+ ("a block whose start was never observed reports 0 minutes instead of unmeasured",
+  "src/models.ts",
+  '      wallMinutes: openedAt ? wallMinutes(openedAt, closedAt) : null,',
+  '      wallMinutes: openedAt ? wallMinutes(openedAt, closedAt) : 0,'),
+
+ ("an unmeasured duration is blanked as not-measured again, hiding a wrong value at render time",
+  "src/workledger.ts",
+  '               `${r.wallMinutes === null ? UNMEASURED : r.wallMinutes} | ` +',
+  '               `${r.wallMinutes === null || r.wallMinutes <= 0 ? "—" : r.wallMinutes} | ` +'),
+
+ ("live-check compares windows against the SOURCE manifest again — 'deployed' names a build nobody wrote",
+  "live-check.js",
+  '  const behind = fresh.filter(([, v]) => v.version !== deployed);',
+  '  const behind = fresh.filter(([, v]) => v.version !== pkgV);'),
+
+ ("no deployed artifact falls through to the manifest instead of saying unmeasured",
+  "live-check.js",
+  '  if (!deployed) {',
+  '  if (false) {'),
+
+ ("an undeployed build is reported as something to RELOAD rather than something to deploy",
+  "live-check.js",
+  '    ? `The source manifest is ${pkgV} but the newest deployed artifact is ${deployed} — that build is `',
+  '    ? `` && `The source manifest is ${pkgV} but the newest deployed artifact is ${deployed} — that build is `'),
+
+ ("version segments are compared as STRINGS — 0.38.9 reads as newer than 0.38.10",
+  "live-check.js",
+  '    if (typeof x === "number" && typeof y === "number") return x < y ? -1 : 1;',
+  '    if (false) return x < y ? -1 : 1;'),
+
  # ── FX-002 · the suite must not leave its fixtures on the host ───────────────────────
  # MEASURED 2026-09-15: 892,449 directories in /tmp, 12,201,926 inodes, 97.6% of the filesystem,
  # 100% of the inode table with 74 GB of disk free. It killed a gate mid-run. A 168-mutant gate is

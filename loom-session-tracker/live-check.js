@@ -35,6 +35,8 @@ const { boardSessionId, transcriptFor, readTranscriptContext } = require(path.jo
 const memory = require(path.join(OUT, "memory.js"));
 const { scanWorktrees } = require(path.join(OUT, "health.js"));
 const { planGc, gcSummary, DEFAULT_GC_CONFIG } = require(path.join(OUT, "gc.js"));
+// WL-005: the SAME resolver the ledger's release signal uses. One answer to "what reached a user".
+const { findManifest, deployedVersions } = require(path.join(OUT, "workledger.js"));
 
 const results = [];
 const record = (level, name, detail) => results.push({ level, name, detail });
@@ -60,7 +62,51 @@ const STAMP_FRESH_MS = 60_000;
  * rule for the WRITER (principle 16, GC-006) is that such an entry can never age out, so it must
  * never enter the count either direction here — it is simply not evidence.
  */
-function judgeRunningVersions(stamp, pkgV, now = Date.now()) {
+/** Newest-first semver-ish compare. Numeric segments compared numerically so 0.38.10 > 0.38.9. */
+function cmpVersions(a, b) {
+  const seg = (v) => String(v).split(/[.\-+]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+  const A = seg(a), B = seg(b);
+  for (let i = 0; i < Math.max(A.length, B.length); i++) {
+    const x = A[i], y = B[i];
+    if (x === y) continue;
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (typeof x === "number" && typeof y === "number") return x < y ? -1 : 1;
+    return String(x) < String(y) ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The newest version actually present under a deploy root, or null when none is. Resolved by
+ *  WL-003-R5's `deployedVersions()` — the one answer to "what reached a user", not a second one. */
+function newestDeployed() {
+  const m = findManifest(__dirname);
+  if (!m) return null;
+  const vs = deployedVersions(m);
+  if (!vs.length) return null;
+  return vs.slice().sort(cmpVersions).pop();
+}
+
+/**
+ * WL-005 · `deployed` MEANS WHAT IS ON DISK, NOT WHAT THE MANIFEST SAYS.
+ *
+ * This said `deployed is ${pkgV}` where pkgV is the SOURCE manifest version. Measured 2026-09-15:
+ * run after a merge and before `deploy.sh`, it reported "deployed is 0.38.1" while the newest
+ * artifact under ~/.vscode-oss/extensions was 0.38.0 — naming a build that did not exist anywhere,
+ * and telling the reader to RELOAD to reach it. Reloading cannot reach a build nobody has written.
+ * The true instruction at that moment was `deploy.sh`, which is a different action entirely.
+ *
+ * `./live.sh` is the file the ★ section tells a cleared context to believe over anything written by
+ * hand, so a wrong line here discredits the correct ones beside it.
+ *
+ * Three cases, each said plainly:
+ *   · a window's build differs from the newest DEPLOYED artifact  -> that window is behind; reload it.
+ *   · the source manifest is ahead of the newest artifact         -> not deployed yet; run deploy.sh.
+ *   · no artifact under any deploy root                           -> unmeasured. Never the manifest
+ *                                                                    version wearing the word
+ *                                                                    "deployed".
+ */
+function judgeRunningVersions(stamp, deployed, pkgV, now = Date.now()) {
   const label = ([k, v]) => (v && v.repo) || (/^\d+:/.test(k) ? `window ${k}` : k);
   const parseable = Object.entries(stamp || {}).filter(([, v]) => v && Number.isFinite(Date.parse(v.at)));
   const fresh = parseable.filter(([, v]) => now - Date.parse(v.at) < STAMP_FRESH_MS);
@@ -70,14 +116,36 @@ function judgeRunningVersions(stamp, pkgV, now = Date.now()) {
     return { level: "WARN",
       detail: `no window has ticked in the last ${STAMP_FRESH_MS / 1000}s — cannot tell what is running${staleNote}` };
   }
-  const behind = fresh.filter(([, v]) => v.version !== pkgV);
+  // NO ARTIFACT: nothing can be concluded about what is deployed, and the manifest must not stand in
+  // for it. The windows' own versions are still reported — that part IS measured.
+  if (!deployed) {
+    return { level: "WARN",
+      detail: `what is deployed is unmeasured — no \`local.loom-session-tracker-*\` artifact under ` +
+        `any deploy root, so there is nothing on disk to compare against. Windows report: ` +
+        `${fresh.map((e) => `${label(e)} on ${e[1].version}`).join("; ")} (source manifest is ` +
+        `${pkgV}).${staleNote}` };
+  }
+  const behind = fresh.filter(([, v]) => v.version !== deployed);
+  // Both can be true at once, and they call for DIFFERENT actions, so both are said.
+  const notDeployed = cmpVersions(pkgV, deployed) > 0
+    ? `The source manifest is ${pkgV} but the newest deployed artifact is ${deployed} — that build is ` +
+      `NOT DEPLOYED YET; run \`deploy.sh\`. Reloading cannot reach a build nobody has written.`
+    : "";
   if (behind.length) {
     return { level: "FAIL",
       detail: behind.map((e) => `${label(e)} is on ${e[1].version}`).join("; ") +
-        ` — deployed is ${pkgV}. Reload those windows (Developer: Reload Window); until then they ` +
-        `behave like the build they loaded, whatever this file says.${staleNote}` };
+        ` — the newest DEPLOYED artifact is ${deployed}. Reload those windows (Developer: Reload ` +
+        `Window); until then they behave like the build they loaded, whatever this file says.` +
+        `${notDeployed ? " " + notDeployed : ""}${staleNote}` };
   }
-  return { level: "PASS", detail: `${fresh.length} window(s) on ${pkgV}${staleNote}` };
+  if (notDeployed) {
+    return { level: "FAIL",
+      detail: `${fresh.length} window(s) on ${deployed}, which is the newest deployed artifact. ` +
+        `${notDeployed}${staleNote}` };
+  }
+  return { level: "PASS",
+    detail: `${fresh.length} window(s) on ${deployed}, the newest deployed artifact` +
+      `${cmpVersions(pkgV, deployed) === 0 ? " and the source manifest version" : ""}${staleNote}` };
 }
 
 async function main() {
@@ -271,7 +339,7 @@ async function main() {
       path.join(require("os").homedir(), ".claude", "loom", "running-versions.json"), "utf8"));
     // Entries are keyed by windowId since 0.33.0 and carry `repo` as a field; older builds keyed
     // them by repo. Both shapes are read; see `judgeRunningVersions` for what counts as fresh.
-    const j = judgeRunningVersions(stamp, pkgV);
+    const j = judgeRunningVersions(stamp, newestDeployed(), pkgV);
     const name = j.level === "FAIL" ? "windows are running an OLD build" : "running version";
     record(j.level, name, j.detail);
   } catch {

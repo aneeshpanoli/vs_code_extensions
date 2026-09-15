@@ -582,8 +582,15 @@ suite("WL-001 R3: a handoff no commit names shows an em dash, not 0", () => {
   eq(named.linesShipped, 6, "the commit naming WL-9 attributes its product lines to it");
   eq(unnamed.linesShipped, null, "no commit names WL-8 — null, because that is not a measured 0");
   const md = wl.renderReport([{ w: wl.computeWorkLedger(dir, {}), rows }]);
+  // WL-005 REVERSED THE OTHER HALF OF THIS SUITE ON PURPOSE. It used to require that a NEGATIVE wall
+  // time render as `—`, i.e. as "not measured". That was false — a -3 was measured, wrongly — and the
+  // blanking hid the `started` defect at render time while the same poisoned field fed the median.
+  // A negative is now SHOWN. `—`/`unmeasured` is reserved for values that genuinely do not exist.
   match(md, /— \(no commit names it\)/, "and the report renders it as such");
-  match(md, /\| WL-8 \| dev \| claude-opus-5 \| 1 \| — \|/, "a negative wall time renders as a dash");
+  match(md, /\| WL-8 \| dev \| claude-opus-5 \| 1 \| -3 \|/,
+        "a negative wall time is SHOWN — it was measured, wrongly, and blanking it claimed otherwise");
+  ok(!/\| WL-8 \| dev \| claude-opus-5 \| 1 \| — \|/.test(md),
+     "and is NOT blanked as not-measured, which is what hid the started-stamp defect");
 });
 
 suite("WL-001 R3: the report survives a project with no git data at all", () => {

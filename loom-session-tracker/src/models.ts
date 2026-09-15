@@ -397,6 +397,12 @@ interface PolicyRecord { model: string;
 interface EscalationRecord { role: string; blocked: number; lastSeen?: string; escalated?: boolean; }
 /** The line-in-progress for the ledger (R5): what we know about a (role, id) until it closes. */
 interface LedgerRecord { id: string; role: string; model: string; chosenBy: string; started: string;
+                        /** WL-005: the tracker's OWN clock at the tick that first saw this handoff.
+                         *  `started` used to be the worker's `status.updated_at`, which at that
+                         *  moment still belongs to the PREVIOUS block — see `ledgerTick`. */
+                        openedAt?: string;
+                        /** The worker's stamp when we opened, kept for diagnosis, never for arithmetic. */
+                        workerStampAtOpen?: string | null;
   loopBacks: number; testsBefore: number | null;
   /** §19's SIZE rule, measured (CH-001). How many paths the handoff declared — the closest proxy for
    *  "split at file boundaries" that exists before the work is done. 0 means it declared none. */
@@ -774,9 +780,31 @@ export class ModelPolicy {
     if (!cur && id) {
       const want = desiredModel(this.repo, role, workerModel, allow);
       const seen = String(status.updated_at || "");
+      // WL-005 · `started` USED TO BE `status.updated_at`, AND THAT IS THE WHOLE DEFECT.
+      //
+      // At the moment a block opens, the worker's status.json still carries the stamp of the LAST
+      // thing it wrote — which belongs to the block BEFORE this one. So every duration measured the
+      // gap from some earlier block's activity to this one's end. MEASURED on this bus 2026-09-15,
+      // every record in model-ledger.jsonl:
+      //
+      //   CH-001-ack  started 2026-09-13T23:14:58Z   finished 2026-09-13T23:14:58Z   wall 0
+      //   WL-001      started 2026-09-13T23:14:58Z   finished 2026-09-15T16:10:15Z   wall 2455.3
+      //               ^^^ the SAME instant as the previous block's, two days earlier
+      //
+      // Not one record's `started` was its own: each was either the previous block's `started` or
+      // its `finished`. And because `finished` came from the worker's clock while `started` came
+      // from a different record's write, the pair could invert — ReciEats rendered -39.3 minutes.
+      // A negative duration was the visible half of this; 2455 was the invisible half.
+      //
+      // The honest stamp is the one THIS process observed: the tick that first saw the handoff. It
+      // is late by at most one tick and never belongs to another block. The worker's stamp is kept
+      // beside it for diagnosis, never used for arithmetic.
+      const openedAt = now.toISOString();
       led[role] = { id, role, model: want.model,
                     chosenBy: this.wasEscalated(id) ? "escalated" : want.chosenBy,
-                    started: String(status.updated_at || now.toISOString()),
+                    openedAt,
+                    workerStampAtOpen: seen || null,
+                    started: openedAt,
                     loopBacks: 0, testsBefore: numOrNull(status.tests_before ?? status.testsBefore),
                     filesDeclared: handoffFiles(this.repo, role).length,
                     // the stamp this block OPENED on is the first distinct value we saw
@@ -835,17 +863,31 @@ export class ModelPolicy {
   private appendLedger(rec: LedgerRecord, status: any, now: Date, st: PolicyState,
                        contextPct: number | null = null): boolean {
     if (!this.repo) return false;
-    const finished = String(status.updated_at || now.toISOString());
+    // WL-005 · BOTH ENDS COME FROM ONE CLOCK. `finished` was the worker's `status.updated_at` while
+    // `started` came from a different record's write, so the two were not commensurable and their
+    // difference was not a duration. This process's own clock bounds the block by its own observed
+    // start and end, which is the property that has to hold. The worker's stamp is still recorded —
+    // it is useful, it is just not an endpoint.
+    const closedAt = now.toISOString();
+    const workerStampAtFinish = status.updated_at ? String(status.updated_at) : null;
+    // A record opened before WL-005 carries no `openedAt`, and there is NOTHING here from which its
+    // real start could be recovered. `unmeasured` is a state, not a zero and not a guess: the line
+    // says it has no duration rather than reporting one it cannot support.
+    const openedAt = rec.openedAt ? String(rec.openedAt) : null;
     const line = {
       id: rec.id, role: rec.role, model: rec.model || null,
       chosenBy: this.wasEscalated(rec.id) ? "escalated" : (rec.chosenBy || null),
-      started: rec.started || null,
-      finished,
+      started: openedAt,
+      openedAt, closedAt,
+      workerStampAtOpen: rec.workerStampAtOpen ?? null,
+      workerStampAtFinish,
+      finished: closedAt,
       loopBacks: ((st.escalations || {})[rec.id] || { blocked: rec.loopBacks || 0 }).blocked,
       testsBefore: rec.testsBefore,
       testsAfter: numOrNull(status.tests_after ?? status.testsAfter),
       contextPctAtFinish: numOrNull(contextPct),
-      wallMinutes: wallMinutes(rec.started, finished),
+      // Null in, null out: no observed open means no duration, however long ago the tick was.
+      wallMinutes: openedAt ? wallMinutes(openedAt, closedAt) : null,
       filesDeclared: typeof rec.filesDeclared === "number" ? rec.filesDeclared : null,
       statusUpdates: rec.statusUpdates ?? null,
     };

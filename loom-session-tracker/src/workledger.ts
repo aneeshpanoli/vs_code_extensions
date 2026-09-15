@@ -1537,7 +1537,13 @@ export function renderReport(entries: Array<{ w: WorkLedger; rows: HandoffRow[] 
              "|---|---|---|---|---|---|");
       for (const r of rows) {
         L.push(`| ${r.id} | ${r.role} | ${r.model} | ${r.loopBacks} | ` +
-               `${r.wallMinutes === null || r.wallMinutes <= 0 ? "—" : r.wallMinutes} | ` +
+               // WL-005 · A NULL AND A SUPPRESSED VALUE ARE DIFFERENT FACTS. `—` for both meant a
+               // block whose duration was never measured looked exactly like one whose duration was
+               // nonsense, and the nonsense (2455 minutes from a stale `started`, -39.3 on ReciEats)
+               // was hidden at render time while the same poisoned field fed the median. A negative
+               // is now impossible from the recorded pair, so if one ever appears it is a fact about
+               // the bus and is SHOWN rather than blanked.
+               `${r.wallMinutes === null ? UNMEASURED : r.wallMinutes} | ` +
                `${r.linesShipped === null ? "— (no commit names it)" : r.linesShipped} |`);
       }
       L.push("");
@@ -1546,8 +1552,15 @@ export function renderReport(entries: Array<{ w: WorkLedger; rows: HandoffRow[] 
     }
   }
   L.push("---", "",
-         "`—` means **not measured**, never zero. A non-positive wall time is dropped rather than",
-         "shown as 0 (the `started` stamp bug), and a handoff no commit names shows `—` rather than 0",
-         "lines: “no commit mentioned it” and “it shipped nothing” are different claims.");
+         "`—` means **not measured**, never zero: a handoff no commit names shows `—` rather than 0",
+         "lines, because “no commit mentioned it” and “it shipped nothing” are different claims.",
+         "",
+         "A duration reads `" + UNMEASURED + "` when the block's start was never observed — every block",
+         "opened before 0.38.2 — and is otherwise bounded by that block's own observed start and end.",
+         "**A NEGATIVE duration is shown, not blanked.** Until 0.38.2 `started` was read from the",
+         "worker's `status.updated_at`, which at the moment a block opened still held the stamp of the",
+         "block BEFORE it, so durations spanned other blocks (2455 minutes for a ~90-minute block) and",
+         "could invert (-39.3). Blanking those said “not measured”, which was false — they were",
+         "measured, wrongly — and it hid the defect at render time while the same field fed the median.");
   return L.join("\n");
 }

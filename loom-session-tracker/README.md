@@ -411,7 +411,7 @@ conclusion — `38 of the last 89 tool call(s) you made went to bus mechanics`, 
 move without doing any of the work it stands for; that is the WL-001 failure class aimed at the one
 reader who can act on it, and a test asserts no `%` and no grading word ever reaches that text.
 
-Five things this deliberately refuses to do:
+Six things this deliberately refuses to do:
 
 - **A repo whose transcripts it cannot find is `unmeasured`, never `$0.00/line`.** The session
   encoder writes a project directory by folding `/`, `_` **and `.`** to `-`, so
@@ -428,6 +428,21 @@ Five things this deliberately refuses to do:
   own, because a cost alarm can never fire on a repo whose cost reads as zero. The second is an
   honest `0`. One word — `unmeasured` — in the row, the one-line summary, the nudge and the report,
   because the panel previously said `$?` in one place and `$0.00` in another for the same gap.
+- **A duration is bounded by its own block, and `deployed` means what is on disk.** Both were proxies
+  stated as facts. `wallMinutes` took its start from the worker's `status.updated_at`, which at the
+  moment a block opens still holds the stamp of the block *before* it — so WL-001 reported **2455
+  minutes** against a real ~90, ReciEats reported **-39.3**, and on this bus not one record's `started`
+  was its own. Both ends now come from one clock, this process's observation of the ticks that opened
+  and closed the block; the worker's stamps are kept as `workerStampAt*` for diagnosis and are never
+  endpoints. A block whose start was never observed has **no** duration rather than a small or a large
+  one. And a negative is now **shown, not blanked**: blanking it claimed "not measured", which was
+  false — it was measured, wrongly — and that render-time hiding is why the defect survived while the
+  same field fed the median. Separately, `live-check.js` said `deployed is <X>` reading the **source
+  manifest**: run after a merge and before `deploy.sh` it named 0.38.1 while the newest artifact on
+  disk was 0.38.0, a build that existed nowhere, and told the reader to *reload* to reach it. It now
+  resolves the newest artifact through the same `deployedVersions()` the release signal uses — one
+  answer to "what reached a user" — and separates three cases: reload a window that is behind the
+  artifact, run `deploy.sh` when the manifest is ahead of it, and `unmeasured` when no artifact exists.
 - **A figure it cannot compute is `null` and renders "unknown", never `0`.** A measured zero and an
   unreadable value are opposites. A non-positive `wallMinutes` is dropped rather than averaged in as
   0, and a handoff no commit names shows `—` rather than 0 lines shipped.
