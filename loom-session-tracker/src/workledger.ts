@@ -58,13 +58,16 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
  *  Opus 5 $5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5, with the standard cache multipliers (a read is
  *  0.1× input, a 1-hour write is 2× input).
  *
- *  ONE DELIBERATE DEPARTURE from the figures the handoff specified, and it is the one that matters
- *  most here: Claude Fable 5.1 prices cache READS at $0.25/MTok, not the $1.00 that 0.1× would give.
- *  The handoff's table said 1. Cache reads are ~100× the other classes and the ORCHESTRATOR is the
- *  session on Fable, so carrying 1.0 would overstate the single largest line in the whole figure by
- *  4×. A cost figure that is wrong in the expensive direction gets the feature switched off, and
- *  this module's only claim is that its numbers are true. Flagged to the PO in the outbox; override
- *  it in settings in one line if that is the wrong call. */
+ *  THE ONE EXCEPTION, ratified 2026-09-15 (WL-001-R7): Claude Fable 5.1 prices cache READS at
+ *  $0.25/MTok, not the $1.00 that 0.1× input would give. Cache reads are ~100× every other class and
+ *  the ORCHESTRATOR is the session on Fable, so $1.00 overstates the single largest line in the whole
+ *  figure fourfold. WL-001's handoff carried $1.00; it was checked against the published table and
+ *  corrected, and the correction was ratified.
+ *
+ *  THESE ARE DATED CONSTANTS AND PRICES MOVE. A stale number here is the failure mode of a cost
+ *  figure — it stays plausible while being wrong, which is the one thing this module must not do.
+ *  The whole table is settings-overridable (`loomSessionTracker.modelPrices`); re-check it against
+ *  the published pricing rather than trusting this comment's date. */
 export type PriceRow = [number, number, number, number];
 export const DEFAULT_MODEL_PRICES: Record<string, PriceRow> = {
   "claude-fable-5-1": [10, 50, 0.25, 20],
@@ -177,7 +180,7 @@ export function matchesAny(file: string, globs: string[]): boolean {
 
 const DOC_RE = /(^|\/)(docs?|guide|handoffs?)\//i;
 const MD_RE = /\.(md|markdown|txt|rst|adoc)$/i;
-const RIG_RE = /(^|\/)(tests?|spec|specs|__tests__|e2e|scripts?|tools?|fixtures?)\//i;
+const RIG_RE = /(^|\/)(tests?|spec|specs|__tests__|__mocks__|e2e|scripts?|tools?|fixtures?)\//i;
 const RIG_FILE_RE = /\.(test|spec)\.[a-z]+$/i;
 const LOCK_RE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Cargo\.lock|go\.sum)$/i;
 const CONFIG_RE = /(^|\/)(\.[^/]+|[^/]*\.(json|ya?ml|toml|ini|cfg|lock))$/i;
@@ -198,14 +201,43 @@ export function heuristicIsProduct(file: string): boolean {
   return true;
 }
 
-export interface Classifier { isProduct(file: string): boolean; heuristic: boolean; }
+export interface Classifier {
+  isProduct(file: string): boolean;
+  /** Matched an exclusion — subtracted from product, and counted as rig instead. */
+  isExcluded(file: string): boolean;
+  heuristic: boolean;
+}
 
-export function classifierFor(repo: string, productPaths: Record<string, string[]>): Classifier {
+/**
+ * R7a — SUBTRACTED FROM PRODUCT, WHATEVER `productPaths` SAYS, and kept as its own visible list
+ * rather than buried inside the product globs, so the next person can see what was taken out.
+ *
+ * This exists because it was measured wrong. `productPaths` for ReciEats is `src/app/**` +
+ * `src/lib/**`, and 39,150 of the 63,225 "product" lines those globs matched over the audited week
+ * were TEST files living under `src/` — `src/app/page.test.tsx` alone was +10,782, the single
+ * largest file in the product figure. A ledger whose entire purpose is to separate what reached a
+ * user from the rig around it, and which counts `page.test.tsx` as product, reports exactly the
+ * number it exists to refute. With this applied ReciEats reports +24,075 net, and its headline
+ * shipping share falls from 56.8 % to 25.1 %.
+ *
+ * The leading globstar on each pattern is deliberate: a root-anchored `__tests__` pattern would miss
+ * `src/__tests__/`, which is where they actually live.
+ */
+export const DEFAULT_EXCLUDE_PATHS = [
+  "**/*.test.*", "**/*.spec.*", "**/__tests__/**", "**/__mocks__/**",
+];
+
+export function classifierFor(repo: string, productPaths: Record<string, string[]>,
+                              excludePaths: string[] = DEFAULT_EXCLUDE_PATHS): Classifier {
+  const excl = Array.isArray(excludePaths) ? excludePaths : DEFAULT_EXCLUDE_PATHS;
+  const isExcluded = (f: string) => matchesAny(f, excl);
   const globs = productPaths && productPaths[repo];
   // An EMPTY list is a configuration that says "nothing here ships", not an absent one. Falling
   // through to the heuristic on `[]` would silently overrule what a person wrote.
-  if (Array.isArray(globs)) return { isProduct: (f) => matchesAny(f, globs), heuristic: false };
-  return { isProduct: heuristicIsProduct, heuristic: true };
+  if (Array.isArray(globs)) {
+    return { isProduct: (f) => !isExcluded(f) && matchesAny(f, globs), isExcluded, heuristic: false };
+  }
+  return { isProduct: (f) => !isExcluded(f) && heuristicIsProduct(f), isExcluded, heuristic: true };
 }
 
 // ── git ───────────────────────────────────────────────────────────────────────────────────────
@@ -484,6 +516,8 @@ export function productDelta(repoPath: string | null, since: string,
 export interface ComputeOpts {
   windowDays?: number;
   productPaths?: Record<string, string[]>;
+  /** R7a: globs subtracted from product whatever `productPaths` matches. */
+  excludePaths?: string[];
   /** Override the bus root (tests). */
   loomRoot?: string;
   /** Override "now" (tests). */
@@ -548,7 +582,7 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
   const sinceMs = nowMs - windowDays * 86_400_000;
   const productPaths = opts.productPaths || DEFAULT_PRODUCT_PATHS;
   const repo = repoPath ? path.basename(repoPath) : "";
-  const cls = classifierFor(repo, productPaths);
+  const cls = classifierFor(repo, productPaths, opts.excludePaths);
 
   // Tokens are measured from the TRANSCRIPTS, not from the repo, so they exist even when git has
   // nothing to say. A week that burned 9 billion tokens into a repo with no commits is the single
@@ -601,7 +635,11 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
       const n = l.added + l.deleted;
       totalLines += n;
       if (cls.isProduct(l.file)) productLines += n;
-      if (isRig(l.file)) rigLines += n;
+      // R7c — WHAT IS SUBTRACTED FROM PRODUCT LANDS HERE. Before R7a the two sets overlapped: a
+      // `src/app/page.test.tsx` was counted as product AND as rig, so the ratio understated the rig
+      // by construction (1.18× on ReciEats) while the shipping share overstated the product. The
+      // numerator and denominator must partition the week's lines, not share them.
+      if (isRig(l.file) || cls.isExcluded(l.file)) rigLines += n;
       const e = churn.get(l.file) || { file: l.file, touches: 0, net: 0 };
       e.touches++;
       e.net += l.added - l.deleted;
@@ -908,9 +946,9 @@ export interface HandoffRow {
  *  "no commit mentioned it" and "it shipped nothing" are different claims. */
 export function handoffRows(repoPath: string | null, repo: string, sinceMs: number,
                             productPaths: Record<string, string[]> = DEFAULT_PRODUCT_PATHS,
-                            loomRoot?: string): HandoffRow[] {
+                            loomRoot?: string, excludePaths?: string[]): HandoffRow[] {
   const led = readLedger(repo, sinceMs, loomRoot);
-  const cls = classifierFor(repo, productPaths);
+  const cls = classifierFor(repo, productPaths, excludePaths);
   const byId = new Map<string, number>();
   if (repoPath) {
     const out = git(repoPath, ["log", `--since=${new Date(sinceMs).toISOString()}`, "--numstat",

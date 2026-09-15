@@ -44,7 +44,8 @@ import { planGc, applyGc, renderGc, gcSummary, fmtBytes, loadGcState, saveGcStat
          finishAuto, refreshLease, liveSessionIdsOf, busLiveRoles, GcConfig, GcPlan, ApplyOptions,
          DEFAULT_GC_CONFIG } from "./gc";
 import { refreshWorkLedger, computeWorkLedger, readCache, writeCache, handoffRows, renderReport, ledgerAlert, todayKey,
-         DEFAULT_PRODUCT_PATHS, DEFAULT_THRESHOLDS, DEFAULT_WINDOW_DAYS, DEFAULT_INTERVAL_MIN,
+         DEFAULT_PRODUCT_PATHS, DEFAULT_EXCLUDE_PATHS, DEFAULT_THRESHOLDS,
+         DEFAULT_WINDOW_DAYS, DEFAULT_INTERVAL_MIN,
          Thresholds, WorkLedger } from "./workledger";
 
 let timer: NodeJS.Timeout | undefined;
@@ -296,6 +297,10 @@ export function activate(context: vscode.ExtensionContext) {
       windowDays: Math.max(1, Number(cfg().get("workLedgerWindowDays", DEFAULT_WINDOW_DAYS)) || DEFAULT_WINDOW_DAYS),
       productPaths: (cfg().get<Record<string, string[]>>("productPaths", DEFAULT_PRODUCT_PATHS) ||
                      DEFAULT_PRODUCT_PATHS),
+      // R7a: subtracted from product whatever productPaths matches, and kept separate so what was
+      // taken out is visible rather than buried in the product globs.
+      excludePaths: (cfg().get<string[]>("excludePaths", DEFAULT_EXCLUDE_PATHS) ||
+                     DEFAULT_EXCLUDE_PATHS),
       intervalMin: Math.max(1, Number(cfg().get("workLedgerIntervalMin", DEFAULT_INTERVAL_MIN)) || DEFAULT_INTERVAL_MIN),
     });
     const thresholds = (): Thresholds => {
@@ -1144,7 +1149,8 @@ export function activate(context: vscode.ExtensionContext) {
           // who asked for the report is asking about NOW, and the cost is one git pass.
           const w = computeWorkLedger(r === repo ? repoRoot() : null, { ...opts, nowMs: Date.now() });
           const since = Date.now() - opts.windowDays * 86_400_000;
-          return { w, rows: handoffRows(r === repo ? repoRoot() : null, r, since, opts.productPaths) };
+          return { w, rows: handoffRows(r === repo ? repoRoot() : null, r, since,
+                                        opts.productPaths, undefined, opts.excludePaths) };
         }).filter((e) => e.w.repo || e.rows.length);
         const doc = await vscode.workspace.openTextDocument({
           language: "markdown", content: renderReport(entries, thresholds()),

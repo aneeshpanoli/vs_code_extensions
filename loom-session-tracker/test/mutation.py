@@ -917,6 +917,22 @@ MUTATIONS = [
   "      if (!frame || frame.busy) return;                    // not now; the day is still unspoken for",
   "      if (!frame) return;"),
 
+
+ # R7a — killed by "WL-001 R7a: a test file under a product glob is NOT product — the defect this
+ # panel exists to refute" and by the partition test. MEASURED: without the exclusions, 39,150 of
+ # ReciEats' 63,225 "product" lines over the audited week were test files under src/, and the
+ # shipping share read 56.8 % instead of 25.1 %. src/app/page.test.tsx alone was +10,782.
+ ("a test file under a product glob counts as PRODUCT — the ledger reports the number it refutes",
+  "src/workledger.ts",
+  "    return { isProduct: (f) => !isExcluded(f) && matchesAny(f, globs), isExcluded, heuristic: false };",
+  "    return { isProduct: (f) => matchesAny(f, globs), isExcluded, heuristic: false };"),
+
+ # R7c — killed by "WL-001 R7c: product and rig PARTITION the week's lines — they must not overlap".
+ ("what is subtracted from product falls out of rig too — the ratio understates by construction",
+  "src/workledger.ts",
+  "      if (isRig(l.file) || cls.isExcluded(l.file)) rigLines += n;",
+  "      if (isRig(l.file)) rigLines += n;"),
+
 ]
 
 def sh(cmd):

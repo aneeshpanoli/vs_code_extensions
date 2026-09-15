@@ -370,6 +370,12 @@ Three corollaries the code is built to, each of which had to be argued for once:
   times are dropped, not averaged in; a handoff no commit names shows `—`, not 0 lines.
 - **Cache reads are the figure.** They run ~100× the other token classes. A token total that omits
   them understates a 15-billion-token week by two orders of magnitude, and every cost ratio with it.
+- **The numerator and the denominator must not overlap.** WL-001 shipped with `productPaths`
+  matching `src/app/**`, which also matches `src/app/page.test.tsx` — so the same 39,150 lines were
+  counted as product *and* as rig, and the shipping share read 56.8 % where the truth was 25.1 %. A
+  ledger built to separate product from rig cannot let one glob claim both. `excludePaths` is kept as
+  its own visible list for the same reason the `heuristic` flag exists: what was subtracted has to be
+  readable, not inferable.
 - **Churn is not production.** The denominator is a two-point diff, not a sum of per-commit numstat:
   a file rewritten 118 times has produced nothing if it ends the same size. ReciEats' most-touched
   file in the audited week was `guide/GUIDE.txt`, at 203 touches.

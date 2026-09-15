@@ -84,21 +84,60 @@ suite("WL-001 R1: shipsToUser is the share of CHANGED LINES landing in configure
   eq(w.heuristic, false, "configured, not guessed");
 });
 
-suite("WL-001 R1: a test file counted as PRODUCT is the defect this whole panel exists to prevent", () => {
-  // The mutation that matters most: if `src/**` swallowed the tests, a week like the audited one
-  // would read GREEN. Here the same tree is measured under a correct config and a sloppy one.
+suite("WL-001 R7a: a test file under a product glob is NOT product — the defect this panel exists to refute", () => {
+  // MEASURED, not hypothetical. ReciEats' productPaths are `src/app/**` + `src/lib/**`, and 39,150
+  // of the 63,225 lines those globs matched over the audited week were TEST files living under
+  // `src/` — `src/app/page.test.tsx` alone was +10,782, the single largest file in the product
+  // figure. A ledger that counts page.test.tsx as product reports the number it exists to refute.
   const dir = makeGitRepo("fixt2", [
     { msg: "seed", files: { "README.md": "x\n" } },
     { msg: "work", files: { "src/app/a.tsx": lines(20), "src/app/a.test.tsx": lines(80) } },
   ]);
-  const tight = wl.computeWorkLedger(dir, { productPaths: { fixt2: ["src/app/**"] } });
-  // The glob genuinely does match the test file — which is exactly why the heuristic exists and why
-  // the panel must say WHICH of the two it used.
-  ok(tight.shipsToUser > 90, `a glob that swallows tests reads high (${tight.shipsToUser}%)`);
+  const w = wl.computeWorkLedger(dir, { productPaths: { fixt2: ["src/app/**"] } });
+  eq(w.productLines, 20, "the glob matches the test file; the exclusion subtracts it anyway");
+  ok(w.shipsToUser < 25, `and the shipping share tells the truth (${w.shipsToUser}%)`);
+  // Turning the exclusions off reproduces the defect exactly — so the fix is the exclusions, and
+  // this test would still catch a regression that quietly emptied the list.
+  const broken = wl.computeWorkLedger(dir, { productPaths: { fixt2: ["src/app/**"] }, excludePaths: [] });
+  eq(broken.productLines, 100, "without exclusions the test file is counted as product again");
+  ok(broken.shipsToUser > 90, `which is how a week like the audited one reads GREEN (${broken.shipsToUser}%)`);
   const heur = wl.computeWorkLedger(dir, { productPaths: {} });
   eq(heur.heuristic, true, "unconfigured repo falls back and SAYS SO");
-  eq(heur.productLines, 20, "the heuristic excludes *.test.* from product");
-  ok(heur.shipsToUser < tight.shipsToUser, "and therefore reads lower — the honest answer");
+  eq(heur.productLines, 20, "and the heuristic reaches the same answer by its own route");
+});
+
+suite("WL-001 R7c: product and rig PARTITION the week's lines — they must not overlap", () => {
+  // Before R7a the same `src/app/page.test.tsx` was counted as product AND as rig, so the ratio
+  // understated the rig by construction while the shipping share overstated the product.
+  const dir = makeGitRepo("fixt15", [
+    { msg: "seed", files: { "README.md": "x\n" } },
+    { msg: "work", files: { "src/app/a.tsx": lines(10), "src/app/a.test.tsx": lines(30),
+                            "scripts/verify.py": lines(10) } },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { fixt15: ["src/app/**"] } });
+  eq(w.productLines, 10, "only the real product line count");
+  eq(w.rigLines, 40, "what was SUBTRACTED from product lands in rig, beside scripts/");
+  eq(w.rigRatio, 4, "and the ratio is rig over product, sharing nothing");
+  ok(w.productLines + w.rigLines <= w.totalLines, "the two sets never double-count a line");
+});
+
+suite("WL-001 R7a: the default exclusions match at any depth, not just the repo root", () => {
+  // A root-anchored `__tests__` pattern would miss `src/__tests__/`, which is where they live.
+  const c = wl.classifierFor("r", { r: ["src/**"] });
+  for (const f of ["src/app/page.test.tsx", "src/a.spec.ts", "src/__tests__/a.ts",
+                   "src/deep/__mocks__/fs.ts"]) {
+    eq(c.isProduct(f), false, `${f} is not product`);
+    eq(c.isExcluded(f), true, `${f} is visibly excluded, not silently absent`);
+  }
+  eq(c.isProduct("src/app/page.tsx"), true, "and ordinary product is untouched");
+});
+
+suite("WL-001 R7a: excludePaths is settings-overridable, like everything else", () => {
+  const c = wl.classifierFor("r", { r: ["src/**"] }, ["**/*.stories.*"]);
+  eq(c.isProduct("src/a.stories.tsx"), false, "a project's own convention can be excluded");
+  eq(c.isProduct("src/a.test.tsx"), true, "and replacing the list really replaces it");
+  const d = wl.classifierFor("r", { r: ["src/**"] }, []);
+  eq(d.isProduct("src/a.test.tsx"), true, "an EMPTY list excludes nothing — a person's choice stands");
 });
 
 suite("WL-001 R1: narrationShare counts commits whose ENTIRE file set is documentation", () => {

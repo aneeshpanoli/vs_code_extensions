@@ -458,6 +458,19 @@
           },
           "description": "Repo name \u2192 globs of what SHIPS to a user, for the shipsToUser figure. A repo not listed here falls back to a heuristic (everything except test/spec/scripts/tools/docs/*.md/lockfiles/config) and the panel says the figure is heuristic \u2014 an unconfigured guess presented as a measurement is the same lie in a new place. An EMPTY list means 'nothing here ships' and is honoured as configuration, not treated as absent."
         },
+        "loomSessionTracker.excludePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.test.*",
+            "**/*.spec.*",
+            "**/__tests__/**",
+            "**/__mocks__/**"
+          ],
+          "description": "Globs SUBTRACTED from product whatever productPaths matches, and counted as rig instead. Kept as its own visible list rather than buried inside the product globs, so what was taken out can be seen. Measured 2026-09-15: without this, 39,150 of ReciEats' 63,225 'product' lines over seven days were test files living under src/ - src/app/page.test.tsx alone was +10,782, the single largest file in the product figure - and the shipping share read 56.8% instead of 25.1%. The '**/' prefixes matter: a bare '__tests__/**' anchors at the repo root and would miss src/__tests__/."
+        },
         "loomSessionTracker.workLedgerWindowDays": {
           "type": "number",
           "default": 7,
@@ -486,12 +499,42 @@
         "loomSessionTracker.modelPrices": {
           "type": "object",
           "default": {
-            "claude-fable-5-1": [10, 50, 0.25, 20],
-            "claude-fable-5": [10, 50, 1, 20],
-            "claude-opus-5": [5, 25, 0.5, 10],
-            "claude-opus-4-8": [5, 25, 0.5, 10],
-            "claude-sonnet-5": [2, 10, 0.2, 4],
-            "claude-haiku-4-5": [1, 5, 0.1, 2]
+            "claude-fable-5-1": [
+              10,
+              50,
+              0.25,
+              20
+            ],
+            "claude-fable-5": [
+              10,
+              50,
+              1,
+              20
+            ],
+            "claude-opus-5": [
+              5,
+              25,
+              0.5,
+              10
+            ],
+            "claude-opus-4-8": [
+              5,
+              25,
+              0.5,
+              10
+            ],
+            "claude-sonnet-5": [
+              2,
+              10,
+              0.2,
+              4
+            ],
+            "claude-haiku-4-5": [
+              1,
+              5,
+              0.1,
+              2
+            ]
           },
           "description": "LIST price per model, [input, output, cacheRead, cacheWrite1h] in dollars per MTok, for the 'list-price equivalent' figure only \u2014 this work runs on a subscription and nobody is invoiced it. Verified 2026-09-15 against the published model table (Fable 5.1 $10/$50, Opus 5 $5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5; a cache read is 0.1x input and a 1-hour cache write is 2x, EXCEPT Claude Fable 5.1, whose cache reads are $0.25/MTok rather than $1.00). A model id with no row contributes its tokens to the token total but no dollars, and the panel names it rather than silently undercounting. Ids are matched by longest prefix, so a [1m] suffix or a dated snapshot inherits its family's row."
         }

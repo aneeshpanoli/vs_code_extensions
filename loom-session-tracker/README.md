@@ -377,6 +377,20 @@ Four things this deliberately refuses to do:
   heuristic (everything except test/spec/`scripts/`/`tools/`/`docs/`/`*.md`/lockfiles/config) and is
   marked `(est)` on the row and `HEURISTIC` in the tooltip. An unconfigured guess presented as a
   measurement is the same lie in a new place.
+- **Tests are subtracted from product even when a product glob matches them**, by `excludePaths`
+  (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/__mocks__/**` by default, settings-overridable).
+  It is kept as its own visible list rather than folded into the product globs, so the next person can
+  see what was taken out — and it is not hypothetical. ReciEats' product globs are `src/app/**` and
+  `src/lib/**`; over the audited week **39,150 of the 63,225 lines they matched were test files living
+  under `src/`**, and `src/app/page.test.tsx` alone was +10,782 — the single largest file in the
+  product figure. Uncorrected, the shipping share read **56.8 %** instead of **25.1 %**, and the cost
+  per product line $0.12 instead of $0.30. A ledger whose whole purpose is to separate what reached a
+  user from the rig around it, and which counts `page.test.tsx` as product, reports exactly the number
+  it exists to refute.
+- **Product and rig partition the week's lines; they never overlap.** Whatever `excludePaths`
+  subtracts from product is counted as rig, alongside `test/`, `scripts/`, `tools/` and fixtures. The
+  two sets used to share the test files, so `rigRatio` understated the rig by construction while
+  `shipsToUser` overstated the product — both halves of one error.
 - **An unpriced model contributes tokens but no dollars, and is named.** A silent undercount
   presented as a cost is the same failure again.
 
@@ -390,6 +404,13 @@ it; the dollar figure is the resource measure, and every label that shows it say
 $5/$25, Sonnet 5 $2/$10, Haiku 4.5 $1/$5 per MTok, a cache read 0.1× input and a 1-hour cache write
 2×, **except Claude Fable 5.1, whose cache reads are $0.25/MTok rather than $1.00**. Ids match by
 longest prefix, so `claude-opus-5[1m]` and a dated snapshot inherit their family's row.
+
+**These are dated constants and prices move.** A stale price is the characteristic failure of a cost
+figure: it stays plausible while being wrong, which is the one thing this panel must not do. The whole
+table is settings-overridable — re-check it against the published pricing rather than trusting the
+date in this file. The Fable 5.1 cache-read rate is exactly the kind of exception a remembered rule of
+thumb gets wrong: 0.1× input would say $1.00, overstating the largest single line in the whole figure
+fourfold, because cache reads run ~100× every other class and the orchestrator is the Fable session.
 
 **Net product lines is a two-point diff (`<base>..HEAD`), not a sum of per-commit numstat**, and the
 difference is the whole value of the figure. Summing commits counts a line once per commit that
@@ -801,6 +822,7 @@ All under `loomSessionTracker.`.
 | `gcBackupDays` | `7` | Age past which a `*.bak-<epoch>` under `~/.claude/loom` is archivable |
 | `workLedgerEnabled` | `true` | Measure what each project PRODUCED, from git and the transcripts, and show it above that project's agents |
 | `productPaths` | ReciEats, pleodo | Repo → globs of what ships to a user. An unlisted repo falls back to a heuristic and the panel says so. An empty list means "nothing here ships" and is honoured as configuration |
+| `excludePaths` | `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/__mocks__/**` | Subtracted from product whatever `productPaths` matches, and counted as rig instead. Its own list, so what was taken out is visible. Without it, 39,150 of ReciEats' 63,225 "product" lines in the audited week were tests under `src/` |
 | `workLedgerWindowDays` / `workLedgerIntervalMin` | `7` / `10` | Days of history measured; minimum minutes between recomputes (the tick reads the cache in between) |
 | `workLedgerThresholds` | see below | `shipsGood` 40 / `shipsBad` 20 · `loopBackGood` 20 / `loopBackBad` 50 · `narrationGood` 10 / `narrationBad` 25 · `costPerLine` `0.25` dollars per net product line. Read field by field, so a partial object works |
 | `modelPrices` | list prices | `[input, output, cacheRead, cacheWrite1h]` per MTok, for the list-price-equivalent figure only — this work runs on a subscription and nobody is invoiced it |
