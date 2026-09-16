@@ -45,11 +45,18 @@ export interface Thresholds {
   narrationGood: number; narrationBad: number;   // low  is good  (≤10 green, >25 red)
   /** Dollars of list-price equivalent per NET product line above which the row goes red (R6). */
   costPerLine: number;
+  /** WL-007: unshipped product as a PERCENTAGE of the window's own net product. A share, not an
+   *  absolute count, because the first version of this band went red on 13 unshipped lines — any
+   *  product landing on main before a version bump turned the project red, which reproduces the
+   *  permanent-red defect this block removes. A share self-scales: a trickle is fine on any repo,
+   *  and most of a week sitting unshipped is not fine on any repo. */
+  unshippedShareGood: number; unshippedShareBad: number;
 }
 export const DEFAULT_THRESHOLDS: Thresholds = {
   shipsGood: 40, shipsBad: 20,
   loopBackGood: 20, loopBackBad: 50,
   narrationGood: 10, narrationBad: 25,
+  unshippedShareGood: 10, unshippedShareBad: 50,
   costPerLine: 0.25,
 };
 
@@ -519,6 +526,29 @@ export function costEquivalent(byModel: Record<string, ModelTokens>,
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /**
+ * NET product lines in a `git diff --numstat` body: added minus deleted, over the files the
+ * classifier calls product, binary files skipped because no line count exists for them.
+ *
+ * WL-007 extracted this from `productDelta` when `netProductSince` was written as a verbatim copy
+ * of the same eight lines. Two copies of a measurement are two things to keep in agreement, and the
+ * defect this very block fixes was one reader drifting from another — so a second copy of the
+ * arithmetic was exactly the wrong thing to add. It also gives the mutation gate ONE line to aim at
+ * rather than an ambiguous match, which is how the duplication was noticed.
+ */
+function netProductLinesIn(out: string, cls: Classifier): number {
+  let net = 0;
+  for (const raw of out.split("\n")) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(raw);
+    if (!m) continue;
+    const file = renamedTo(m[3]);
+    if (!cls.isProduct(file)) continue;
+    if (m[1] === "-" || m[2] === "-") continue;                 // binary: no line count exists
+    net += Number(m[1]) - Number(m[2]);
+  }
+  return net;
+}
+
+/**
  * NET product lines and newly ADDED product files in the window, as a TWO-POINT DIFF
  * (`<base>..HEAD`), where base is the last commit before the window opened.
  *
@@ -537,15 +567,7 @@ export function productDelta(repoPath: string | null, since: string,
   const range = `${base}..HEAD`;
   const out = git(repoPath, ["diff", "--numstat", range]);
   if (out === null) return { net: null, added: null, base };
-  let net = 0;
-  for (const raw of out.split("\n")) {
-    const m = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(raw);
-    if (!m) continue;
-    const file = renamedTo(m[3]);
-    if (!cls.isProduct(file)) continue;
-    if (m[1] === "-" || m[2] === "-") continue;                 // binary: no line count exists
-    net += Number(m[1]) - Number(m[2]);
-  }
+  const net = netProductLinesIn(out, cls);
   const addOut = git(repoPath, ["diff", "--diff-filter=A", "--name-only", range]);
   let added: number | null = null;
   if (addOut !== null) {
@@ -584,8 +606,20 @@ export interface ReleaseSignal {
   version: string | null;
   /** The version actually in front of a user, when that can be seen. */
   releasedVersion: string | null;
-  /** Commits since the release commit. `0` means the released version is what HEAD holds. */
+  /** Commits since the release commit. `0` means the released version is what HEAD holds.
+   *
+   *  WL-007: KEPT, BUT NO LONGER THE HEADLINE. It counts commits, and a commit is not work — on
+   *  2026-09-15 this repo read `blocksSince: 3` where all three were HANDOVER and version commits
+   *  the orchestrator made after deploying. "3 blocks since release" overstated the drift by three.
+   *  A commit count is a proxy for "how far ahead of the user is main"; `unshippedProduct` is the
+   *  thing itself, measured the way WL-001 measures everything else. */
   blocksSince: number | null;
+  /** The release commit, so the caller can measure forward from it. */
+  commit: string | null;
+  /** NET product lines that exist on HEAD and are NOT in front of a user: the two-point diff over
+   *  the product paths from the release commit to HEAD. `0` means everything that reached product has
+   *  shipped, whatever the commit count says. Null when there is no release commit to measure from. */
+  unshippedProduct: number | null;
   /** The manifest is tracked but its version has never changed — the ONLY case in which "no release
    *  in N blocks" is a true statement. */
   neverMoved?: boolean;
@@ -699,12 +733,13 @@ export function releaseSignal(repoPath: string | null, opts: {
   const roots = opts.deployRoots || DEFAULT_DEPLOY_ROOTS;
   const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,
                                        version: null, releasedVersion: null, blocksSince: null,
-                                       lookedIn: roots });
+                                       commit: null, unshippedProduct: null, lookedIn: roots });
   if (!repoPath) return none();
   const m = findManifest(repoPath, opts.manifestPath);
   if (!m) return none();
   const base = { manifestPath: m.rel, product: m.siblings > 1 ? m.name : null,
-                 version: m.version, lookedIn: roots };
+                 version: m.version, lookedIn: roots,
+                 commit: null as string | null, unshippedProduct: null as number | null };
   const blocks = (sha: string): number | null => {
     const n = git(repoPath, ["rev-list", "--count", `${sha}..HEAD`]);
     const k = Number((n || "").trim());
@@ -723,7 +758,7 @@ export function releaseSignal(repoPath: string | null, opts: {
                          .filter((y) => y.n !== null)
                          .sort((a, b) => (a.n as number) - (b.n as number))[0]?.x || null;
     if (hit) return { ...base, source: "deployed", releasedVersion: hit.version,
-                      blocksSince: blocks(hit.sha) };
+                      blocksSince: blocks(hit.sha), commit: hit.sha };
     // Deployed, but no commit in the walked history holds that version: still released, and the
     // distance is what is unknown — reported as such rather than as 0.
     return { ...base, source: "deployed", releasedVersion: deployed[0], blocksSince: null };
@@ -732,7 +767,7 @@ export function releaseSignal(repoPath: string | null, opts: {
   // 2 · no artifact, but the manifest version moved: released at that commit.
   const bump = releaseCommit(repoPath, m.rel, null);
   if (bump) return { ...base, source: "manifest", releasedVersion: bump.version,
-                     blocksSince: blocks(bump.sha) };
+                     blocksSince: blocks(bump.sha), commit: bump.sha };
 
   // 3 · the manifest is tracked but its version has NEVER MOVED. This is the one case where "no
   // release in N blocks" is a TRUE statement, so it is said — with N counted from the commit that
@@ -741,7 +776,7 @@ export function releaseSignal(repoPath: string | null, opts: {
   const firstSha = (first || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || null;
   if (firstSha) {
     return { ...base, source: "manifest", releasedVersion: null, blocksSince: blocks(firstSha),
-             neverMoved: true };
+             commit: firstSha, neverMoved: true };
   }
   // 4 · a manifest on disk that git has never seen (untracked, or a checkout with no history for
   // it). Nothing can be concluded, so nothing is: UNMEASURED, and emphatically not `0 blocks`,
@@ -858,6 +893,23 @@ export function scanBlocks(repo: string, sinceMs: number, cls: Classifier,
   return a;
 }
 
+/**
+ * WL-007 · NET product lines between a commit and HEAD — "what exists that a user does not have".
+ *
+ * The same two-point diff as `productDelta`, from a KNOWN commit rather than from a date, because
+ * "since the release" is a point in history and not a point in time. Reported instead of a commit
+ * count: three of this repo's "blocks since release" on 2026-09-15 were HANDOVER and version commits,
+ * which are not work, so the count overstated the drift by three while the honest answer was zero.
+ */
+export function netProductSince(repoPath: string | null, commit: string | null,
+                                cls: Classifier): number | null {
+  if (!repoPath || !commit) return null;
+  const out = git(repoPath, ["diff", "--numstat", `${commit}..HEAD`]);
+  if (out === null) return null;
+  const net = netProductLinesIn(out, cls);
+  return net;
+}
+
 // ── compute ───────────────────────────────────────────────────────────────────────────────────
 
 export interface ComputeOpts {
@@ -915,7 +967,10 @@ function tokenFigures(repo: string, repoPath: string | null, sinceMs: number, cl
     // Same scan discipline as the tokens: computed on EVERY path, including the empty ones, so a
     // repo with no commits still reports where its sessions' turns actually went.
     allocation: scanBlocks(repo, sinceMs, cls, opts.projectsRoot, opts.sessionIds),
-    release: releaseSignal(repoPath, opts),
+    release: (() => {
+      const r = releaseSignal(repoPath, opts);
+      return { ...r, unshippedProduct: netProductSince(repoPath, r.commit, cls) };
+    })(),
   };
 }
 
@@ -933,7 +988,8 @@ function emptyLedger(repo: string, repoPath: string | null, windowDays: number, 
     transcriptsRoot: PROJECTS_ROOT,
     blocksSinceProduct: null, narrationRun: 0, allocation: EMPTY_ALLOC(true),
     release: { source: "unmeasured", manifestPath: null, product: null, version: null,
-               releasedVersion: null, blocksSince: null, lookedIn: DEFAULT_DEPLOY_ROOTS },
+               releasedVersion: null, blocksSince: null, commit: null, unshippedProduct: null,
+               lookedIn: DEFAULT_DEPLOY_ROOTS },
   };
 }
 
@@ -1147,8 +1203,80 @@ export interface Figure {
 /** The rows the tree shows when the ledger node is expanded, and the report's table (R2/R3 share
  *  this so the panel and the document can never disagree about a number).
  *  A red row STATES THE NUMBER — a bare warning icon is the thing being replaced. */
+/**
+ * WL-007 · ONE ANSWER TO "DID THIS REACH A USER", FOR EVERY READER.
+ *
+ * WL-003-R5 rekeyed the COLLECTOR off git tags and exactly ONE of four readers. The other three kept
+ * reading `w.tag`, which is null for ever on a repo with no tags — so on 2026-09-15, a day this bus
+ * deployed five builds, the panel tile, the summary line and the orchestrator's own message all said
+ * "no release in 88 blocks", and the tile hard-coded `band: "bad"`. That is WL-004-R6's lesson in a
+ * new place: the fix was applied where the defect was NOTICED rather than everywhere the proxy was
+ * read. This function exists so there is one place to change next time.
+ *
+ * THE BAND IS THE PART THAT MATTERS, because a fourth reader consumes it: statusView derives the
+ * whole work-ledger node's icon from `figuresFor(...).some(f => f.band === "bad")`, so the hard-coded
+ * red did not colour one row — it made every untagged project's HEADLINE verdict red regardless of
+ * every other figure. `unmeasured` gets `unknown`, never a colour that means "you are failing".
+ */
+export function releaseReading(w: WorkLedger,
+                               t: Thresholds = DEFAULT_THRESHOLDS): { text: string; band: Band; detail: string } {
+  const r = w.release;
+  const who = r.product ? `${r.product} ` : "";
+  if (r.source === "unmeasured") {
+    return { text: `release ${UNMEASURED}`, band: "unknown",
+             detail: `Whether anything has been released is ${UNMEASURED}: no manifest and no ` +
+                     `deployed artifact under ${r.lookedIn.join(" or ")}. "I cannot measure this" ` +
+                     `and "this never shipped" are different statements.` };
+  }
+  if (r.neverMoved) {
+    // The ONE case the old wording was right about: a tracked manifest whose version never changed.
+    return { text: `never released — ${who}${r.version} has never changed version`, band: "bad",
+             detail: `${r.manifestPath} is tracked and its version has never moved in ` +
+                     `${r.blocksSince ?? "?"} commit(s). Nothing here has ever been cut.` };
+  }
+  const basis = r.source === "deployed" ? "deployed artifact" : "manifest bump";
+  const un = r.unshippedProduct;
+  const pending = r.version !== null && r.releasedVersion !== null && r.version !== r.releasedVersion;
+  // NOT the commit count. Three of this repo's "blocks since release" were HANDOVER and version
+  // commits, which are not work; the honest question is how much PRODUCT a user does not have.
+  // MEASURED AGAINST THE WINDOW'S OWN OUTPUT, not against a constant. The first version of this
+  // band was binary — any unshipped product with no pending build read `bad` — and on this repo that
+  // fired on THIRTEEN lines, which would have made the aggregate icon red again on a bus that ships
+  // daily. Found by running it, not by reasoning about it. A share answers the question a reader
+  // actually has: is a meaningful part of this week's product missing from the user's hands?
+  const window = w.netProductLines !== null && w.netProductLines > 0 ? w.netProductLines : null;
+  const share = un !== null && un > 0 && window !== null ? (un / window) * 100 : null;
+  const band: Band = un === null ? "unknown"
+    : un <= 0 ? "good"
+    // A pending build is someone's intent to ship; it can warn, never fail.
+    : pending ? "warn"
+    : share === null ? "warn"
+    : share >= t.unshippedShareBad ? "bad"
+    : share <= t.unshippedShareGood ? "good" : "warn";
+  const text = un === null
+    ? `${who}${r.releasedVersion} reached a user (${basis})`
+    : un <= 0
+      ? `${who}${r.releasedVersion} is in front of a user — nothing unshipped`
+      : `${un} product line(s) not in front of a user since ${who}${r.releasedVersion}` +
+        `${pending ? `; ${r.version} is pending a build` : `, and no build is queued`}`;
+  return { text, band,
+    detail: `Newest ${basis}: ${who}${r.releasedVersion}. ` +
+            `${un === null ? "Unshipped product lines could not be measured." :
+               `${un} NET product line(s) exist on HEAD that are not in it`} — the two-point diff ` +
+            `over the product paths from the release commit, NOT a commit count: three of this ` +
+            `repo's "blocks since release" were HANDOVER and version commits, which are not work. ` +
+            `Commits since: ${r.blocksSince ?? "?"}. Manifest: ${r.version}.` +
+            `${share === null ? "" : ` That is ${Math.round(share * 10) / 10}% of this window's ` +
+              `net product (red above ${t.unshippedShareBad}%, green at or below ` +
+              `${t.unshippedShareGood}%) — a SHARE, because a fixed line count made 13 unshipped ` +
+              `lines read as a failure.`}` +
+            `${pending ? " The manifest is AHEAD of what is deployed, so a build is pending." : ""}` };
+}
+
 export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): Figure[] {
   const win = `window ${w.windowDays}d · computed ${w.computedAt}`;
+  // Read ONCE: the value, the band and the detail of the release row must describe the same reading.
+  const rel = releaseReading(w, t);
   const guess = w.heuristic
     ? "\nHEURISTIC: no productPaths configured for this repo, so 'product' is everything except " +
       "tests/scripts/tools/docs/lockfiles/config. Configure loomSessionTracker.productPaths to measure it."
@@ -1177,16 +1305,14 @@ export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): F
       detail: `${w.rigLines} line(s) of tests/scripts/tools against ${w.productLines} line(s) of ` +
               `product.\n${win}` },
     { key: "release", label: "release",
-      value: w.tag === null
-        ? `never released — ${w.commits} commit(s) this window`
-        : `${w.blocksSinceRelease ?? "?"} commit(s) since ${w.tag}` +
-          `${w.daysSinceRelease === null ? "" : `, ${w.daysSinceRelease}d ago`}`,
-      // NEVER RELEASED IS A WARNING, NOT A BLANK. This is ReciEats' answer (0 tags, 221 blocks) and
-      // rendering it as an empty cell is how it stayed invisible for a week.
-      band: w.tag === null ? "bad" : "unknown",
-      detail: w.tag === null
-        ? `This repo has NO tag. Nothing measured here has ever been cut as a release.\n${win}`
-        : `Newest tag ${w.tag}.\n${win}` },
+      // WL-007 · value, band AND detail all off `w.release`. The band used to be hard-coded `bad`
+      // whenever `w.tag` was null, which on a repo with no tags is for ever — and statusView derives
+      // the whole ledger node's icon from any `bad` band, so an untagged bus that ships daily was
+      // permanently red at its headline. A release that IS in front of a user is not a failure, and
+      // `unmeasured` is not one either.
+      value: rel.text,
+      band: rel.band,
+      detail: `${rel.detail}\n${win}` },
     // ── R6 · the ratio the owner actually asked for ────────────────────────────────────────────
     { key: "tokensSpent", label: "tokens",
       value: w.tokensSpent === null ? UNMEASURED : w.tokensSpent ? fmtTokens(w.tokensSpent) : "0",
@@ -1301,7 +1427,8 @@ export function summaryLine(w: WorkLedger): string {
     f(w.shipsToUser, "ships") + (w.heuristic ? " (est)" : ""),
     f(w.loopBackRate, "loop-backs"),
     f(w.narrationShare, "narration"),
-    w.tag === null ? `no release in ${w.commits} blocks` : `${w.blocksSinceRelease ?? "?"} since ${w.tag}`,
+    // WL-007 · the same field and the same vocabulary as the tile and the nudge.
+    releaseReading(w).text,
   ].join(" · ");
 }
 
@@ -1329,8 +1456,7 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
   return `[loom-ledger] ${w.repo}: ` +
          `${w.shipsToUser === null ? "?" : w.shipsToUser}% of this week's changed lines reach a user; ` +
          `${w.narrationShare === null ? "?" : w.narrationShare}% of commits only update the guide; ` +
-         `${w.tag === null ? `no release in ${w.commits} blocks` :
-            `${w.blocksSinceRelease ?? "?"} blocks since ${w.tag}`}. ` +
+         `${releaseReading(w, t).text}. ` +
          `${unmeasured ? `Tokens and cost are ${UNMEASURED} — no transcript directory under ` +
               `${w.transcriptsRoot} matches this repo, so its spend is invisible here. This is NOT ` +
               `a cheap week; it is an unwatched one. It` :

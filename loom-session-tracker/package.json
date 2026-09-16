@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role \u2194 webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.38.3",
+  "version": "0.38.4",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -492,9 +492,11 @@
             "loopBackBad": 50,
             "narrationGood": 10,
             "narrationBad": 25,
-            "costPerLine": 0.25
+            "costPerLine": 0.25,
+            "unshippedShareGood": 10,
+            "unshippedShareBad": 50
           },
-          "description": "Colour bands. Percentages: shipsToUser green \u2265shipsGood, red <shipsBad; loopBackRate and narrationShare invert (low is good), green \u2264Good, red >Bad. costPerLine is in DOLLARS of list-price equivalent per net product line \u2014 red above it. Fields are read one by one, so a partial object still works."
+          "description": "Colour bands. Percentages: shipsToUser green \u2265shipsGood, red <shipsBad; loopBackRate and narrationShare invert (low is good), green \u2264Good, red >Bad. costPerLine is in DOLLARS of list-price equivalent per net product line \u2014 red above it. unshippedShare* is the PERCENTAGE of the window's net product that is not in front of a user (red at or above Bad, green at or below Good) \u2014 a share rather than a line count, because a fixed count made 13 unshipped lines read as a failure. Fields are read one by one, so a partial object still works."
         },
         "loomSessionTracker.modelPrices": {
           "type": "object",

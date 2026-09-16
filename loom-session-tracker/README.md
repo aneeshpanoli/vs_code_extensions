@@ -346,7 +346,7 @@ themselves — and by that account the week was excellent. So a **`work ledger` 
 each project, ABOVE its agents**, collapsed into one line that carries the verdict:
 
 ```
-ReciEats   9.3B · $7,313 equiv · $0.12/line · ships 10.7% · loop-backs 30% · narration 28% · no release in 221 blocks
+ReciEats   9.3B · $7,313 equiv · $0.12/line · ships 10.7% · loop-backs 30% · narration 28% · release unmeasured
 ```
 
 Expand it and each figure is its own row, coloured by threshold, with the raw numbers — numerator,
@@ -360,7 +360,7 @@ wrong, which is how the last one got ignored.
 | `loopBackRate` | handoffs in `model-ledger.jsonl` with `loopBacks > 0` ÷ all, plus the median wall time |
 | `narrationShare` | commits whose **entire** file set is documentation — the "update the guide" commits |
 | `rigRatio` | test/script/tooling lines ÷ product lines |
-| `release` | commits since the newest tag, and days since it |
+| `release` | whether what is on HEAD is in front of a user: the newest **deployed artifact** (or manifest bump), and the NET product lines on HEAD that are not in it, as a share of the window's product. **Not** the tag count, and not a commit count — see below |
 | `tokens` | every billed token in the window, **cache reads included**, split by model |
 | `list-price equivalent` | those tokens priced at list — **not a bill** (see below) |
 | `net product lines` | a **two-point** diff over the product paths, plus files newly added |
@@ -446,8 +446,22 @@ Six things this deliberately refuses to do:
 - **A figure it cannot compute is `null` and renders "unknown", never `0`.** A measured zero and an
   unreadable value are opposites. A non-positive `wallMinutes` is dropped rather than averaged in as
   0, and a handoff no commit names shows `—` rather than 0 lines shipped.
-- **"Never released" is a warning, not a blank.** That is ReciEats' real answer — 0 tags in 221
-  blocks — and rendering it as an empty cell is how it stayed invisible for a week.
+- **A release state is never a blank cell — but "no tag" was never the state.** The first version of
+  this rule read the TAG COUNT and coloured the row red whenever it was zero. WL-003-R5 rekeyed the
+  collector off deployed artifacts and **exactly one of its four readers**; the panel tile, the
+  summary line and the orchestrator's own nudge kept reading the tag, so on 2026-09-15 — a day this
+  bus deployed five builds — all three said *"no release in 88 blocks"*, and the tile hard-coded
+  `band: "bad"`. Because the tree derives the whole ledger node's icon from any red band, that was
+  not one wrong row: it was **every untagged project's headline verdict, permanently red**. All four
+  readers now take the line from one field. What is shown is **unshipped product** — the net product
+  lines on HEAD that are not in the newest deployed artifact, as a share of the window's product —
+  because a *commit* count is not work: three of this repo's "blocks since release" that day were
+  HANDOVER and version commits, so the count overstated the drift by three while the honest answer
+  was zero. `tag` / `blocksSinceRelease` / `daysSinceRelease` are still collected as corroboration
+  for repos that do tag, and a test asserts **behaviourally** that changing them changes no reader's
+  output. **`unmeasured` is its own state with its own band**: "I cannot measure this" and "this
+  never shipped" are different statements, and only a tracked manifest whose version has never moved
+  earns the second one.
 - **A guessed product path says it is a guess.** A repo not named in `productPaths` falls back to a
   heuristic (everything except test/spec/`scripts/`/`tools/`/`docs/`/`*.md`/lockfiles/config) and is
   marked `(est)` on the row and `HEURISTIC` in the tooltip. An unconfigured guess presented as a

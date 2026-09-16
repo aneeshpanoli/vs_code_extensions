@@ -872,13 +872,16 @@ MUTATIONS = [
   '  const v = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x) && x > 0)',
   '  const v = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x))'),
 
- # R1 — killed by "WL-001 R1: a repo with NO TAG reports never-released — a warning, not a blank".
- # ReciEats' real answer is 0 tags in 221 blocks; rendering it as an ordinary row is how it stayed
- # invisible for a week.
- ("never-released renders as an ordinary row, not a warning",
+ # WL-007 — the mutant this slot used to carry aimed at `band: w.tag === null ? "bad" : "unknown"`,
+ # which WL-007 DELETED: that hard-coded red WAS the defect, not the guard. Left in place it would be
+ # reported STALE — a mutant whose target no longer exists grades nothing, and a gate accumulating
+ # them quietly stops testing while still printing a number. REPLACED rather than removed, because
+ # the contract it protected (a release state is never a blank cell) is still law; only its key
+ # changed. Killed by "WL-001 R1 / WL-007: NO TAG is not a verdict".
+ ("the release row goes RED whenever the repo has no git tag — permanent red on a bus that ships daily",
   "src/workledger.ts",
-  '      band: w.tag === null ? "bad" : "unknown",',
-  '      band: "unknown",'),
+  "  const rel = releaseReading(w, t);",
+  '  const rel = { ...releaseReading(w, t), band: (w.tag === null ? "bad" : "unknown") as Band };'),
 
  # R2 — killed by "WL-001 R2: band boundaries are inclusive on the good side, both directions".
  ("the good-side boundary is exclusive — 40% shipping reads amber",
@@ -1053,15 +1056,20 @@ MUTATIONS = [
  # caught that the assertion and the code it named were not meeting.
  ("a project with no manifest at all reports 0 blocks instead of unmeasured",
   "src/workledger.ts",
-  '  const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,\n                                       version: null, releasedVersion: null, blocksSince: null,\n                                       lookedIn: roots });',
-  '  const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,\n                                       version: null, releasedVersion: null, blocksSince: 0,\n                                       lookedIn: roots });'),
+  # WL-007 re-anchored: this signature gained `commit` and `unshippedProduct`, which left the old
+  # three-line match STALE — found by validating every anchor against source, not by the gate, which
+  # had not been run since. An anchor that spans a line unrelated to the defect is an anchor that
+  # rots on the next edit, so it now names only the field under test.
+  '                                       version: null, releasedVersion: null, blocksSince: null,',
+  '                                       version: null, releasedVersion: null, blocksSince: 0,'),
 
  # R5 — killed by "WL-003-R5: a manifest that has never moved says so". The one case where 'no
  # release in N blocks' is honest must not be folded into unmeasured either.
  ("a manifest that has never changed version is reported as unmeasured rather than as unreleased",
   "src/workledger.ts",
-  "             neverMoved: true };",
-  "             neverMoved: false };"),
+  # WL-007 re-anchored: the line gained `commit: firstSha,` before it.
+  "             commit: firstSha, neverMoved: true };",
+  "             commit: firstSha, neverMoved: false };"),
 
  # ── WL-006 · a background gate that finishes after the turn ends ─────────────────────
  # MEASURED THREE TIMES (WL-002, WL-004+FX-002, WL-005). On WL-005 the gate ran ~18 minutes past
@@ -1228,6 +1236,58 @@ MUTATIONS = [
   "src/workledger.ts",
   "    if (Number.isFinite(t) && t > bestAt) { bestAt = t; best = m; }",
   "    if (Number.isFinite(t) && t < bestAt) { bestAt = t; best = m; }"),
+
+
+ # ── WL-007 · ONE answer to "did this reach a user", for every reader ──────────────────────────
+ #
+ # WL-003-R5 rekeyed the COLLECTOR off git tags and exactly ONE of four readers. The other three went
+ # on reading `w.tag` — null for ever on a repo with no tags — so on 2026-09-15, a day this bus
+ # deployed five builds, the panel tile, the summary line and the orchestrator's own nudge all said
+ # "no release in 88 blocks". A GREEN SUITE DID NOT FIND THAT; a grep did. These are the mutants that
+ # would have.
+
+ # Killed by "WL-007: ALL FOUR readers take the release line from w.release, not from w.tag".
+ ("a reader is pointed back at the TAG PROXY — the exact defect WL-007 removes, in the summary line",
+  "src/workledger.ts",
+  "    releaseReading(w).text,",
+  '    w.tag === null ? `no release in ${w.commits} blocks` : `${w.blocksSinceRelease ?? "?"} since ${w.tag}`,'),
+
+ # Killed by "WL-007: unmeasured gets its OWN band -- never a colour that means 'you are failing'".
+ # The WL-002 lie-with-a-number-on-it in a new place. The statement and the colour are separate
+ # wrongs, so they are separate mutants: one claims a measurement never made, the other calls a
+ # missing measurement a failure.
+ ("an UNMEASURED release renders as 'never shipped' — a measurement claimed where none was made",
+  "src/workledger.ts",
+  '    return { text: `release ${UNMEASURED}`, band: "unknown",',
+  '    return { text: `no release in ${w.commits} blocks`, band: "unknown",'),
+
+ ("an UNMEASURED release is coloured a FAILURE — and that band drives the whole ledger node's icon",
+  "src/workledger.ts",
+  '    return { text: `release ${UNMEASURED}`, band: "unknown",',
+  '    return { text: `release ${UNMEASURED}`, band: "bad",'),
+
+ # Killed by "WL-007: the band is a SHARE of the window, not a line count". Found by RUNNING the
+ # first version of this band rather than reasoning about it: as a flat count it fired on THIRTEEN
+ # unshipped lines and put the aggregate icon back to red on a bus that ships daily — this block's
+ # own defect, reintroduced by this block's own fix.
+ ("unshipped product is judged as a flat COUNT, not a share of the window — 13 lines reads as failure",
+  "src/workledger.ts",
+  '    : share >= t.unshippedShareBad ? "bad"',
+  '    : "bad"'),
+
+ # Killed by "WL-007: unshipped product is a two-point PRODUCT diff, not a commit count".
+ # The measurement half of this block had NO test until the review pass — a mutant here would have
+ # SURVIVED as UNCOVERED, the plain hole among the three species rather than an argument about the gate.
+ ("docs and tests count as unshipped PRODUCT — a HANDOVER commit reads as work a user is missing",
+  "src/workledger.ts",
+  "    const file = renamedTo(m[3]);\n    if (!cls.isProduct(file)) continue;",
+  "    const file = renamedTo(m[3]);"),
+
+ # Killed by "WL-007: with no release commit to measure from, unshipped product is null, NEVER 0".
+ ("no release commit to measure from reports ZERO unshipped — 'cannot tell' told as 'all shipped'",
+  "src/workledger.ts",
+  "  if (!repoPath || !commit) return null;",
+  "  if (!repoPath || !commit) return 0;"),
 
 ]
 
