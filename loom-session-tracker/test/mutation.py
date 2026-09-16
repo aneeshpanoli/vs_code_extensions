@@ -1495,6 +1495,21 @@ MUTATIONS = [
   '    const how = r.source === "deployed"\n      ? (r.anchor === "content" ? "deployed artifact, anchored on its content"\n                                : "deployed artifact, anchored on the version bump")\n      : r.source === "tag" ? "git tag" : "manifest bump";',
   '    const how = r.source === "deployed" ? "deployed artifact" : "manifest bump";'),
 
+ # Killed by "WL-011-R1: a release object carrying its OWN DOUBT says so in every reader". The
+ # reason is COMPUTED whenever a manifest is refused authority and was rendered only on the
+ # `unmeasured` branch — so a tag reading named a tag and never said why the manifest was set aside.
+ # A demoted signal that nothing consults is deleted data with extra steps (WL-010, one layer in).
+ ("the tile names a tag without saying why the manifest it contradicts was set aside",
+  "src/workledger.ts",
+  '            `${r.unmeasuredReason ? ` Measured against a tag rather than the manifest: ` +\n               `${r.unmeasuredReason}.` : ""}` };',
+  '            `` };'),
+
+ # Killed by the same suite's briefing half — the reader an orchestrator sees before dispatching.
+ ("the briefing carries the release claim but drops the doubt recorded beside it",
+  "src/workledger.ts",
+  '           `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);\n  }\n  if (w.handoffs > 0',
+  '           `.`);\n  }\n  if (w.handoffs > 0'),
+
  # Killed by "WL-003 R3" and "WL-003 R2" (the briefing wording). The PO's own briefing carried this
  # beside a correct release line: two disagreeing claims about reaching a user in one message.
  ("the block count claims product REACHED A USER when it counts commits that CHANGED product",

@@ -1827,3 +1827,64 @@ suite("WL-011: the briefing names the basis it ACTUALLY has — a tag is not a m
   match(text, /reached a user \(git tag\)/, "the basis named is the one it has");
   ok(!/manifest bump/.test(text), "and never a basis it does not have");
 });
+
+suite("WL-011-R1: a release object carrying its OWN DOUBT says so in every reader, in BOTH shapes", () => {
+  // THE PO'S FIND, and the measurement narrowed it. `unmeasuredReason` is set whenever a manifest is
+  // refused authority over the repo, and it was rendered ONLY on the `unmeasured` branch — so a TAG
+  // reading named a tag and never said why the manifest had been set aside. WL-010's own lesson one
+  // layer in: a demoted signal whose one job is to qualify a confident claim, never consulted.
+  //
+  // THE PROPOSED RULE WAS "no shipping claim at all when the reason is set", AND THE CORPUS REFUSED
+  // IT. livegita's tag IS an ancestor of HEAD: "2 product line(s) not in front of a user since
+  // ios-v1.12.0-2" over 5 commits is true, specific and actionable, and suppressing it would replace
+  // a correct verdict with a useless one — the trade WL-010 explicitly declined. What makes Lumen
+  // different is the ANCESTRY, not the reason, and that is guarded separately. So the reason
+  // QUALIFIES the reading; it does not silence it.
+  const build = (offHistory) => {
+    const dir = makeGitRepo("wl011r1" + (offHistory ? "off" : "on"), [
+      { msg: "base", files: { "package.json": pkg("ext", "0.1.0"), "src/app/a.tsx": lines(5),
+                              "build.gradle": "x\n" }, daysAgo: 6 },
+      { msg: "more", files: { "src/app/b.tsx": lines(4) }, daysAgo: 3 },
+    ]);
+    if (offHistory) {
+      git(dir, ["checkout", "-q", "-b", "train"]);
+      fs.writeFileSync(path.join(dir, "src/app/t.tsx"), lines(9));
+      git(dir, ["add", "-A"]);
+      git(dir, ["commit", "-q", "-m", "train"]);
+      git(dir, ["tag", "rel-v3.0.0"]);
+      git(dir, ["checkout", "-q", "main"]);
+    } else {
+      git(dir, ["tag", "rel-v3.0.0", "HEAD~1"]);
+    }
+    return wl.computeWorkLedger(dir, {
+      productPaths: { ["wl011r1" + (offHistory ? "off" : "on")]: ["src/app/**"] },
+      deployRoots: [makeDeployRoot([])] });
+  };
+
+  for (const offHistory of [false, true]) {
+    const w = build(offHistory);
+    const shape = offHistory ? "off-history" : "on-history";
+    eq(w.release.source, "tag", shape + ": the Gradle veto sends it to the tag");
+    ok(!!w.release.unmeasuredReason, shape + ": and the object HAS computed its own doubt");
+
+    // EVERY reader that speaks about the release must carry that doubt — the same way WL-010-R1
+    // asserts the unmeasured contract, and per reader rather than over a joined string.
+    const carries = {
+      "panel tile (detail)": relTile(w).detail,
+      "orchestratorBriefing": wl.orchestratorBriefing(w).join("\n"),
+    };
+    for (const [name, text] of Object.entries(carries)) {
+      ok(text.includes(w.release.unmeasuredReason),
+         `${shape}: ${name} makes a release claim while the SAME object already records why the ` +
+         `manifest was set aside — a demoted signal that is never consulted is deleted data`);
+    }
+  }
+
+  // AND THE POSITIVE HALF, which is why the reason does not suppress: the on-history shape STILL
+  // measures. A reader that answered "I cannot tell" here would be strictly less useful and no more
+  // honest, because the tag is on this branch and the distance from it is real.
+  const on = build(false);
+  ok(on.release.blocksSince !== null, "an on-history tag still measures a commit distance");
+  ok(on.release.unshippedProduct !== null, "and a line distance — the doubt is about the MANIFEST");
+  eq(on.release.anchorOffHistory, false, "because the anchor is on the history being measured");
+});

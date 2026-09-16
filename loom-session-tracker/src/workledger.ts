@@ -1629,7 +1629,20 @@ export function releaseReading(w: WorkLedger,
               `net product (red above ${t.unshippedShareBad}%, green at or below ` +
               `${t.unshippedShareGood}%) — a SHARE, because a fixed line count made 13 unshipped ` +
               `lines read as a failure.`}` +
-            `${pending ? " The manifest is AHEAD of what is deployed, so a build is pending." : ""}` };
+            `${pending ? " The manifest is AHEAD of what is deployed, so a build is pending." : ""}` +
+            // WL-011-R1 · THE DOUBT THE OBJECT ALREADY CARRIES. `unmeasuredReason` is computed
+            // whenever a manifest is refused authority, but it was rendered ONLY on the `unmeasured`
+            // branch — so on a TAG reading the line named a tag while never saying why the manifest
+            // had been set aside. That is WL-010's own lesson one layer in: a demoted signal whose
+            // one remaining job is to qualify a confident claim, and which nothing ever consults.
+            //
+            // IT QUALIFIES THE READING, IT DOES NOT SUPPRESS IT. Measured on livegita, whose tag IS
+            // an ancestor of HEAD: "2 product line(s) not in front of a user since ios-v1.12.0-2"
+            // over 5 commits is TRUE and specific, and refusing to say it would replace a correct
+            // verdict with a useless one — which is the trade WL-010 explicitly declined. What makes
+            // Lumen different is not the reason, it is the ANCESTRY, and that is guarded above.
+            `${r.unmeasuredReason ? ` Measured against a tag rather than the manifest: ` +
+               `${r.unmeasuredReason}.` : ""}` };
 }
 
 export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): Figure[] {
@@ -1897,7 +1910,10 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
            `${r.releasedVersion ? ` (${r.source})` : ""}; how many blocks ago is ${UNMEASURED}` +
            // WL-011 · the reason, in the briefing too. A reader told only that something is
            // unmeasured cannot act; one told the release was cut on another branch can.
-           `${r.anchorOffHistory ? " — it was cut on a branch this one never joined" : ""}.`);
+           `${r.anchorOffHistory ? " — it was cut on a branch this one never joined" : ""}` +
+           // WL-011-R1 · both shapes of a tag reading carry the reason, not just the one that
+           // still renders a number.
+           `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);
   } else if ((measurableDistance(r).blocksSince as number) > 0) {
     // WL-011 · NAMES THE BASIS IT ACTUALLY HAS. This said "manifest bump" for every source that was
     // not `deployed`, so a TAG-sourced release — the answer livegita and Lumen get — was reported
@@ -1909,7 +1925,10 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
                                 : "deployed artifact, anchored on the version bump")
       : r.source === "tag" ? "git tag" : "manifest bump";
     L.push(`${measurableDistance(r).blocksSince} block(s) since ` +
-           `${r.product ? `${r.product} ` : ""}${r.releasedVersion} reached a user (${how}).`);
+           `${r.product ? `${r.product} ` : ""}${r.releasedVersion} reached a user (${how})` +
+           // WL-011-R1 · and the doubt travels into the briefing too, for the same reason the
+           // basis does: the orchestrator choosing the next block is owed both.
+           `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);
   }
   if (w.handoffs > 0 && w.loopBackHandoffs > 0) {
     L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) this window came back for another ` +
