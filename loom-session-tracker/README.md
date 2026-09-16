@@ -134,11 +134,20 @@ began. So the panel is read for that acknowledgement: a `You: /model …` echo f
 chip catches up. An old acknowledgement (a later turn, a resumed session) does not count — the chip
 is the truth again.
 
-The mirror holds too. `~/.claude/settings.json` pins the default model to the worker tier, so every
-spawned or restored tab starts cheap; the TAGGED orchestrator, when its own frame is seen idle on
-anything else, is switched to `orchestratorModel` (`claude-fable-5-1[1m]`) with the same backoff and
-the same acknowledgement rule. Setting: `enforceOrchestratorModel`. Only the orchestrator is ever on
-the premium tier; nothing else is promoted.
+**The orchestrator is never switched, by any path, in either direction** (MP-002, owner 2026-09-16:
+*"The extension changing orchestrators model version. Must stop. It only applies to
+non-orchestrators."*). This reversed two earlier directions of his, and both mechanisms are **gone**
+rather than disabled: the 2026-09-13 promotion of the tagged orchestrator to the premium tier, and
+MS-001 R3's self-shift through `<repo>/orchestrator-model.json`. Their settings
+(`enforceOrchestratorModel`, `orchestratorModel`, `orchestratorModels`) are gone with them, and an
+`orchestrator-model.json` left on any bus is **inert** — no code reads that path. An orchestrator's
+tier is now set by the person, or by that session itself with `/model`.
+
+The rule is enforced at the **chokepoint**, not only at the call sites: `ModelPolicy.enforce()` is the
+one method every `/model` injection passes through, and it refuses outright when the target is an
+owner-named role, the tagged orchestrator by name, or the tagged orchestrator's own frame. The tag is
+re-read from the bus per injection, so a tab tagged between ticks is safe on the very next one. A
+fourth caller written next month inherits the refusal without knowing it exists.
 
 **A switch is only a switch when the injector says so** (MS-001). `loom_cdp.py inject` exits 0 and
 prints its own result dict even when it could not confirm the typed text — `{'ok': False, …, 'note':
@@ -147,51 +156,13 @@ frame on 2026-09-14. The verdict is read off that dict, never off the exit code,
 injection is retried rather than recorded as done, and the injector's note is what lands in
 `lastError` and in the warning the human sees.
 
-### The orchestrator shifts its own tier (MS-001)
-
-A session cannot run `/model` on itself, so the orchestrator asks and the tracker types it:
-
-```json
-// ~/.claude/loom/<repo>/orchestrator-model.json
-{"model": "claude-sonnet-5", "reason": "banking the memory doc", "at": "2026-09-14T04:00:00Z"}
-```
-
-The tick enforces that id on the orchestrator's own declared frame, **idle only**, in **both
-directions** — the old early return "the chip is premium, so it is fine" is now "the chip is the
-desired model, so it is fine", which is what makes a downshift possible at all. Same backoff, same
-acknowledgement rule; a changed target restarts the backoff. Sonnet for doc banking and status
-reconciliation, Opus for ordinary review and dispatch, Fable for architecture and adversarial
-judgement — the orchestrator rewrites the file when the task changes, and the file survives a
-`/clear` and a bank.
-
-**The allowlist is `orchestratorModels`** (`claude-fable-5-1[1m]`, `claude-opus-5`,
-`claude-sonnet-5`). An id outside it — or an unreadable file, or no file — is **refused with a note**
-(`model.orchestratorRefused` in `tracker-debug.json`, said once per request) and the configured
-`orchestratorModel` stands exactly as before. **Workers cannot use this file**: a worker's tier is
-its handoff's, and nothing here reads it for a worker.
-
-Every self-shift the tracker actually performs appends a line to `model-ledger.jsonl`, so the owner
-can see who shifted and why:
-
-```json
-{"role":"productowner","self":true,"from":"Fable 5.1","to":"claude-sonnet-5",
- "reason":"banking the memory doc","at":"2026-09-14T04:00:30.000Z"}
-```
-
-One line per request: retries of the same request write nothing more, and a promotion that came from
-the setting rather than from the file is not a self-shift and writes no line.
-
-**The fresh-context header carries both rules.** `restoreMessage` is the one text every orchestrator
-on every project reads after a `/clear`, so it now names them: every handoff you write carries a
-`model:` line (§18), and you shift your own tier by writing `orchestrator-model.json` (§20).
-
 ### Per-handoff model (MP-001) and per-handoff files (CH-001)
 
 Workers do not all need the Opus tier. The **orchestrator judges difficulty as it writes a handoff**
 and records that judgement in the handoff's own frontmatter; the **tracker enforces it**; a
 **ledger** records what each choice actually cost, so the rubric can be judged on evidence rather
-than on feel. The orchestrator switching *itself* is not part of this — that is
-`enforceOrchestratorModel`, above, and it is unchanged.
+than on feel. This is a rule about **workers**: the orchestrator's own tier is not the tracker's
+business and is never changed by it (MP-002, above).
 
 ```markdown
 ---
@@ -918,8 +889,6 @@ All under `loomSessionTracker.`.
 | `enforceWorkerModel` / `workerModel` / `premiumModels` | `true` / `claude-opus-5` / Fable, Mythos | Reserve the expensive tier for the orchestrator |
 | `workerModels` | `claude-opus-5`, `claude-sonnet-5` | The tiers a handoff may ask for in its `model:` frontmatter (premium is refused whatever this says) |
 | `modelAckMs` | `8000` | How long a spawned tab may take to acknowledge its `/model` before it is bound anyway |
-| `enforceOrchestratorModel` / `orchestratorModel` | `true` / `claude-fable-5-1[1m]` | Put the tagged orchestrator back on it when a restore drops it to the pin, unless it asked for a tier of its own |
-| `orchestratorModels` | `claude-fable-5-1[1m]`, `claude-opus-5`, `claude-sonnet-5` | The tiers an orchestrator may put *itself* on by writing `<repo>/orchestrator-model.json` (MS-001); anything else is refused with a note |
 | `showStartupDigest` / `staleBusDays` / `digestUnbankedCheck` | `true` / `30` / `true` | The attention summary |
 | `contextMemory` | `true` | Run the bank → clear → restore cycle |
 | `contextThresholdPct` | `30` | When to run it (30, not 50, since 0.32.0 — see principle 14) |
@@ -946,8 +915,7 @@ All under `loomSessionTracker.`.
 It is the only thing here that touches `~/.vscode-oss/extensions`.
 
 **Reads, never writes:** `<project>/board.json` (the roster), `<project>/bindings.json` (written by
-`loom_cdp.py` at `/loom` time), each role's `status.json`/`inbox.md`/`outbox.md`,
-`<project>/orchestrator-model.json` (the orchestrator's own tier request, MS-001), and
+`loom_cdp.py` at `/loom` time), each role's `status.json`/`inbox.md`/`outbox.md`, and
 `~/.claude/projects/*/<sessionId>.jsonl` — the last of these also for WL-001's token
 accounting, which sums each assistant message's `usage` (cache reads included) by model.
 

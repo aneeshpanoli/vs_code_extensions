@@ -190,11 +190,6 @@ MUTATIONS = [
   "      if (info.acknowledged && wantChip.toLowerCase() === info.acknowledged.toLowerCase()) continue;",
   "      if (info.acknowledged && wantChip.toLowerCase() === info.acknowledged.toLowerCase() && Boolean(0)) continue;"),
 
- ("the orchestrator is promoted while it is mid-turn (the command would queue as a message)",
-  "src/models.ts",
-  "    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info || busy) return null;",
-  "    if (!this.repo || !orchestratorRole || !orchestratorFrame || !info) return null;"),
-
  ("a panel with no compact button no longer vetoes the transcript estimate (the fourteen-clear night, 2026-09-13)",
   "src/memory.ts",
   "  if (!fromPanel && input.frameSeen && input.panelChars !== null && input.panelChars >= CLEARED_PANEL_CHARS &&",
@@ -670,7 +665,7 @@ MUTATIONS = [
  # whose tick happened not to move a pending record — the counts silently reset to zero.
  ("the change-only state write compares `pending` alone, dropping escalation and ledger state",
   "src/models.ts",
-  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)\n          && same(cur.defaulted, st.defaulted) && same(cur.orchRefused, st.orchRefused)\n          && String(cur.selfShiftLogged || \"\") === String(st.selfShiftLogged || \"\")) return;",
+  "      if (same(cur.pending, st.pending) && same(cur.escalations, st.escalations) && same(cur.ledger, st.ledger)\n          && same(cur.defaulted, st.defaulted)) return;",
   "      if (same(cur.pending, st.pending)) return;"),
 
  # ── CH-001, 2026-09-13: §19's chunking rules — the tracker ENFORCES disjointness and MEASURES size ─
@@ -794,19 +789,11 @@ MUTATIONS = [
   "        const verdict = injectVerdict(err, stdout, stderr);\n        const ok = verdict.ok;",
   "        const verdict = injectVerdict(err, stdout, stderr);\n        const ok = !err;"),
 
- # R3 — killed by "MS-001 R3: orchestrator-model.json is honoured when it names an allowed id".
- # Ignoring the file returns the configured target for every request, so an orchestrator that asks
- # for Sonnet to bank a memory doc keeps paying the top tier — the exact spend the owner's directive
- # ("orchestrators self-shift up or down") exists to stop, and the tracker would say nothing.
- ("orchestrator-model.json is read but never honoured — the orchestrator can never shift itself",
-  "src/models.ts",
-  "    if (hit) return { target: hit, self: true, reason: req.reason, requestedAt: req.at, note: null };",
-  "    if (hit) return def;"),
-
- # R4 — killed by "MS-001 R4: the fresh-context header tells every orchestrator both model rules".
- # The header is the one text every orchestrator on every project reads after a clear; drop the
- # rules from it and the `model:` line goes unwritten on every bus but this one, as measured.
- ("the restore header no longer tells the orchestrator the two model rules",
+ # MS-001 R4 / MP-002 — killed by "MP-002: the fresh-context header keeps the WORKER model rule and
+ # no longer tells orchestrators to shift themselves". The header is the one text every orchestrator
+ # on every project reads after a clear; drop the rule from it and the `model:` line goes unwritten
+ # on every bus but this one, as measured 2026-09-14 (10/10 `chosenBy: default` on ReciEats).
+ ("the restore header no longer tells the orchestrator to put a model: line on its handoffs",
   "src/memory.ts",
   "    `MODELS: every handoff you write carries a model: line (§18: claude-opus-5 or claude-sonnet-5) — ` +",
   "    `MODELS: see the playbook. ` +"),
@@ -1385,6 +1372,54 @@ MUTATIONS = [
   "    L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed `",
   "    L.push(`0 block(s) since release. Whether anything has been released is ${UNMEASURED}: no manifest and no deployed `"),
 
+
+ # ── MP-002, 2026-09-16: the model policy applies to NON-ORCHESTRATORS ONLY ───────────────────────
+ # Owner: "The extension changing orchestrators model version. Must stop. It only applies to
+ # non-orchestrators." Two paths used to type /model into the orchestrator's own frame and both are
+ # gone; what remains is the refusal in `enforce()`, the ONE method every injection passes through.
+ # Each clause of that refusal gets a mutant, because each one is a different way in.
+
+ # Killed by "MP-002: enforce() REFUSES the tagged orchestrator's own frame". This is the 2026-09-10
+ # misroute exactly: four buses carry a `developer1`, the tracker resolved one to the PO's own frame,
+ # and 16 `/model claude-opus-5` messages landed in tfg_ua's orchestrator, which replied that it
+ # could not switch models from inside the session. The frame clause is what makes that impossible.
+ ("the enforce() frame guard is removed — a role resolved to the orchestrator's frame is typed into",
+  "src/models.ts",
+  "    const ownFrame = !!(v.webviewId && tagged && tagged.webviewId && v.webviewId === tagged.webviewId);",
+  "    const ownFrame = false;"),
+
+ # Killed by "MP-002: enforce() refuses an OWNER-NAMED role and the TAGGED role by name, tagged or
+ # not". shwab_docker's `productowner` sat pending because the policy ran 30 seconds before its
+ # orchestrator.json was written — an UNTAGGED project exempts nothing by tag, so the NAME is the
+ # only thing that can refuse it in that window.
+ ("the enforce() owner-name guard is removed — an untagged project types into its own orchestrator",
+  "src/models.ts",
+  "    const owner = isOwnerRole(v.role);",
+  "    const owner = false;"),
+
+ # Killed by "MP-002: enforce() refuses an OWNER-NAMED role and the TAGGED role by name" (its final
+ # assertion). A project may tag any name it likes — the tag is the human's statement of which tab is
+ # the orchestrator, and it binds even when that tab is called `developer1` and sits in another frame.
+ ("the enforce() tagged-role guard is removed — a worker-named orchestrator is switched",
+  "src/models.ts",
+  "    const taggedRole = !!(tagged && tagged.role && tagged.role === v.role);",
+  "    const taggedRole = false;"),
+
+ # Killed by "MP-002: the tag is re-read per injection". Caching the tag on the policy object means a
+ # tab tagged between ticks is typed into until the window reloads — and the tag is set by a human
+ # clicking, which is exactly when the next tick is seconds away.
+ ("the orchestrator tag is read once and cached — a tab tagged between ticks is still typed into",
+  "src/models.ts",
+  "    const tagged = getOrchestrator(v.repo || null);",
+  "    const tagged = null as ReturnType<typeof getOrchestrator>;"),
+
+ # Killed by "MP-002: an orchestrator-model.json asking for another tier is inert". The refusal must
+ # RETURN, not merely report: without the early return the note reaches the caller and the injection
+ # is made anyway — the worst shape of this defect, because the debug log would say "refused".
+ ("the refusal reports but does not return — the /model is typed anyway, and the log says refused",
+  "src/models.ts",
+  "      done?.(false, `refused: ${v.role} is ${why} — the model policy applies to non-orchestrators only`);\n      return;",
+  "      done?.(false, `refused: ${v.role} is ${why} — the model policy applies to non-orchestrators only`);"),
 ]
 
 def sh(cmd):

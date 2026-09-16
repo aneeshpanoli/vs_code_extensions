@@ -279,25 +279,6 @@ suite("policy: a worker whose switch was acknowledged is NOT nudged again while 
 });
 
 // ── the mirror: the orchestrator is promoted ────────────────────────────────────────────────────
-suite("policy: the tagged orchestrator found on a cheaper model is promoted — only its frame, only idle", () => {
-  const repo = makeRepo({ roles: {} }, "pol-promote");
-  const pol = new ModelPolicy(repo);
-  const onOpus = detectModel("w" + footer("Opus 5"));
-  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000),
-     { repo, role: "productowner", model: "Opus 5", attempt: 1, target: "claude-fable-5-1[1m]",
-       chosenBy: "default", webviewId: "wid-po" }, "promoted, addressed to its frame");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 1000), null, "held off by the backoff");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 61_000).attempt, 2, "retried after it");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, true, DEFAULT_PREMIUM, 1000 + 200_000), null, "never while mid-turn");
-  eq(pol.checkOrchestrator("productowner", null, onOpus, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "never without a frame");
-  eq(pol.checkOrchestrator(null, "wid-po", onOpus, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "never without a tag");
-  eq(pol.checkOrchestrator("productowner", "wid-po", null, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "never blind");
-  const lagging = detectModel("w" + switched("claude-fable-5-1[1m]", "Fable 5.1") + footer("Opus 5"));
-  eq(pol.checkOrchestrator("productowner", "wid-po", lagging, false, DEFAULT_PREMIUM, 1000 + 200_000), null, "acknowledged: chip lagging");
-  ok(pol.pending().productowner, "pending until seen");
-  eq(pol.checkOrchestrator("productowner", "wid-po", detectModel("w" + footer("Fable 5.1")), false, DEFAULT_PREMIUM, 1000 + 300_000), null);
-  ok(!pol.pending().productowner, "cleared once the chip shows the premium model");
-});
 
 // ── MS-001 R2 · a refused injection is not "switched" ──────────────────────────────────────────
 // Measured against the orchestrator's own frame 2026-09-14T00:04:57Z: loom_cdp.py inject exited 0
@@ -328,85 +309,83 @@ suite("MS-001 R2: exit 0 with a printed 'ok': False is NOT a switch — the inje
   });
 });
 
-// ── MS-001 R3 · the orchestrator shifts itself ─────────────────────────────────────────────────
-const { orchestratorRequest, orchestratorModelFile, DEFAULT_ORCHESTRATOR_MODELS, chipFor } = load("models.js");
-const FABLE = "claude-fable-5-1[1m]";
-const askFor = (repo, model, reason = "doc banking", at = "2026-09-14T04:00:00Z") =>
-  fs.writeFileSync(orchestratorModelFile(repo), JSON.stringify({ model, reason, at }));
+// ── MP-002 · the model policy applies to NON-ORCHESTRATORS ONLY ────────────────────────────────
+// Owner, 2026-09-16: "The extension changing orchestrators model version. Must stop. It only applies
+// to non-orchestrators." This reversed the 2026-09-13 promotion and MS-001 R3's self-shift, and both
+// are gone. `enforce()` is the single chokepoint every `/model` injection passes through, so the
+// rule is asserted THERE — a fourth caller written next month inherits the refusal for free.
+const LOGGING_CDP = "import sys, os\n" +
+  "open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'inject-log.txt'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\n" +
+  "print(' '.join(sys.argv[1:]))\n";
+const injectLog = () => {
+  try { return fs.readFileSync(path.join(LOOM, "inject-log.txt"), "utf8").split("\n").filter(Boolean); }
+  catch { return []; }
+};
+const clearInjectLog = () => { try { fs.unlinkSync(path.join(LOOM, "inject-log.txt")); } catch {} };
+const enforced = (pol, v) => new Promise((res) => pol.enforce(v, v.target, (ok, note) => res({ ok, note })));
 
-suite("MS-001 R3: orchestrator-model.json is honoured when it names an allowed id; absent, the setting stands", () => {
-  const repo = makeRepo({ roles: {} }, "ms3-file");
+suite("MP-002: enforce() REFUSES the tagged orchestrator's own frame — nothing is typed, and the caller is told why", async () => {
+  const repo = makeRepo({ productowner: {}, developer1: {} }, "mp2-frame");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), LOGGING_CDP);
+  setOrchestrator(repo, "productowner", "wid-po");
   const pol = new ModelPolicy(repo);
-  eq(pol.orchestratorTarget(FABLE), { target: FABLE, self: false, reason: null, requestedAt: null, note: null }, "no file: the configured target, not a self request");
-  askFor(repo, "claude-sonnet-5");
-  eq(orchestratorRequest(repo), { model: "claude-sonnet-5", reason: "doc banking", at: "2026-09-14T04:00:00Z" }, "the request as written");
-  eq(pol.orchestratorTarget(FABLE), { target: "claude-sonnet-5", self: true, reason: "doc banking", requestedAt: "2026-09-14T04:00:00Z", note: null }, "honoured");
-  askFor(repo, "CLAUDE-FABLE-5-1");
-  eq(pol.orchestratorTarget(FABLE).target, FABLE, "matched on the normalised id, returned in the allowlist's own spelling (with [1m])");
-  eq(DEFAULT_ORCHESTRATOR_MODELS, ["claude-fable-5-1[1m]", "claude-opus-5", "claude-sonnet-5"], "the default allowlist");
-  fs.writeFileSync(orchestratorModelFile(repo), "{ not json");
-  eq(pol.orchestratorTarget(FABLE).target, FABLE, "unreadable: the setting");
-  fs.writeFileSync(orchestratorModelFile(repo), JSON.stringify({ reason: "no model key" }));
-  eq(orchestratorRequest(repo), null, "no model string: no request");
+  clearInjectLog();
+  // the violation names a WORKER role, but the frame resolved for it is the orchestrator's own —
+  // the 2026-09-10 misroute, where 16 `/model` messages landed in tfg_ua's orchestrator
+  const r = await enforced(pol, { repo, role: "developer1", model: "Fable 5.1", target: "claude-opus-5", webviewId: "wid-po" });
+  eq(r.ok, false, "refused");
+  match(r.note, /refused: developer1 is the tagged orchestrator's own frame/, "and says which rule: " + r.note);
+  eq(injectLog(), [], "NOTHING was typed: " + JSON.stringify(injectLog()));
+  // the same worker in its own frame is still switched — the floor is untouched
+  const good = await enforced(pol, { repo, role: "developer1", model: "Fable 5.1", target: "claude-opus-5", webviewId: "wid-dev" });
+  eq(good.ok, true, "an ordinary worker is still enforced: " + good.note);
+  eq(injectLog().length, 1, "exactly one injection, the worker's");
+  ok(/--webview-id wid-dev/.test(injectLog()[0]), "into its own frame: " + injectLog()[0]);
 });
 
-suite("MS-001 R3: an id outside orchestratorModels is refused with a note — once per request — and never enforced", () => {
-  const repo = makeRepo({ roles: {} }, "ms3-refuse");
+suite("MP-002: enforce() refuses an OWNER-NAMED role and the TAGGED role by name, tagged or not", async () => {
+  const repo = makeRepo({ productowner: {}, po: {}, developer1: {} }, "mp2-name");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), LOGGING_CDP);
   const pol = new ModelPolicy(repo);
-  askFor(repo, "claude-haiku-4-5", "cheap", "2026-09-14T04:01:00Z");
-  const r = pol.orchestratorTarget(FABLE);
-  eq(r.target, FABLE, "the configured target stands"); eq(r.self, false, "not a self request");
-  match(r.note, /orchestrator-model\.json asks for 'claude-haiku-4-5', which is not in orchestratorModels \[claude-fable-5-1\[1m\], claude-opus-5, claude-sonnet-5\]; ignored/, "the refusal, in words");
-  eq(pol.orchestratorTarget(FABLE).note, null, "said once, not once per tick");
-  eq(new ModelPolicy(repo).orchestratorTarget(FABLE).note, null, "persisted across a reload");
-  askFor(repo, "claude-haiku-4-5", "cheap", "2026-09-14T04:02:00Z");
-  ok(pol.orchestratorTarget(FABLE).note, "a NEW request (new `at`) is a new refusal");
-  // the allowlist is a setting: a project may widen it
-  eq(pol.orchestratorTarget(FABLE, ["claude-haiku-4-5"]).target, "claude-haiku-4-5", "widened allowlist honours it");
+  clearInjectLog();
+  for (const role of ["productowner", "po", "product-owner", "orchestrator"]) {
+    const r = await enforced(pol, { repo, role, model: "Fable 5.1", target: "claude-opus-5", webviewId: "wid-x" });
+    eq(r.ok, false, role + " refused");
+    match(r.note, /refused: .* is an owner-named role/, role + ": " + r.note);
+  }
+  eq(injectLog(), [], "nothing typed for any owner spelling — and no tag was needed: " + JSON.stringify(injectLog()));
+  // a role that is NOT owner-named but IS the tagged orchestrator (a project may tag any name)
+  setOrchestrator(repo, "developer1", "wid-somewhere-else");
+  const r = await enforced(pol, { repo, role: "developer1", model: "Fable 5.1", target: "claude-opus-5", webviewId: "wid-dev" });
+  eq(r.ok, false, "the tagged role is refused even under a worker's name, and even in another frame");
+  match(r.note, /refused: developer1 is the tagged orchestrator\b/, r.note);
+  eq(injectLog(), [], "still nothing typed");
 });
 
-suite("MS-001 R3: checkOrchestrator enforces the resolved target in BOTH directions, on its own frame, idle only", () => {
-  const repo = makeRepo({ roles: {} }, "ms3-both");
-  const pol = new ModelPolicy(repo);
-  const onFable = detectModel("w" + footer("Fable 5.1")), onOpus = detectModel("w" + footer("Opus 5")), onSonnet = detectModel("w" + footer("Sonnet 5"));
-  const self = { self: true, reason: "doc banking", requestedAt: "2026-09-14T04:00:00Z" };
-  // DOWN: on the premium tier, asked for Sonnet — "chip is premium → fine" is no longer the rule
-  let v = pol.checkOrchestrator("productowner", "wid-po", onFable, false, DEFAULT_PREMIUM, 1000, "claude-sonnet-5", self);
-  eq(v, { repo, role: "productowner", model: "Fable 5.1", attempt: 1, target: "claude-sonnet-5", chosenBy: "self",
-          webviewId: "wid-po", reason: "doc banking", requestedAt: "2026-09-14T04:00:00Z" }, "shifted DOWN on its own request, reason carried");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onFable, true, DEFAULT_PREMIUM, 2000, "claude-sonnet-5", self), null, "never mid-turn");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onFable, false, DEFAULT_PREMIUM, 2000, "claude-sonnet-5", self), null, "backing off");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onSonnet, false, DEFAULT_PREMIUM, 3000, "claude-sonnet-5", self), null, "on the desired model: fine");
-  ok(!pol.pending().productowner, "and cleared");
-  // a changed target restarts the backoff rather than inheriting the old one
-  v = pol.checkOrchestrator("productowner", "wid-po", onSonnet, false, DEFAULT_PREMIUM, 4000, "claude-opus-5", self);
-  eq(v.target, "claude-opus-5"); eq(v.attempt, 1, "a fresh correction");
-  v = pol.checkOrchestrator("productowner", "wid-po", onSonnet, false, DEFAULT_PREMIUM, 5000, FABLE, null);
-  eq(v && v.attempt, 1, "target changed again (file removed → the setting): attempt restarts");
-  eq(v.chosenBy, "default", "not a self request");
-  // UP, the old default path, unchanged
-  const lagging = detectModel("w" + switched(FABLE, "Fable 5.1") + footer("Opus 5"));
-  eq(pol.checkOrchestrator("productowner", "wid-po", lagging, false, DEFAULT_PREMIUM, 10 * 60_000, FABLE), null, "acknowledged: chip lagging");
-  eq(pol.checkOrchestrator("productowner", "wid-po", onOpus, false, DEFAULT_PREMIUM, 20 * 60_000, "claude-nonesuch-9"), null, "an unknown target is unenforceable");
-  ok(!pol.pending().productowner, "and clears the record rather than typing for ever");
-  // "chip is the desired model → fine": another premium chip is NOT fine any more
-  eq(pol.checkOrchestrator("productowner", "wid-po", detectModel("w" + footer("Fable 5")), false, DEFAULT_PREMIUM, 30 * 60_000, FABLE).target, FABLE,
-     "Fable 5 is premium but is not the desired Fable 5.1");
-  eq(chipFor(FABLE), "Fable 5.1");
+suite("MP-002: the tag is re-read per injection — a tag set between ticks is honoured at once", async () => {
+  const repo = makeRepo({ developer1: {} }, "mp2-fresh");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), LOGGING_CDP);
+  const pol = new ModelPolicy(repo);          // constructed BEFORE the project is tagged
+  clearInjectLog();
+  const before = await enforced(pol, { repo, role: "developer1", model: "Fable 5.1", target: "claude-opus-5", webviewId: "wid-dev" });
+  eq(before.ok, true, "untagged: an ordinary worker switch");
+  setOrchestrator(repo, "developer1", "wid-dev");           // the human tags that very tab
+  const after = await enforced(pol, { repo, role: "developer1", model: "Fable 5.1", target: "claude-opus-5", webviewId: "wid-dev" });
+  eq(after.ok, false, "the SAME policy object refuses now — the bus is read fresh, not cached at construction");
+  eq(injectLog().length, 1, "only the first, pre-tag injection ever happened");
 });
 
-suite("MS-001 R3: a performed self-shift appends ONE ledger line — {role, self, from, to, reason, at}; a retry of the same request adds none", () => {
-  const repo = makeRepo({ roles: {} }, "ms3-ledger");
-  const pol = new ModelPolicy(repo);
-  const v = { repo, role: "productowner", model: "Fable 5.1", attempt: 1, target: "claude-sonnet-5", chosenBy: "self",
-              webviewId: "wid-po", reason: "doc banking", requestedAt: "2026-09-14T04:00:00Z" };
-  ok(pol.recordSelfShift(v, new Date("2026-09-14T04:00:30Z")), "written");
-  const lines = () => fs.readFileSync(busPath(repo, "model-ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  eq(lines(), [{ role: "productowner", self: true, from: "Fable 5.1", to: "claude-sonnet-5", reason: "doc banking", at: "2026-09-14T04:00:30.000Z" }], "the line");
-  eq(pol.recordSelfShift({ ...v, attempt: 2 }), false, "a retry of the same request: no second line");
-  eq(lines().length, 1);
-  ok(pol.recordSelfShift({ ...v, requestedAt: "2026-09-14T05:00:00Z", model: "Sonnet 5", target: FABLE }), "a new request: a new line");
-  eq(lines()[1].to, FABLE); eq(lines()[1].from, "Sonnet 5");
-  eq(pol.recordSelfShift({ ...v, chosenBy: "default" }), false, "the configured promotion is not a self-shift and writes nothing");
-  eq(lines().length, 2);
+suite("MP-002: the self-shift mechanism is gone from the module's surface — orchestrator-model.json is inert by code", () => {
+  const m = load("models.js");
+  for (const gone of ["checkOrchestrator", "orchestratorTarget", "recordSelfShift", "orchestratorRequest",
+                      "orchestratorModelFile", "DEFAULT_ORCHESTRATOR_MODELS"]) {
+    eq(m[gone], undefined, gone + " is no longer exported");
+  }
+  eq(typeof new ModelPolicy("x").checkOrchestrator, "undefined", "and the method is gone from the class");
+  // the three worker rules the owner explicitly kept
+  eq(typeof m.desiredModel, "function", "the handoff still chooses a worker's tier");
+  eq(typeof new ModelPolicy("x").check, "function", "the premium floor still runs");
+  eq(m.DEFAULT_PREMIUM.includes("Fable 5.1"), true, "and the premium tier is still named");
 });
+
+

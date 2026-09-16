@@ -223,13 +223,14 @@ export function restoreMessage(memoryFile: string, repo: string, role: string,
     ` If any role's tab is missing, do not ask a person and do not park its work: write ` +
     `~/.claude/loom/${repo}/open-requests.json {"roles":[...],"requestedAt":"<iso>"} — the tab is ` +
     `opened within seconds and its webviewId written back for you to ring (playbook §15).\n` +
-    // MS-001 R4: the two model rules, on the one text every orchestrator on every project reads.
+    // MP-002 (owner 2026-09-16): the WORKER rule is all that is left here. The self-shift sentence
+    // this paragraph used to carry told every orchestrator on every project to write
+    // `orchestrator-model.json`, and prose is where the behaviour actually flowed from — leaving it
+    // would have kept the file being written, and the habit alive, after the code stopped reading it.
     `MODELS: every handoff you write carries a model: line (§18: claude-opus-5 or claude-sonnet-5) — ` +
-    `the tracker warns once per handoff when it is missing. Shift YOUR OWN tier by writing ` +
-    `~/.claude/loom/${repo}/orchestrator-model.json {"model":"<id>","reason":"<one line>","at":"<iso>"} ` +
-    `(§20): claude-sonnet-5 for doc banking and status reconciliation, claude-opus-5 for ordinary review ` +
-    `and dispatch, claude-fable-5-1[1m] for architecture and adversarial judgement — and rewrite it when ` +
-    `the task changes; the tracker switches you within a tick, both directions.` +
+    `the tracker warns once per handoff when it is missing. That is a rule about WORKERS. Your own ` +
+    `tier is not the tracker's business and it will never change it: set it yourself with /model if ` +
+    `you want a different one.` +
     // WL-003 · THIS MESSAGE IS ALREADY READ, so the audit rides free. A fresh orchestrator is
     // deciding what the next block does with nothing but its own memory file to go on, which is
     // precisely when it cannot see that the last four blocks reached no user. Appended, not

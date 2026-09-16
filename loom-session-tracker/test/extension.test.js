@@ -446,44 +446,7 @@ suite("digest: 'Reopen sessions' refuses a session written under another folder 
 });
 
 // ── the orchestrator is kept on the premium tier (user direction 2026-09-13) ────────────────────
-suite("tick: the tagged orchestrator found on the worker tier is promoted, addressed to its own frame", async () => {
-  const repo = makeRepo({ roles: { alpha: {} } }, "wireU");
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  // the PO on Opus 5, idle; a worker on Opus 5 too (compliant, untouched)
-  const off = await activate([poFrame("wid-po", repo), frame("wid-a", "work" + marker("alpha") + footer("Opus 5"))]);
-  try {
-    await settle(100);
-    const pending = readJson(busPath(repo, "model-policy.json")).pending;
-    ok(pending && pending["product-owner"], "the promotion was recorded by the tick");
-    eq(pending["product-owner"].model, "Opus 5");
-    ok(!pending.alpha, "the compliant worker is not pending");
-    ok(vscode._messages.info.some((m) => /orchestrator product-owner is on Opus 5 — switching to claude-fable-5-1\[1m\]/.test(m)), "and the user was told");
-    const dbg = readJson(path.join(LOOM, "model-policy-debug.json"));
-    ok(dbg && /--webview-id wid-po/.test(dbg.out) && /\/model claude-fable-5-1\[1m\]/.test(dbg.out), "injected /model into wid-po: " + (dbg && dbg.out));
-  } finally { off(); }
-});
 
-suite("tick: an orchestrator already on the premium tier, or mid-turn, is left alone", async () => {
-  const repo = makeRepo({ roles: {} }, "wireV");
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  const off = await activate([poFrame("wid-po", repo).text ? frame("wid-po", poFrame("wid-po", repo).text.replace("Opus 5", "Fable 5.1")) : null]);
-  try {
-    await settle(100);
-    const st = readJson(busPath(repo, "model-policy.json"));
-    ok(!st || !st.pending || !st.pending["product-owner"], "premium already: nothing pending");
-  } finally { off(); }
-  vscode._reset();
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  const off2 = await activate([poFrame("wid-po", repo, "\nClaude is working\n")]);
-  try {
-    await settle(100);
-    const st = readJson(busPath(repo, "model-policy.json"));
-    ok(!st || !st.pending || !st.pending["product-owner"], "mid-turn on Opus: not typed into");
-  } finally { off2(); }
-});
 
 // ── the loop of 2026-09-13 00:13–04:21: fourteen bank/clear/restore cycles on a dead transcript ──
 suite("context memory: a visible orchestrator panel with no compact button is NOT cycled on a transcript estimate", async () => {
@@ -1357,77 +1320,6 @@ const askOrchestrator = (repo, model, reason = "doc banking", at = "2026-09-14T0
   fs.writeFileSync(busPath(repo, "orchestrator-model.json"), JSON.stringify({ model, reason, at }));
 const poOn = (repo, chip) => frame("wid-po", poFrame("wid-po", repo).text.replace("Opus 5", chip));
 
-suite("MS-001 R3: the orchestrator asks for Sonnet in orchestrator-model.json and is switched DOWN off Fable — its frame, and a self ledger line", async () => {
-  const repo = makeRepo({ roles: {} }, "ms-r3-down");
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  askOrchestrator(repo, "claude-sonnet-5", "banking the memory doc");
-  clearInjectLog();
-  const off = await activate([poOn(repo, "Fable 5.1")], LOGGING_CDP);
-  try {
-    await settle(400);
-    const inj = modelInjections();
-    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
-    ok(/--message \/model claude-sonnet-5\b/.test(inj[0]) && /--webview-id wid-po\b/.test(inj[0]), "…Sonnet, into the orchestrator's own frame: " + inj[0]);
-    ok(vscode._messages.info.some((m) => /orchestrator product-owner is on Fable 5\.1 — it asked for claude-sonnet-5 \(banking the memory doc\)/.test(m)),
-       "the human is told it was the orchestrator's own request: " + JSON.stringify(vscode._messages.info));
-    const pending = readJson(busPath(repo, "model-policy.json")).pending;
-    eq(pending["product-owner"].target, "claude-sonnet-5", "recorded with its target");
-    const led = fs.readFileSync(busPath(repo, "model-ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    eq(led.length, 1, "one ledger line");
-    eq({ ...led[0], at: undefined }, { role: "product-owner", self: true, from: "Fable 5.1", to: "claude-sonnet-5", reason: "banking the memory doc", at: undefined }, "who shifted and why");
-    ok(led[0].at, "stamped");
-  } finally { off(); }
-});
-
-suite("MS-001 R3: asked for Opus while on Sonnet it is switched UP to Opus — not to the configured Fable", async () => {
-  const repo = makeRepo({ roles: {} }, "ms-r3-up");
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  askOrchestrator(repo, "claude-opus-5", "ordinary dispatch");
-  clearInjectLog();
-  const off = await activate([poOn(repo, "Sonnet 5")], LOGGING_CDP);
-  try {
-    await settle(400);
-    const inj = modelInjections();
-    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
-    ok(/--message \/model claude-opus-5\b/.test(inj[0]) && /--webview-id wid-po\b/.test(inj[0]), "Opus, its own frame: " + inj[0]);
-    ok(!inj.some((l) => /fable/.test(l)), "the file's choice, not the setting");
-  } finally { off(); }
-});
-
-suite("MS-001 R3: an id outside orchestratorModels is refused with a note, and the configured target is enforced instead", async () => {
-  const repo = makeRepo({ roles: {} }, "ms-r3-bad");
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  askOrchestrator(repo, "claude-haiku-4-5", "cheap");
-  clearInjectLog();
-  const off = await activate([poOn(repo, "Opus 5")], LOGGING_CDP);
-  try {
-    await settle(400);
-    const inj = modelInjections();
-    eq(inj.length, 1, "one /model typed: " + JSON.stringify(injectLog()));
-    ok(/--message \/model claude-fable-5-1\[1m\]/.test(inj[0]), "the SETTING's target, never the refused id: " + inj[0]);
-    ok(vscode._statusMessages.some((m) => /asks for 'claude-haiku-4-5', which is not in orchestratorModels/.test(m)), "refused, and said: " + JSON.stringify(vscode._statusMessages));
-    const dbg = readJson(path.join(LOOM, "tracker-debug.json"));
-    ok(dbg && JSON.stringify((dbg.model || {}).orchestratorRefused || []).includes("not in orchestratorModels"), "in tracker-debug.json: " + JSON.stringify(dbg && dbg.model));
-    ok(!fs.existsSync(busPath(repo, "model-ledger.jsonl")), "the configured promotion is not a self-shift: no ledger line");
-  } finally { off(); }
-});
-
-suite("MS-001 R3: a WORKER cannot use orchestrator-model.json — its tier is its handoff's", async () => {
-  const repo = makeRepo({ roles: { alpha: {} } }, "ms-r3-worker");
-  openProject(repo);
-  setOrchestrator(repo, "product-owner", "wid-po");
-  askOrchestrator(repo, "claude-sonnet-5", "irrelevant to alpha");
-  putHandoff(repo, "alpha", "MS-200", "claude-opus-5");
-  clearInjectLog();
-  const off = await activate([frame("wid-a", "w" + marker("alpha") + footer("Opus 5"))], LOGGING_CDP);
-  try {
-    await settle(400);
-    eq(modelInjections(), [], "alpha stays on its handoff's Opus: " + JSON.stringify(injectLog()));
-  } finally { off(); }
-});
 
 suite("MS-001 R2: the tick records a refused injection (exit 0, 'ok': False) as NOT switched, note kept", async () => {
   const repo = makeRepo({ roles: { alpha: {} } }, "ms-r2");
@@ -1529,5 +1421,93 @@ suite("MS-001 R2b: no acknowledgement on a NON-premium tab still binds — an un
     ok(mine.some((l) => /--message \/loom alpha\b/.test(l)), "bound anyway — Opus is the wrong tier, not the premium one: " + JSON.stringify(mine));
     const res = readJson(busPath(repo, "open-requests.json"));
     ok(res.opened.some((x) => x.role === "alpha" && x.bound), "and reported bound");
+  } finally { off(); }
+});
+
+// ── MP-002: the tick never types /model into an orchestrator, by any path ────────────────────────
+// Owner, 2026-09-16: "The extension changing orchestrators model version. Must stop. It only applies
+// to non-orchestrators." Driven through activate() -> tick -> the append-only inject log, because
+// the two paths this removed both lived in the tick and a planner assertion would not have seen them.
+// `enforceOrchestratorModel` is deliberately NOT set in any of these: the setting was the stopgap and
+// is gone, so the behaviour must hold with it absent.
+
+suite("MP-002: an orchestrator on the WORKER tier is left alone — the promotion is gone", async () => {
+  const repo = makeRepo({ roles: {} }, "mp2-promote");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  clearInjectLog();
+  const off = await activate([poFrame("wid-po", repo)], LOGGING_CDP);      // poFrame footer = Opus 5
+  try {
+    await settle(400);
+    eq(modelInjections(), [], "nothing typed into the orchestrator: " + JSON.stringify(injectLog()));
+    const st = readJson(busPath(repo, "model-policy.json"));
+    ok(!st || !st.pending || !st.pending["product-owner"], "and it is not even pending");
+  } finally { off(); }
+});
+
+suite("MP-002: an orchestrator-model.json asking for another tier is inert — nothing is typed, no ledger line", async () => {
+  const repo = makeRepo({ roles: {} }, "mp2-selfshift");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  // exactly the file MS-001 R3 honoured, on a bus that still carries one
+  fs.writeFileSync(busPath(repo, "orchestrator-model.json"),
+    JSON.stringify({ model: "claude-sonnet-5", reason: "banking the memory doc", at: "2026-09-16T04:00:00Z" }));
+  clearInjectLog();
+  const off = await activate([frame("wid-po", poFrame("wid-po", repo).text.replace("Opus 5", "Fable 5.1"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    eq(modelInjections(), [], "the file is read by nothing: " + JSON.stringify(injectLog()));
+    ok(!fs.existsSync(busPath(repo, "model-ledger.jsonl")), "and no self-shift line was written");
+    ok(fs.existsSync(busPath(repo, "orchestrator-model.json")), "the file is left where it is — other buses' copies are not ours to delete");
+  } finally { off(); }
+});
+
+suite("MP-002: with an orchestrator present, WORKERS are still switched — the policy did not stop applying", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp2-workers-live");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-300", "claude-sonnet-5");
+  fs.writeFileSync(busPath(repo, "orchestrator-model.json"), JSON.stringify({ model: "claude-sonnet-5", at: "2026-09-16T04:00:00Z" }));
+  clearInjectLog();
+  const off = await activate([poFrame("wid-po", repo),
+                              frame("wid-a", "w" + marker("alpha") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    const inj = modelInjections();
+    eq(inj.length, 1, "exactly one /model, and it is the worker's: " + JSON.stringify(injectLog()));
+    ok(/--role alpha\b/.test(inj[0]) && /--webview-id wid-a\b/.test(inj[0]), "…into alpha's own frame: " + inj[0]);
+    ok(!/wid-po/.test(inj[0]), "and never the orchestrator's");
+  } finally { off(); }
+});
+
+suite("MP-002: the premium FLOOR still holds — a worker sitting on the orchestrator's tier is switched down", async () => {
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp2-floor");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-301", null);                   // no model: line -> the default
+  clearInjectLog();
+  const off = await activate([poFrame("wid-po", repo),
+                              frame("wid-a", "w" + marker("alpha") + footer("Fable 5.1"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    const inj = modelInjections();
+    eq(inj.length, 1, "the worker on the premium tier is switched down: " + JSON.stringify(injectLog()));
+    ok(/--message \/model claude-opus-5\b/.test(inj[0]) && /--role alpha\b/.test(inj[0]), inj[0]);
+  } finally { off(); }
+});
+
+suite("MP-002: a role whose frame resolves to the orchestrator's is not typed into, even under a worker's name", async () => {
+  // The 2026-09-10 misroute: four buses carry a `developer1`, and a by-name injection content-resolved
+  // into tfg_ua's orchestrator. Here the tracker resolves `alpha` to the PO's own frame.
+  const repo = makeRepo({ roles: { alpha: {} } }, "mp2-misroute");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putHandoff(repo, "alpha", "MP-302", "claude-sonnet-5");
+  clearInjectLog();
+  // one frame, carrying BOTH the PO's own identity and alpha's sign-off
+  const off = await activate([frame("wid-po", poFrame("wid-po", repo).text + marker("alpha") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    eq(modelInjections(), [], "nothing typed into the orchestrator's frame: " + JSON.stringify(injectLog()));
   } finally { off(); }
 });
