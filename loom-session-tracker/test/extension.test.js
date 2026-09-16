@@ -12,6 +12,8 @@ const path = require("path");
 const ext = load("extension.js");
 const cdp = load("cdp.js");
 const { setOrchestrator } = load("orchestrator.js");
+const { REPLY_FOR } = load("inject.js");
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const marker = (r) => "\nLOOMROLE=" + r + "\n";
 const footer = (m = "Opus 5") => `\nRemote Control\n${m}\nMedium\nBypass permissions\n`;
@@ -278,6 +280,9 @@ suite("context memory: a full orchestrator is asked to bank its memory", async (
     const dbg = readJson(path.join(LOOM, "context-debug.json"));
     match(dbg.out, /--webview-id wid-po/, "injected into the orchestrator's own frame");
     match(dbg.message, /write your working memory/, "asking for the memory doc");
+    // MC-001: the SAVE step's reply hint, and only the save one.
+    match(dbg.out, new RegExp(esc(REPLY_FOR["context-save"])), "save carries the save reply hint");
+    ok(!new RegExp(esc(REPLY_FOR["context-restore"])).test(dbg.out), "not the restore hint");
     ok(vscode._messages.info.some((m) => /70% context|bank its memory/.test(m)), "and the user is told");
   } finally { off(); }
 });
@@ -322,7 +327,12 @@ suite("context memory: /clear follows only once the memory file is on disk", asy
     await vscode.commands.executeCommand("loomSessionTracker.refresh");
     await settle(60);
     eq(readJson(busPath(repo, "context-state.json")).phase, "clearing", "now it clears");
-    eq(readJson(path.join(LOOM, "context-debug.json")).message, "/clear", "with /clear");
+    const dbg = readJson(path.join(LOOM, "context-debug.json"));
+    eq(dbg.message, "/clear", "with /clear");
+    // MC-001: the CLEAR step's own reply hint (documented as never actually delivered, since a bare
+    // "/clear" message skips loom_cdp.py's header entirely) — not the save hint left over.
+    match(dbg.out, new RegExp(esc(REPLY_FOR["context-clear"])), "clear carries the clear reply hint");
+    ok(!new RegExp(esc(REPLY_FOR["context-save"])).test(dbg.out), "not the save hint");
   } finally { off(); }
 });
 
@@ -344,7 +354,12 @@ suite("context memory: the fresh session is restored from the memory doc", async
     eq(st.phase, "watch", "cycle complete");
     eq(st.sessionId, "sid-ctx5", "now following the new session");
     eq(st.cycles, 1, "counted");
-    match(readJson(path.join(LOOM, "context-debug.json")).message, /Fresh context/, "restore prompt sent");
+    const dbg = readJson(path.join(LOOM, "context-debug.json"));
+    match(dbg.message, /Fresh context/, "restore prompt sent");
+    // MC-001 — the exact defect: a just-restored session was told "write the memory file named
+    // here", backwards, since it has nothing to bank and its whole job is to READ it.
+    match(dbg.out, new RegExp(esc(REPLY_FOR["context-restore"])), "restore carries the restore reply hint");
+    ok(!new RegExp(esc(REPLY_FOR["context-save"])).test(dbg.out), "NOT the save hint — that was the bug");
     eq(readJson(busPath(repo, "board.json")).po.session_id, "sid-ctx5", "the board now names the fresh session (rebound)");
   } finally { off(); }
 });

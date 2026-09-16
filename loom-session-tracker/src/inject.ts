@@ -58,13 +58,25 @@ export function setSenderWindow(root: string | null): void { senderWindow = root
 export const REPLY_FOR: Record<string, string> = {
   "notify-debug.json":  "act on the outbox named here; this tool reads no chat",
   "stall-debug.json":   "ring the role named here; this tool reads no chat",
-  "context-debug.json": "write the memory file named here; nothing else is read",
   "restart-debug.json": "for any missing role tab, write ~/.claude/loom/<repo>/open-requests.json",
   // CL-001 · there is nothing to reply TO — the action is the next dispatch, not an answer. Saying
   // "reads no chat" alone would leave an orchestrator looking for something to respond to.
   "clear-debug.json":   "no reply — clear and re-bind the role named here on your next dispatch to it",
   "resume":             "keep status.json current; nothing else is read",
   "model":              "none needed — your footer is re-read every tick",
+  // MC-001 · the context-memory subsystem (memory.ts) sends THREE different messages down the SAME
+  // debug log ("context-debug.json"), and a single "context-debug.json" reply key spoke for all
+  // three — so a freshly-restored session, whose whole job is to READ its memory file, was told
+  // "write the memory file named here". Keyed by StepKind instead, one per message this subsystem
+  // actually sends. ("abort" and "none" never reach injectTo — see extension.ts — so they need no
+  // entry here; there is nothing to reply to because nothing is ever typed.)
+  "context-save":       "write the memory file named here; nothing else is read",
+  // The message body IS the literal string "/clear" — loom_cdp.py's compose_outgoing() skips the
+  // return-address header entirely for anything starting with "/", so this reply hint is NEVER
+  // actually delivered. Kept (rather than omitted) so the table stays honest about every message
+  // this subsystem sends, and documented rather than assumed — see MC-001.
+  "context-clear":      "no reply — a bare /clear carries no header; this line is never delivered",
+  "context-restore":    "no reply — nothing to bank; read the memory file named here and get on with the work it names",
 };
 
 /** argv fragment naming the sender and the reply channel, for every inject the extension makes. */
@@ -101,9 +113,14 @@ export function injectVerdict(err: Error | null | undefined, stdout: string | Bu
 }
 
 export function injectTo(target: InjectTarget, message: string, debugName: string,
-                         done?: (ok: boolean, note: string) => void): void {
+                         done?: (ok: boolean, note: string) => void, replyKind?: string): void {
+  // `debugName` is where the attempt is LOGGED; `replyKind` is what REPLY_FOR is keyed by. They are
+  // usually the same string (one message per debug file, at every other call site) but the
+  // context-memory subsystem writes three different KINDS of message to the one debug file
+  // ("context-debug.json") — see REPLY_FOR's "context-save/-clear/-restore" entries — so a caller
+  // that sends more than one kind of message down one debug file must pass `replyKind` explicitly.
   const args = [LOOM_CDP, "inject", "--role", target.role, "--message", message, "--submit",
-                ...senderArgs(debugName, target.repo ?? null)];
+                ...senderArgs(replyKind ?? debugName, target.repo ?? null)];
   if (target.webviewId) args.push("--webview-id", target.webviewId);
   if (target.repo) args.push("--repo", target.repo);
   execFile("python3", args, { timeout: INJECT_TIMEOUT_MS }, (err, stdout, stderr) => {

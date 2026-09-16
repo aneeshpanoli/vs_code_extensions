@@ -249,7 +249,7 @@ MUTATIONS = [
 
  ("the extension's notifications carry no return address",
   "src/inject.ts",
-  '                ...senderArgs(debugName, target.repo ?? null)];',
+  '                ...senderArgs(replyKind ?? debugName, target.repo ?? null)];',
   "                ];"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
@@ -1641,6 +1641,33 @@ MUTATIONS = [
   "src/workledger.ts",
   "    L.push(`${w.blocksSinceProduct} block(s) since product code last changed` +",
   "    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +"),
+
+ # MC-001 · THE EXACT DEFECT the block was written to fix, reintroduced: a freshly-restored session,
+ # whose whole job is to READ its memory file, is told again to WRITE it. Killed by
+ # "context memory: the fresh session is restored from the memory doc" (extension.test.js), which
+ # asserts the delivered --reply line is context-restore's, never context-save's.
+ ("the restore step's reply hint reverts to the save one — a fresh session is told to write, not read",
+  "src/extension.ts",
+  '        : step.kind === "clear" ? "context-clear" : "context-restore";',
+  '        : step.kind === "clear" ? "context-clear" : "context-save";'),
+
+ # MC-001 · the clear step's own reply key swapped for the restore one — killed by "context memory:
+ # /clear follows only once the memory file is on disk", which asserts context-clear's own line, not
+ # some other step's.
+ ("the clear step's reply hint is keyed as a restore instead of its own",
+  "src/extension.ts",
+  '      const replyKind = step.kind === "save" ? "context-save"\n        : step.kind === "clear" ? "context-clear" : "context-restore";',
+  '      const replyKind = step.kind === "save" ? "context-save"\n        : step.kind === "clear" ? "context-restore" : "context-restore";'),
+
+ # MC-001 · the whole point of injectTo's new `replyKind` parameter is that it can differ from the
+ # debug-log file name; dropping it collapses save/clear/restore back onto ONE reply line again (via
+ # the "context-debug.json" fallback, which no longer even has a REPLY_FOR entry — every context-
+ # memory message would get the generic "none — this is a tool" line). Killed by the save-step
+ # assertion in extension.test.js, which requires the SAVE-specific line, not the generic fallback.
+ ("injectTo ignores replyKind — every context-memory message collapses back onto one debug-log key",
+  "src/inject.ts",
+  "...senderArgs(replyKind ?? debugName, target.repo ?? null)];",
+  "...senderArgs(debugName, target.repo ?? null)];"),
 ]
 
 def sh(cmd):
