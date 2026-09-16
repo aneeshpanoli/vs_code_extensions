@@ -249,7 +249,7 @@ MUTATIONS = [
 
  ("the extension's notifications carry no return address",
   "src/inject.ts",
-  '                ...senderArgs(debugName, target.repo ?? null)];',
+  '                ...senderArgs(replyKind ?? debugName, target.repo ?? null)];',
   "                ];"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
