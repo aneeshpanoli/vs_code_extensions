@@ -1558,3 +1558,59 @@ suite("WL-010: 'pending a build' is never computed against a TAG NAME", () => {
      "a manifest version and a tag name are not the same KIND of thing, so their inequality is " +
      "not a pending build: " + relTile(w).value);
 });
+
+// -- WL-010-R1 . an unmeasured release makes NO shipping claim, in EITHER direction -------------
+//
+// THE MUTANT THAT SURVIVED WL-010's GATE (208/209): "an UNMEASURED release renders as 'never
+// shipped'". Its sibling — "an UNMEASURED release is coloured a FAILURE" — was caught by seven
+// tests. So the BAND was held and the WORDING was not: a reader could say "no release in N blocks"
+// about a repo we had explicitly failed to measure, and the whole suite stayed green.
+//
+// CLASSIFIED before fixing, against the three species: UNCOVERED — a real hole. Established by
+// construction, not by reading: `fromAuthority` routes every refused manifest that has a RESOLVABLE
+// tag to source "tag", so `unmeasured` can only carry a `newestTag` when that tag names no commit.
+// That state is reachable — `git tag -a v-blob <blob>` gives a tag whose `rev-list -1` is empty —
+// and a probe repo built that way does render source `unmeasured` with `newestTag: "v-blob"`. So it
+// is not equivalent (the state is observable) and not undriveable (a test reaches it trivially);
+// nothing had ever driven it.
+//
+// KILLED BEHAVIOURALLY, NOT BY SPELLING. WL-009 was this bus's own demonstration of what a
+// find-string ban costs, so this does not assert the absence of "never shipped". It asserts the
+// PROPERTY: when the release is unmeasured, no reader's text may depend on any quantity a shipping
+// claim would be built from. A reader that says "no release in N blocks" MOVES when N moves — and
+// that is what the mutant does.
+
+suite("WL-010-R1: for an UNMEASURED release, no reader's text is a function of shipping numbers", () => {
+  const readers = (x) => ({
+    "panel tile (value)": relTile(x).value,
+    "panel tile (band)": relTile(x).band,
+    "panel tile (detail)": relTile(x).detail,
+    "summaryLine": wl.summaryLine(x),
+    "ledgerAlert": String(wl.ledgerAlert(x, null) || ""),
+    "orchestratorBriefing": wl.orchestratorBriefing(x).join("\n"),
+  });
+  // Both shapes the unmeasured reading has: with no tag at all, and with a tag that names no commit.
+  for (const newestTag of [null, "v-blob"]) {
+    const w = ledgerWithRelease({ source: "unmeasured", releasedVersion: null, version: null,
+                                  blocksSince: null, commit: null, unshippedProduct: null,
+                                  newestTag,
+                                  unmeasuredReason: "this repo also builds with Gradle" },
+                                { tag: null, blocksSinceRelease: null, daysSinceRelease: null });
+    const before = readers(w);
+    // EVERY quantity a shipping claim could be derived from, moved at once. If any reader builds a
+    // claim out of one of them, its text moves with it.
+    w.commits = 9999;
+    w.blocksSinceRelease = 4242; w.daysSinceRelease = 77; w.tag = "v9.9.9";
+    w.release = { ...w.release, blocksSince: 4242, releasedVersion: "1.2.3", unshippedProduct: 555 };
+    const after = readers(w);
+    for (const name of Object.keys(before)) {
+      eq(after[name], before[name],
+         `${name} (newestTag=${newestTag}) builds a SHIPPING CLAIM out of numbers that are ` +
+         `unmeasured — "I could not measure this" and "this never shipped" are different statements`);
+    }
+    // And the positive half of the contract: it still SAYS it is unmeasured, and is never an alarm.
+    match(before["panel tile (value)"], /unmeasured/, "it says which of the two it is");
+    eq(before["panel tile (band)"], "unknown", "not knowing is not an alarm");
+    match(before["orchestratorBriefing"], /unmeasured/, "and every reader carries it");
+  }
+});
