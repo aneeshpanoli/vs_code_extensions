@@ -1272,8 +1272,14 @@ MUTATIONS = [
  # own defect, reintroduced by this block's own fix.
  ("unshipped product is judged as a flat COUNT, not a share of the window — 13 lines reads as failure",
   "src/workledger.ts",
-  '    : share >= t.unshippedShareBad ? "bad"',
-  '    : "bad"'),
+  # WL-007-R1: the first version of this mutant replaced ONE line of the ternary chain and left the
+  # next `: share <= ...` dangling — a syntax error. It was graded STALE "(mutant does not compile)"
+  # and so guarded nothing, on the newest code in the block, which is exactly where a bad anchor
+  # lands. The replacement takes the whole chain, so the text it produces is a valid expression.
+  '''    : share === null ? "warn"
+    : share >= t.unshippedShareBad ? "bad"
+    : share <= t.unshippedShareGood ? "good" : "warn";''',
+  '    : "bad";'),
 
  # Killed by "WL-007: unshipped product is a two-point PRODUCT diff, not a commit count".
  # The measurement half of this block had NO test until the review pass — a mutant here would have
@@ -1288,6 +1294,19 @@ MUTATIONS = [
   "src/workledger.ts",
   "  if (!repoPath || !commit) return null;",
   "  if (!repoPath || !commit) return 0;"),
+
+
+ # ── WL-007-R1 · an interrupting message states ITS OWN cause ─────────────────────────────────
+ # Killed by "WL-007-R1: the release clause renders ONLY when the release is why the alert fired".
+ ("the release clause rides along on someone else's alarm again — the 00:05Z interrupt, restored",
+  "src/workledger.ts",
+  '         `${releaseBad ? `${releaseReading(w, t).text}. ` : ""}` +',
+  '         `${releaseReading(w, t).text}. ` +'),
+
+ ("a release state that IS an alarm cannot raise one — only heard when another figure is already red",
+  "src/workledger.ts",
+  "  if (!shipsBad && !costBad && !nothingShipped && !unmeasured && !releaseBad) return null;",
+  "  if (!shipsBad && !costBad && !nothingShipped && !unmeasured) return null;"),
 
 ]
 
@@ -1404,6 +1423,86 @@ def build_and_run(work):
     return (r.returncode, passed, failed)
 
 
+# A deliberate NO-OP mutant (find and replace are semantically identical). It MUST be reported
+# SURVIVED: if the harness calls it caught, the harness is broken and no score below is worth
+# reading — which is exactly the failure this whole baseline rewrite exists to make impossible.
+#
+# It inserts a free-standing `void Boolean(1);` STATEMENT rather than wrapping a condition. The first
+# attempt did the latter — `if (!role)` -> `if (Boolean(1) && !role)` in inVocabulary() — and it does
+# not compile under `strict`: that `if` is a narrowing guard, so burying it in a `&&` costs TypeScript
+# the control-flow narrowing and the `role.trim()` below it becomes TS18049 'role' is possibly 'null'.
+# A "no-op" that changes what the type-checker knows is not a no-op. Keep this one a plain statement.
+NOOP_SELFCHECK = ("SELF-CHECK: a no-op mutant must SURVIVE",
+                  "src/naming.ts",
+                  "  if (!r || ROLE_VOCABULARY.includes(r)) return r;",
+                  "  void Boolean(1);\n  if (!r || ROLE_VOCABULARY.includes(r)) return r;")
+
+# ── PRE-FLIGHT · EVERY MUTANT MUST ANCHOR AND MUST COMPILE, BEFORE ANYTHING IS GRADED ────────────
+#
+# WL-007-R1, and prescribed in the owner's notes since the WL-004 cycle without ever being enforced —
+# which is why it recurred. On WL-007 the gate reported `193/194 caught, 1 stale`, and the "stale" one
+# was not a rotted anchor at all: its replacement text did not COMPILE. A mutant that does not build
+# asserts nothing — every test fails for a reason that is not the defect — so it is scored as "could
+# return unnoticed" while the gate goes on printing a score. The one lost that day was the guard on
+# the newest code in the block, which is exactly where a bad anchor lands.
+#
+# TWO CHECKS, AND NEITHER SUBSUMES THE OTHER — this is the whole reason both are here:
+#   · the ANCHOR check catches a `find` that no longer matches (or matches twice). A stale anchor
+#     COMPILES PERFECTLY, because nothing was changed: compiling proves nothing about it.
+#   · the COMPILE check catches a `repl` that is not valid TypeScript. It can only run on a mutant
+#     that anchored, so it can say nothing about one that did not.
+# A run of 194 mutants is 194 suite runs; both failures are cheap to find here and expensive to find
+# at the end, so this REFUSES TO START and names every offender at once rather than one per re-run.
+
+
+def preflight_one(idx, name, rel, find, repl):
+    """-> None if the mutant anchors and compiles, else ("anchor"|"compile", name, reason)."""
+    work = make_tree(f"pf{idx}")
+    try:
+        p = work / rel
+        src = p.read_text()
+        n = src.count(find)
+        if n != 1:
+            return ("anchor", name, f"{rel}: pattern occurs {n} time(s), expected 1")
+        p.write_text(src.replace(find, repl))
+        r = subprocess.run([CODIUM, TSC_REL, "-p", "./"], cwd=work, capture_output=True, text=True,
+                           env=mut_env_for(work))
+        if r.returncode != 0:
+            first = next((ln.strip() for ln in (r.stdout + r.stderr).splitlines()
+                          if "error TS" in ln), "tsc failed with no TS error line")
+            return ("compile", name, f"{rel}: {first}")
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+print(f"pre-flight: every one of {len(MUTATIONS) + 1} mutants must ANCHOR and must COMPILE...")
+_bad_anchor, _bad_compile = [], []
+with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+    _pf = [pool.submit(preflight_one, i, *m) for i, m in enumerate(MUTATIONS)]
+    # The self-check is a mutant like any other: a no-op that stopped compiling would fail the run
+    # for a reason that has nothing to do with the harness being able to tell a no-op from a defect.
+    _pf.append(pool.submit(preflight_one, "noop", *NOOP_SELFCHECK))
+    for fut in concurrent.futures.as_completed(_pf):
+        r = fut.result()
+        if r is None:
+            continue
+        (_bad_anchor if r[0] == "anchor" else _bad_compile).append((r[1], r[2]))
+
+if _bad_anchor or _bad_compile:
+    print(f"\nREFUSING: {len(_bad_anchor) + len(_bad_compile)} mutant(s) cannot grade anything. "
+          f"They are reported here rather than as a score at the end,\n"
+          f"          because a mutant that never ran is not evidence that a defect would be caught.\n")
+    for nm, why in sorted(_bad_anchor):
+        print(f"  STALE ANCHOR    {nm}\n                  {why}\n"
+              f"                  FIX: re-anchor `find` on the current source — the code moved under it.")
+    for nm, why in sorted(_bad_compile):
+        print(f"  DOES NOT BUILD  {nm}\n                  {why}\n"
+              f"                  FIX: rewrite `repl` — it anchors, but the text it produces is not "
+              f"valid TypeScript.")
+    sys.exit(2)
+print(f"pre-flight clean: all {len(MUTATIONS) + 1} anchor and compile.\n")
+
 print("measuring the baseline (unmutated, LOOM_TEST_JOBS=1) — nothing can be graded against a red suite...")
 _base = make_tree("base")
 try:
@@ -1426,21 +1525,7 @@ if base_rc != 0 or base_fail:
     sys.exit(2)
 print(f"baseline is green: {len(base_pass)} tests pass, and a mutant is 'caught' only by breaking one of them.\n")
 
-# A deliberate NO-OP mutant (find and replace are semantically identical). It MUST be reported
-# SURVIVED: if the harness calls it caught, the harness is broken and no score below is worth
-# reading — which is exactly the failure this whole baseline rewrite exists to make impossible.
-#
-# It inserts a free-standing `void Boolean(1);` STATEMENT rather than wrapping a condition. The first
-# attempt did the latter — `if (!role)` -> `if (Boolean(1) && !role)` in inVocabulary() — and it does
-# not compile under `strict`: that `if` is a narrowing guard, so burying it in a `&&` costs TypeScript
-# the control-flow narrowing and the `role.trim()` below it becomes TS18049 'role' is possibly 'null'.
-# A "no-op" that changes what the type-checker knows is not a no-op. Keep this one a plain statement.
-NOOP_SELFCHECK = ("SELF-CHECK: a no-op mutant must SURVIVE",
-                  "src/naming.ts",
-                  "  if (!r || ROLE_VOCABULARY.includes(r)) return r;",
-                  "  void Boolean(1);\n  if (!r || ROLE_VOCABULARY.includes(r)) return r;")
-
-survived, stale, ungraded = [], [], []
+survived, stale, ungraded, noncompiling = [], [], [], []
 print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
 
 
@@ -1455,7 +1540,15 @@ def run_one(idx, name, rel, find, repl):
         p.write_text(src.replace(find, repl))
         rc, passed, failed = build_and_run(work)
         if rc is None:
-            return ("STALE", name, "(mutant does not compile)")
+            # NOT "STALE". WL-007-R1: these are different failures with different causes and
+            # different fixes, and for one run they wore the same word — which cost the owner a wrong
+            # first diagnosis until they read the reason on the next line. A STALE anchor means the
+            # code moved out from under `find`; a mutant that does not BUILD means `repl` is not
+            # valid TypeScript. One is the source drifting, the other is the mutant being wrong.
+            # The pre-flight should make this branch unreachable; it is kept because "unreachable"
+            # is a claim about the pre-flight, and a gate that trusts its own claims is the thing
+            # this file exists to disbelieve.
+            return ("NOCOMPILE", name, "(mutant does not compile — the pre-flight should have caught this)")
         # THE GRADE: only a test that passed on the baseline and fails here counts.
         broke = sorted(failed & base_pass)
         if broke:
@@ -1480,6 +1573,9 @@ def report(status, name, detail):
     elif status == "UNGRADED":
         print(f"  UNGRADED  {name}\n            {detail}")
         ungraded.append(f"{name} {detail}")
+    elif status == "NOCOMPILE":
+        print(f"  NOBUILD   {name}\n            {detail}")
+        noncompiling.append(name)
     else:
         print(f"  STALE     {name}\n            {detail}")
         stale.append(name)
@@ -1514,20 +1610,23 @@ else:
           f"  A mutation that changes NOTHING must survive. Until that holds, every score above is\n"
           f"  unreadable — this is the 2026-09-13 defect (a red baseline made every mutant 'caught').")
 
-if survived or stale or ungraded or not sc_ok:
+if survived or stale or ungraded or noncompiling or not sc_ok:
     print()
     for s in survived:
-        print(f"SURVIVED: {s}")
+        print(f"SURVIVED:  {s}")
     for s in stale:
-        print(f"STALE:    {s}")
+        print(f"STALE:     {s}  (anchor no longer matches — re-anchor `find`)")
+    for s in noncompiling:
+        print(f"NOBUILD:   {s}  (anchors, but `repl` is not valid TypeScript — rewrite it)")
     for s in ungraded:
-        print(f"UNGRADED: {s}")
-    parts = [f"{len(survived)} survived", f"{len(stale)} stale", f"{len(ungraded)} ungraded"]
-    line = (f"\n{len(MUTATIONS) - len(survived) - len(stale) - len(ungraded)}/{len(MUTATIONS)} caught, "
-            + ", ".join(parts))
+        print(f"UNGRADED:  {s}")
+    ungradeable = len(survived) + len(stale) + len(ungraded) + len(noncompiling)
+    parts = [f"{len(survived)} survived", f"{len(stale)} stale",
+             f"{len(noncompiling)} non-compiling", f"{len(ungraded)} ungraded"]
+    line = (f"\n{len(MUTATIONS) - ungradeable}/{len(MUTATIONS)} caught, " + ", ".join(parts))
     # Only claim a defect could return when one actually can. A failing SELF-CHECK with a clean
     # scoreboard means the opposite: the scoreboard cannot be trusted to tell us either way.
-    if survived or stale or ungraded:
+    if survived or stale or ungraded or noncompiling:
         line += " — those defects could return unnoticed"
     else:
         line += " — but the SELF-CHECK above failed, so this scoreboard is not evidence of anything"

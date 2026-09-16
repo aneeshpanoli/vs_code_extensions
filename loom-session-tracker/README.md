@@ -446,6 +446,15 @@ Six things this deliberately refuses to do:
 - **A figure it cannot compute is `null` and renders "unknown", never `0`.** A measured zero and an
   unreadable value are opposites. A non-positive `wallMinutes` is dropped rather than averaged in as
   0, and a handoff no commit names shows `—` rather than 0 lines shipped.
+- **A message that interrupts you states its OWN cause.** The once-a-day nudge is raised by the
+  shipping and cost thresholds, and it used to append the release state unconditionally — so a
+  figure that triggered nothing rode along on someone else's alarm and carried the authority of one.
+  That is how the false "no release in 87 blocks" reached the orchestrator mid-decision on
+  2026-09-16. The release state is now a trigger in its own right when it is genuinely bad, and the
+  clause renders **if and only if** that is one of the reasons the alert fired — the same boolean
+  does both, so they cannot drift apart. It is safe to raise on only because the band is now honest:
+  `unmeasured` bands unknown and a deployed release with nothing outstanding bands good, so neither
+  can fire it. Under the old tag proxy, every untagged repo would have alarmed daily.
 - **A release state is never a blank cell — but "no tag" was never the state.** The first version of
   this rule read the TAG COUNT and coloured the row red whenever it was zero. WL-003-R5 rekeyed the
   collector off deployed artifacts and **exactly one of its four readers**; the panel tile, the

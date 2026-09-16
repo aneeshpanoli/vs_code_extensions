@@ -1450,13 +1450,27 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
   // threshold — so silence here means the panel is quietest about the project it can see least.
   // Once a day, it says so instead.
   const unmeasured = w.tokensSpent === null;
-  if (!shipsBad && !costBad && !nothingShipped && !unmeasured) return null;
+  // WL-007-R1 · A FOURTH TRIGGER, AND THE CONDITION ON THE RELEASE CLAUSE — one rule, both ways.
+  //
+  // This message used to append the release state unconditionally, to an alert raised by the
+  // shipping and cost thresholds. So a release figure rode along on someone else's alarm and
+  // carried the authority of an alarm without having earned it — which is exactly how the false
+  // "no release in 87 blocks" reached the orchestrator mid-decision at 00:05Z on 2026-09-16. A
+  // message that interrupts someone should state ITS OWN cause, not a digest of every figure.
+  //
+  // So the release state is now a trigger in its own right when it is genuinely bad, and the clause
+  // renders IF AND ONLY IF that is one of the reasons the alert fired. The two cannot drift apart,
+  // because they are the same boolean. This is safe to raise on only because WL-007 made the band
+  // honest: `unmeasured` bands `unknown` and a deployed release with nothing outstanding bands
+  // `good`, so neither can fire it — under the old tag proxy this would have alarmed every day.
+  const releaseBad = releaseReading(w, t).band === "bad";
+  if (!shipsBad && !costBad && !nothingShipped && !unmeasured && !releaseBad) return null;
   const today = new Date(nowMs).toISOString().slice(0, 10);
   if (notifiedOn === today) return null;
   return `[loom-ledger] ${w.repo}: ` +
          `${w.shipsToUser === null ? "?" : w.shipsToUser}% of this week's changed lines reach a user; ` +
          `${w.narrationShare === null ? "?" : w.narrationShare}% of commits only update the guide; ` +
-         `${releaseReading(w, t).text}. ` +
+         `${releaseBad ? `${releaseReading(w, t).text}. ` : ""}` +
          `${unmeasured ? `Tokens and cost are ${UNMEASURED} — no transcript directory under ` +
               `${w.transcriptsRoot} matches this repo, so its spend is invisible here. This is NOT ` +
               `a cheap week; it is an unwatched one. It` :

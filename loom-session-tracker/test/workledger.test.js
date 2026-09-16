@@ -520,7 +520,12 @@ suite("WL-001 R5: the alert fires on a RED ships figure, once per day", () => {
   match(msg, /^\[loom-ledger\] R:/, "addressed and tagged");
   match(msg, /10\.7% of this week's changed lines reach a user/, "states the shipping figure");
   match(msg, /28% of commits only update the guide/, "and the narration figure");
-  match(msg, /release unmeasured/, "and the release state (WL-007: the tag proxy said 'no release in 221 blocks' for ever on an untagged repo that ships daily; this fixture seeds no release signal, so the honest reading is unmeasured)");
+  // WL-007-R1: this line used to assert the release clause UNCONDITIONALLY. It no longer renders
+  // here, and that is the fix: this alert fired on the shipping and cost thresholds, and a release
+  // figure riding along on someone else's alarm carries the authority of an alarm without having
+  // earned it. The release state here is unmeasured, which raised nothing.
+  ok(!/release/.test(msg),
+     "the release clause is ABSENT: it is not why this alert fired, so it does not speak here");
   match(msg, /list-price equivalent, not a bill/, "and is explicit that the dollars are not a bill");
   match(msg, /2 new user-facing file\(s\)/, "and what was actually built");
   match(msg, /Consider whether the next block ships something\./, "and asks for the decision");
@@ -1349,4 +1354,55 @@ suite("WL-007: with no release commit to measure from, unshipped product is null
   eq(relTile(w).band, "unknown", "unmeasurable drift is unknown, not good and not bad");
   ok(!/nothing unshipped/.test(relTile(w).value),
      "and must not claim everything shipped when nothing was measured");
+});
+
+// -- WL-007-R1 . an interrupting message states ITS OWN cause -----------------------------------
+//
+// MEASURED 2026-09-16T00:05Z: this alert, raised by the shipping and cost thresholds, appended
+// "no release in 87 blocks" -- a falsehood off the tag proxy -- and it reached the orchestrator
+// mid-decision carrying the authority of the alarm it was riding on. The defect is not only that
+// the string was wrong; it is that a figure which triggered nothing was in an interrupt at all.
+
+suite("WL-007-R1: the release clause renders ONLY when the release is why the alert fired", () => {
+  const base = { repo: "R", empty: false, commits: 10, handoffs: 2, windowDays: 7,
+                 shipsToUser: 5, narrationShare: 40, loopBackRate: 10, narrationCommits: 4,
+                 tokensSpent: 1e6, costEquivalent: 10, costPerProductLine: 0.01,
+                 netProductLines: 100, newUserFacingFiles: 1, transcriptsRoot: "/t",
+                 blocksSinceProduct: 0, heuristic: false, rigRatio: 1, rigLines: 1, productLines: 1,
+                 tag: null, blocksSinceRelease: null, daysSinceRelease: null, allocation: null,
+                 computedAt: "now", unpricedModels: [], tokensPerProductLine: null };
+  const REL = (r) => Object.assign({ source: "deployed", manifestPath: "package.json", product: null,
+                                     version: "1.0.0", releasedVersion: "1.0.0", blocksSince: 0,
+                                     commit: "abc", unshippedProduct: 0, lookedIn: ["/x"] }, r);
+  const at = Date.parse("2026-09-16T10:00:00Z");
+
+  // Fires on the SHIPPING threshold (5% is red); the release is deployed with nothing outstanding.
+  const quiet = wl.ledgerAlert({ ...base, release: REL({}) }, null, wl.DEFAULT_THRESHOLDS, at);
+  ok(quiet, "the shipping figure still raises it");
+  ok(!/release|reached a user|unshipped/.test(quiet),
+     "and the release, which raised nothing, is silent — no riding along on another figure's alarm");
+
+  // Same alert, but the release state is itself bad: a tracked manifest that never moved.
+  const loud = wl.ledgerAlert({ ...base, release: REL({ source: "manifest", neverMoved: true,
+                                                        releasedVersion: null, blocksSince: 30 }) },
+                              null, wl.DEFAULT_THRESHOLDS, at);
+  match(loud, /never released/, "a release state that IS an alarm speaks, in the same message");
+
+  // And it can raise the alert ALONE: a green week that has not shipped is the thing this ledger
+  // exists to notice, and before this it could only be heard if some other figure was already red.
+  const green = { ...base, shipsToUser: 90, narrationShare: 1, costPerProductLine: 0.001,
+                  release: REL({ source: "manifest", neverMoved: true, releasedVersion: null,
+                                 blocksSince: 30 }) };
+  ok(!wl.ledgerAlert({ ...green, release: REL({}) }, null, wl.DEFAULT_THRESHOLDS, at),
+     "a green week with a healthy release is still never nudged");
+  const alone = wl.ledgerAlert(green, null, wl.DEFAULT_THRESHOLDS, at);
+  ok(alone, "but a green week that has never cut a release IS worth one line");
+  match(alone, /never released/, "and the line says why it fired");
+
+  // The band is what gates it, so unmeasured cannot fire it -- the whole reason this is safe to
+  // raise on. Under the old tag proxy every untagged repo banded `bad` and would alarm daily.
+  const un = { ...green, release: REL({ source: "unmeasured", releasedVersion: null, version: null,
+                                        blocksSince: null, commit: null, unshippedProduct: null }) };
+  ok(!wl.ledgerAlert(un, null, wl.DEFAULT_THRESHOLDS, at),
+     "an UNMEASURED release raises nothing: not knowing is not an alarm");
 });
