@@ -9,7 +9,126 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.40.0)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.41.0)
+
+**Version 0.41.0** is CL-001 and WL-011 + R1 + R2 — a block dispatched into a session that was never
+cleared, and the release anchor moved off the version bump onto the artifact that was actually
+deployed.
+
+**WL-011: the anchor, not the arithmetic.** The artifact ships `src/`, so the deployed commit is
+**evidence rather than inference**: hash the artifact's tracked files and find the newest commit
+whose blobs all match. Measured over this repo's own **49 deployed artifacts**, the old version-bump
+anchor lands on the **wrong commit in 22 of 48** and renders a **wrong number in 4** — `+216`,
+`+152`, `+13`, `-412` net product lines. The `+152` is the defect 0.40.0's own probe found and left
+open; **the `-412` matters more, because it runs the other way.** `0.33.0`'s artifact predates its own
+version-bump commit, so the tile UNDER-reported unshipped work by 412 lines. **The anchor was wrong in
+both directions, and the under-reporting direction is the one that never provokes a complaint** —
+this product's standing rule about false greens, now measured on itself. The content anchor also
+resolved **49 of 49** where the manifest anchor resolved 48, so it is better on availability as well
+as on correctness.
+
+**A distance is only measurable from an anchor on this history, and that guard is at the chokepoint.**
+The corpus turned up a live false GREEN with a five-figure number under it: **Lumen's newest tag
+`cairn-ios-v0.1.0` is NOT an ancestor of HEAD** (`merge-base --is-ancestor` fails; `rev-list tag..HEAD`
+returns 189 of 189 commits — an iOS train main never joined), so the "blocks since release" count was
+the whole history and `git diff tag..HEAD` was a **two-point diff between two branches**, returning
+`unshippedProduct: -34719`. **Being negative it hit the `<= 0` branch, banded `good`, and the panel
+printed "nothing unshipped" about a repo that cuts 40 release trains.** Both git commands succeed and
+return plausible figures, so nothing throws and no test could see it. `onThisHistory` now guards
+`netProductSince` and the block count at the chokepoint rather than at the caller (MP-002's lesson),
+and `measurableDistance()` is the reader-side chokepoint — **a future reader inherits the refusal
+instead of having to remember it.** The release stays NAMED; only the distance goes quiet, and it
+says why.
+
+**R1: the code had already computed its own doubt, and the reader rendered a confident verdict over
+the top of it.** `unmeasuredReason` is set whenever a manifest is refused authority, and was rendered
+on the `unmeasured` branch ONLY — so a tag reading named a tag and never said why the manifest had
+been set aside. That is WL-010's lesson one layer in: **a demoted signal whose one remaining job is to
+qualify a confident claim, which nothing ever consults.** **The part worth keeping is that my proposed
+rule was wrong and the worker measured it rather than obeying it.** I sent "if `unmeasuredReason` is
+non-empty, no reader may make a shipping claim in either direction". Three repos carry that reason and
+they are not alike: Lumen's tag is off the history (already refused by the ancestry guard), ReciEats
+already makes no claim, and **livegita's tag IS an ancestor of HEAD, five commits back, rendering "2
+product line(s) not in front of a user since `ios-v1.12.0-2`" — true, specific and actionable.** My
+rule would have changed **exactly one reading in the whole corpus, from correct to useless** — the
+precise trade WL-010 declined, so I would have been contradicting my own block with a rule written to
+defend it. **What separates Lumen from livegita is ANCESTRY, not the reason, so the reason QUALIFIES
+the reading instead of silencing it**, carried per reader over both shapes, plus the positive half:
+an on-history tag must still MEASURE, which is what stops "qualify" becoming a new way to render
+nothing. **A design rule is a hypothesis exactly like a handoff's scope, and the corpus is what tests
+it — that now applies to mine.** Silencing is the seductive direction because it can never be caught
+being wrong: nothing renders, so nothing is falsifiable.
+
+**R2: the survivor was the fixture, and a verification built from the bug's own assumption cannot
+fail.** Gate run 1 came back **217/218 with one survivor** — "the content match accepts the first
+shipped file instead of all of them", the mutant added precisely because it is the PLAUSIBLE wrong
+version. Cause: **every block in the fixture ADDED a new file**, so the artifact lacked that path, the
+path-limited log never offered the newer commit as a candidate, and comparing one file was
+accidentally sufficient. A real second block EDITS a file that is already shipping. **`package.json`
+sorts first and is byte-identical across every commit under one version — which is the whole reason
+the version anchor was wrong in the first place — so a content match that stops at the first file has
+REINVENTED THE DEFECT WHILE CALLING ITSELF EVIDENCE.** The new fixture's second block edits the file
+the previous one shipped: clean it anchors at the bump with 20 lines outstanding; under the mutant it
+lands on the second block and calls the edit shipped. **No production change — +39 test lines, `src/`
+untouched.** This is a species our catalogue did not have: UNDRIVEABLE, EQUIVALENT and UNCOVERED all
+describe code and tests, and this survivor was a hole in the DATA.
+
+**CL-001: a block dispatched into a session that was never cleared.** Playbook §12 has said since
+2026-09-08 that a worker is CLEARED and RE-BOUND between every handoff — "each block starts from an
+empty transcript and the handoff file is the whole brief" — and I had never once done it. Measured
+when the owner said so: developer1's single session carried **twelve blocks in a 3.01 MB transcript**;
+on tfg_ua the same violation runs to **13.42 MB**. The mechanism was a note of mine that overclaimed
+its scope — notes.md's "the tab-opening procedure, **in full**" is the procedure for a NEW tab, which
+needs no `/clear`, and the words "in full" stopped me asking whether it covered re-dispatch. **A
+procedure note must name the case it covers in its title, because the case it does NOT cover is
+invisible from inside it.** Fixed the only way that has ever worked here — `templates/dispatch.md`,
+copied every dispatch, plus the detector this block ships. **The cost was never only correctness: a
+worker that never clears re-reads its whole transcript every turn, so "why did this cost so much?"
+and "you are not clearing the workers" are the same question asked twice.**
+
+**Following §12 CREATES a false stall alarm, and the first one fired within six minutes of the first
+compliant dispatch.** A `/clear` destroys the session but **leaves its status record standing**, and
+the fresh session writes nothing until it has done something — so a correctly-dispatched role is
+briefly indistinguishable from a stopped one. Two consequences, and the second is the queued work:
+**the orchestrator resets the role's status in the same breath as the clear** (it is the only
+participant that exists on both sides of that boundary), and **the product should treat a session-id
+change as retiring the previous session's status** — the same fact CL-001's detector already computes
+for the opposite purpose. CL-001 detects a dispatch with no clear; this is a clear with no hand-over.
+
+**A scheduling lesson with no code in it, from this release's own critical path.** developer2's gate
+was running at `MUTATION_JOBS=8` with ~1.7 hours left while the RELEASE-CRITICAL WL-011 gate sat in a
+FIFO waiter behind it. **The 80% CPU cap makes gates a serial resource, and nothing in the tool knows
+which queued gate is on the release path.** At 14% done a restart at the cap costs less than
+finishing, so developer2 yielded and developer1's waiter took the slot within 20 seconds of the pid
+dying — **the serialisation that had been a hand-convention for four cycles ran itself end to end, in
+both directions, with no orchestrator in the loop.** Worth keeping as the argument for `mutation.py`
+refusing to start while another gate is live: a rule in a tool that refuses is a rule; a rule in prose
+is advice.
+
+Merged `49b30e9` over `6213f4e`, DEPLOYED and pushed 2026-09-16. **Gate on main: 231/231 caught, 0
+survived, 0 stale, 0 non-compiling, 0 ungraded**, pre-flight clean on 232 (231 + the no-op), baseline
+green at 837, no-op self-check SURVIVED, containment 0 `loom-*` across 231 suite runs, **837/837 BOTH
+modes**, tsc 0, every grade line counted by hand against 231 unique names. **The merge CONFLICTED in
+`test/mutation.py`** — both branches append mutants to one list — and was resolved as the union, 231
+mutants with no duplicates, verified by parsing the file rather than by eye. **That conflict is now
+routine on this bus, and a union resolved wrongly is a silently smaller gate.**
+**Verified against the deployed 0.41.0 artifact through `computeWorkLedger`, never a literal:**
+`{source: "deployed", releasedVersion: "0.41.0", commit: "49b30e9", anchor: "content", anchorFiles:
+102, unshippedProduct: 0, blocksSince: 0}`, tile band `good` — "loom-session-tracker 0.41.0 is in
+front of a user — nothing unshipped" — and all four readers agree. The sentence WL-011 corrected
+shipped with it: the briefing now says "1 block(s) since **product code last changed**" where it used
+to claim "since anything reached a user", which is not what it counts.
+
+**The two findings this block's corpus turned up and did NOT fix — now the top of the queue, and
+bigger than anything it did fix.** (1) **`findManifest` is NODE-ONLY, so 7 of 14 repos resolve
+`unmeasured` before any anchor logic runs at all** — 2726 commits, funisland 1956 and Gaming 648, the
+two busiest repos on the bus — and **Gaming's 40 tags are never read**, because `manifestAuthority`
+only runs AFTER `findManifest` succeeds. (2) **`FOREIGN_BUILD_FILES` has no PYTHON entry**, so pleodo
+and funisland escape the veto written for exactly the polyglot case. **The pattern across WL-010,
+WL-011 and both of these is one pattern: every fix so far has improved the ANSWER for repos that were
+already being measured, and the larger population is the one where the question is never asked.**
+Dispatched as WL-012.
+
 
 **Version 0.40.0** is WL-010 + R1 and MP-002 — one manifest speaking for a whole repo, and the
 extension no longer changing an orchestrator's model.
