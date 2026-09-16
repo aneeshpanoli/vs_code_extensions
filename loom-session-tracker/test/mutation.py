@@ -1608,8 +1608,11 @@ MUTATIONS = [
  # review — with this in place the tile rendered "3468.8% of this window's net product".
  ("a reader takes the distance straight off the field instead of through its own chokepoint",
   "src/workledger.ts",
-  "  if (r.anchorOffHistory) return { blocksSince: null, unshippedProduct: null };",
-  "  if (false) return { blocksSince: null, unshippedProduct: null };"),
+  # RE-ANCHORED BY WL-012, which added `netShrank` to this chokepoint's return. The pre-flight
+  # caught it as STALE and refused to grade the whole run rather than scoring it — a mutant that
+  # never ran is not evidence that a defect would be caught.
+  "  if (r.anchorOffHistory) return { blocksSince: null, unshippedProduct: null, netShrank: null };",
+  "  if (false) return { blocksSince: null, unshippedProduct: null, netShrank: null };"),
 
  # Killed by "WL-011: the briefing names the basis it ACTUALLY has". A tag reported under a basis it
  # does not have, in the one reader an orchestrator reads before choosing the next block.
@@ -1645,10 +1648,14 @@ MUTATIONS = [
  # Gaming: 648 commits, 40 tags whose newest is ON this history, two tracked manifests at DEPTH 2.
  # The gate returned null one level above them, so the tag veto and the deployed anchor — two whole
  # blocks of work — never ran on it, and it rendered `unmeasured` for as long as the panel existed.
+ # The first version of this mutant appended `return null;`, which made the sweep below UNREACHABLE
+ # — and TypeScript does not narrow in unreachable code, so `if (m) deep.push(m)` stopped compiling
+ # and the pre-flight refused it. It restores the defect at the SOURCE instead: the finder never
+ # asks git, which is exactly the state Gaming's 40 tags went unread in.
  ("findManifest stops one level above Gaming's manifest — half the corpus is never asked",
   "src/workledger.ts",
-  "  if (found.length) return active(found);",
-  "  if (found.length) return active(found);\n  return null;"),
+  '  const tracked = (git(repoPath, ["ls-files", "*package.json"]) || "")',
+  '  const tracked = ("")'),
 
  # The sweep must be BOUNDED. Unbounded, a manifest in a fixture or vendor tree answers for a
  # product nobody ships — the confidently-wrong line one layer down, which is R5's whole subject.
