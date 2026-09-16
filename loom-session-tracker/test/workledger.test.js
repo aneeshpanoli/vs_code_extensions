@@ -1888,3 +1888,42 @@ suite("WL-011-R1: a release object carrying its OWN DOUBT says so in every reade
   ok(on.release.unshippedProduct !== null, "and a line distance — the doubt is about the MANIFEST");
   eq(on.release.anchorOffHistory, false, "because the anchor is on the history being measured");
 });
+
+suite("WL-011-R2: the content match is ALL the shipped files, not the first one that agrees", () => {
+  // FOUND BY THE MUTATION GATE, NOT BY REVIEW, AND THE HOLE WAS IN MY OWN FIXTURE. The mutant
+  // "accept the first shipped file" SURVIVED 217/218 against the suite above, because every block in
+  // that fixture ADDS a new file: the artifact then lacks that path, the path-limited log never
+  // offers the newer commit as a candidate, and matching one file is accidentally sufficient.
+  //
+  // A REAL SECOND BLOCK MODIFIES A FILE THAT IS ALREADY SHIPPING. Then the newer commit IS a
+  // candidate — it touches a path the artifact carries — and only comparing EVERY file rejects it.
+  // `package.json` sorts first and is identical across every commit under one version, which is the
+  // whole reason the version anchor was wrong in the first place; a match that stops there has
+  // reinvented it while claiming to be evidence.
+  const dir = makeGitRepo("wl011r2", [
+    { msg: "v1", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+    { msg: "ship 1.1.0", files: { "package.json": pkg("ext", "1.1.0"), "src/app/b.tsx": lines(10) }, daysAgo: 3 },
+    // The second block under the SAME version, and it EDITS the file the last one shipped.
+    { msg: "second block edits what shipped", files: { "src/app/b.tsx": lines(30) }, daysAgo: 1 },
+  ]);
+  const atBump = git(dir, ["rev-parse", "HEAD~1"]).trim();
+  const atSecond = git(dir, ["rev-parse", "HEAD"]).trim();
+
+  // The artifact is the BUMP commit: it ships b.tsx at 10 lines, and the user does NOT have the 20
+  // lines the second block added to that same file.
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl011r2: ["src/app/**"] },
+                                        deployRoots: [makeDeployedFrom(dir, "local.ext-1.1.0", atBump)] });
+  eq(w.release.anchor, "content", "the answer still claims to be evidence");
+  eq(w.release.commit, atBump,
+     "and the evidence must be ALL of it: package.json is byte-identical at both commits, so a " +
+     "match that stops at the first file lands on the second block and calls its edit shipped");
+  eq(w.release.unshippedProduct, 20, "the 20 lines added to an already-shipped file are outstanding");
+  eq(w.release.blocksSince, 1, "one block ahead of the user");
+
+  // And the artifact that IS the second block resolves to it, so the test cannot pass by always
+  // preferring the older commit.
+  const w2 = wl.computeWorkLedger(dir, { productPaths: { wl011r2: ["src/app/**"] },
+                                         deployRoots: [makeDeployedFrom(dir, "local.ext-1.1.0", atSecond)] });
+  eq(w2.release.commit, atSecond, "the newer artifact resolves to the newer commit");
+  eq(w2.release.unshippedProduct, 0, "with nothing outstanding");
+});
