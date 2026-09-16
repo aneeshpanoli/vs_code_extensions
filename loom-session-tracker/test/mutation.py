@@ -1047,8 +1047,9 @@ MUTATIONS = [
  # now", which is the exact opposite of what is known, and is under every alarm.
  ("a release that cannot be detected reports 0 blocks — unseen is rendered as just-shipped",
   "src/workledger.ts",
-  '  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };',
-  '  return { ...base, source: "deployed", releasedVersion: base.version, blocksSince: 0 };'),
+  # WL-011 re-anchored: the return gained `anchor: "none"` on a second line.
+  '  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null,\n           anchor: "none" };',
+  '  return { ...base, source: "deployed", releasedVersion: base.version, blocksSince: 0,\n           anchor: "none" };'),
 
  # R5 — killed by "WL-003-R5: no manifest and no deploy target is UNMEASURED". The SAME defect on
  # the other unmeasured path, the one a missing manifest takes. The first version of the mutant above
@@ -1068,8 +1069,9 @@ MUTATIONS = [
  ("a manifest that has never changed version is reported as unmeasured rather than as unreleased",
   "src/workledger.ts",
   # WL-007 re-anchored: the line gained `commit: firstSha,` before it.
-  "             commit: firstSha, neverMoved: true };",
-  "             commit: firstSha, neverMoved: false };"),
+  # WL-011 re-anchored again: and `anchor: "manifest-bump"` after it.
+  '             commit: firstSha, neverMoved: true, anchor: "manifest-bump" };',
+  '             commit: firstSha, neverMoved: false, anchor: "manifest-bump" };'),
 
  # ── WL-006 · a background gate that finishes after the turn ends ─────────────────────
  # MEASURED THREE TIMES (WL-002, WL-004+FX-002, WL-005). On WL-005 the gate ran ~18 minutes past
@@ -1439,6 +1441,66 @@ MUTATIONS = [
   '  const pending = r.source !== "tag" && r.version !== null && r.releasedVersion !== null\n                  && r.version !== r.releasedVersion;',
   "  const pending = r.version !== null && r.releasedVersion !== null\n                  && r.version !== r.releasedVersion;"),
 
+
+ # ── WL-011 · the ANCHOR, not the arithmetic ──────────────────────────────────────────────────
+ # Measured 2026-09-16 over this repo's own 49 deployed artifacts: the anchor lands on the wrong
+ # COMMIT in 22 of 48 and renders a wrong NUMBER in 4 (+216, +152, +13, -412). Every mutant below
+ # restores one of those wrongs, and each is killed by a test that asserts the CLAIM, not a spelling.
+
+ # Killed by "WL-011: TWO BLOCKS UNDER ONE VERSION". Skipping the content match falls back to the
+ # version bump, which cannot see a second block shipped under an existing version number — the
+ # defect exactly: 0.40.0 announced 152 deployed lines as "not in front of a user".
+ ("the deployed commit is inferred from the version bump, not read from the artifact's content",
+  "src/workledger.ts",
+  "    const byContent = art ? deployedCommit(repoPath, m.rel, art.dir) : null;",
+  "    const byContent = null as null | { sha: string; matched: number };"),
+
+ # Killed by the same test's STALE half. Matching only the FIRST file is a plausible optimisation
+ # and is wrong: package.json alone is identical across every commit under one version, which is
+ # how the anchor became the bump in the first place.
+ ("the content match accepts the first shipped file instead of all of them",
+  "src/workledger.ts",
+  "    for (const [p, h] of want) if (at.get(p) !== h) { all = false; break; }",
+  "    for (const [p, h] of want) { all = at.get(p) === h; break; }"),
+
+ # Killed by "WL-011: A DISTANCE IS ONLY MEASURABLE FROM AN ANCHOR ON THIS HISTORY". This is the
+ # Lumen defect restored: a tag on an abandoned train counts 189 of 189 commits and diffs two
+ # branches against each other for a five-figure negative that bands GOOD.
+ ("an anchor off this history is measured anyway — two branches diffed against each other",
+  "src/workledger.ts",
+  "export function onThisHistory(repoPath: string | null, sha: string | null): boolean {\n  if (!repoPath || !sha) return false;\n  return git(repoPath, [\"merge-base\", \"--is-ancestor\", sha, \"HEAD\"]) !== null;\n}",
+  "export function onThisHistory(repoPath: string | null, sha: string | null): boolean {\n  return !!repoPath && !!sha;\n}"),
+
+ # Killed by the same test, at the netProductSince half. The chokepoint is the point: a caller that
+ # forgets the guard must still be refused.
+ ("netProductSince measures from an off-history anchor — the guard moves back to the caller",
+  "src/workledger.ts",
+  "  if (!onThisHistory(repoPath, commit)) return null;",
+  "  if (false) return null;"),
+
+ # Killed by "WL-011: the off-history release is NAMED, its distance is unmeasured". THE WL-010-R1
+ # CLASS: the READER trusting an upstream invariant instead of holding it. Found by the test, not by
+ # review — with this in place the tile rendered "3468.8% of this window's net product".
+ ("a reader takes the distance straight off the field instead of through its own chokepoint",
+  "src/workledger.ts",
+  "  if (r.anchorOffHistory) return { blocksSince: null, unshippedProduct: null };",
+  "  if (false) return { blocksSince: null, unshippedProduct: null };"),
+
+ # Killed by "WL-011: the briefing names the basis it ACTUALLY has". A tag reported under a basis it
+ # does not have, in the one reader an orchestrator reads before choosing the next block.
+ ("the briefing calls every non-deployed release a manifest bump, including a tag",
+  "src/workledger.ts",
+  # Anchored with the line above it: the 6-space form is a SUBSTRING of `basis`'s 14-space line in
+  # releaseReading, so on its own it matches twice and the pre-flight refuses it.
+  '    const how = r.source === "deployed"\n      ? (r.anchor === "content" ? "deployed artifact, anchored on its content"\n                                : "deployed artifact, anchored on the version bump")\n      : r.source === "tag" ? "git tag" : "manifest bump";',
+  '    const how = r.source === "deployed" ? "deployed artifact" : "manifest bump";'),
+
+ # Killed by "WL-003 R3" and "WL-003 R2" (the briefing wording). The PO's own briefing carried this
+ # beside a correct release line: two disagreeing claims about reaching a user in one message.
+ ("the block count claims product REACHED A USER when it counts commits that CHANGED product",
+  "src/workledger.ts",
+  "    L.push(`${w.blocksSinceProduct} block(s) since product code last changed` +",
+  "    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +"),
 ]
 
 def sh(cmd):

@@ -998,14 +998,16 @@ suite("WL-003 R1: a session filter that matches NOTHING is unmeasured, not a per
      "no directory at all is unmeasured too");
 });
 
-suite("WL-003 R1: blocks since anything reached a user, and the narration run", () => {
+suite("WL-003 R1 / WL-011: blocks since PRODUCT CODE CHANGED, and the narration run", () => {
   const dir = makeGitRepo("wl003", [
     { msg: "ship it", files: { "src/app/p.tsx": lines(20) }, daysAgo: 3 },
     { msg: "docs", files: { "docs/a.md": "a\n" }, daysAgo: 2 },
     { msg: "more docs", files: { "README.md": "b\n" }, daysAgo: 1 },
   ]);
   const w = wl.computeWorkLedger(dir, { productPaths: { wl003: ["src/app/**"] } });
-  eq(w.blocksSinceProduct, 2, "two blocks have passed since one reached a user");
+  // WL-011 · the field counts commits that TOUCHED A PRODUCT PATH. This fixture has never deployed
+  // anything and has no tag, so "reached a user" was never something it could have measured.
+  eq(w.blocksSinceProduct, 2, "two blocks have passed since one CHANGED PRODUCT CODE");
   eq(w.narrationRun, 2, "and both of them changed only docs");
 });
 
@@ -1022,7 +1024,10 @@ suite("WL-003 R3: the briefing names what HAPPENED — never a score the orchest
   const w = wl.computeWorkLedger(dir, { productPaths: { wl003b: ["src/app/**"] },
                                         projectsRoot: root, sessionIds: ["orch"] });
   const text = wl.orchestratorBriefing(w, true).join("\n");
-  match(text, /1 block\(s\) since anything reached a user/, "it names the trigger");
+  // WL-011 · IT NAMES WHAT IT COUNTS. This fixture deployed nothing and tagged nothing, so the old
+  // wording — "since anything reached a user" — was false here and in every repo that is not
+  // shipping; the release line is the only one entitled to that claim.
+  match(text, /1 block\(s\) since product code last changed/, "it names the trigger");
   match(text, /2 of the last 3 tool call\(s\) you made this session went to bus mechanics/,
         "COUNTS, not a share: '2 of 3' is a fact about the week, '67%' is a dial");
   // R3, asserted rather than trusted to review: no grade, no target, no verdict word.
@@ -1041,7 +1046,7 @@ suite("WL-003 R2: an unmeasured allocation SAYS SO to the orchestrator instead o
   const w = wl.computeWorkLedger(dir, { productPaths: { wl003c: ["src/app/**"] }, projectsRoot: empty });
   const text = wl.orchestratorBriefing(w, true).join("\n");
   match(text, /Where the blocks went is unmeasured/, "it reports the gap rather than an empty line");
-  match(text, /1 block\(s\) since anything reached a user/, "the git half still lands");
+  match(text, /1 block\(s\) since product code last changed/, "the repo half still lands");
 });
 
 suite("WL-003 R2: nothing worth interrupting for produces NO message at all", () => {
@@ -1137,8 +1142,11 @@ suite("WL-003-R5: the line NAMES which source answered, so the claim carries its
   const w = wl.computeWorkLedger(dir, { productPaths: { r5src: ["src/app/**"] },
                                         deployRoots: [makeDeployRoot(["local.s-1.0.0"])] });
   const text = wl.orchestratorBriefing(w, true).join("\n");
-  match(text, /1 block\(s\) since 1\.0\.0 reached a user \(deployed artifact\)/,
-        "the number AND where it came from");
+  // WL-011 · the basis now says HOW the commit was identified, not only that an artifact answered.
+  // This fixture's deploy root is an EMPTY directory, so there is no content to match and the
+  // fallback answers — which is the honest label for it, and the case is asserted on purpose.
+  match(text, /1 block\(s\) since 1\.0\.0 reached a user \(deployed artifact, anchored on the version bump\)/,
+        "the number AND where it came from, down to which anchor placed it");
 });
 
 suite("WL-003-R5: a repo holding SEVERAL products answers for the ACTIVE one, and names it", () => {
@@ -1613,4 +1621,209 @@ suite("WL-010-R1: for an UNMEASURED release, no reader's text is a function of s
     eq(before["panel tile (band)"], "unknown", "not knowing is not an alarm");
     match(before["orchestratorBriefing"], /unmeasured/, "and every reader carries it");
   }
+});
+
+// ── WL-011 · THE ANCHOR IS THE DEFECT, NOT THE ARITHMETIC ─────────────────────────────────────
+//
+// Third time running on this module: WL-007's `blocksSince`, WL-010's stale manifest, and now two
+// anchors at once. So these tests ask WHAT THE ANCHOR IS before they ask what the number is.
+//
+// Measured for this block, 2026-09-16, against this repo's own 49 deployed artifacts: the release
+// anchor lands on the wrong COMMIT in 22 of 48 measurable ones, and renders a wrong NUMBER in 4 —
+// +216, +152, +13 and −412 net product lines. The +152 is 0.40.0, which announced "152 product
+// line(s) not in front of a user" minutes after those very lines were deployed.
+
+/** WL-011 · a deploy root holding a REAL COPY of the repo at `ref` — which is what a deploy IS:
+ *  the source, on disk, where the user's editor loads it. `makeDeployRoot` above makes EMPTY
+ *  directories, and that case still matters (an artifact whose content says nothing must fall back
+ *  to the manifest rather than go silent), so both helpers are kept. */
+function makeDeployedFrom(repoDir, artifactName, ref) {
+  const root = path.join(LOOM, "..", "deployed-" + Math.random().toString(36).slice(2));
+  const dest = path.join(root, artifactName);
+  fs.mkdirSync(dest, { recursive: true });
+  for (const rel of (git(repoDir, ["ls-tree", "-r", "--name-only", ref]) || "")
+                      .split("\n").map((x) => x.trim()).filter(Boolean)) {
+    fs.mkdirSync(path.dirname(path.join(dest, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dest, rel), git(repoDir, ["show", ref + ":" + rel]));
+  }
+  return root;
+}
+
+const wl011Readers = (x) => ({
+  "panel tile (value)": relTile(x).value,
+  "panel tile (band)": relTile(x).band,
+  "panel tile (detail)": relTile(x).detail,
+  "summaryLine": wl.summaryLine(x),
+  "ledgerAlert": String(wl.ledgerAlert(x, null) || ""),
+  "orchestratorBriefing": wl.orchestratorBriefing(x).join("\n"),
+});
+
+suite("WL-011: TWO BLOCKS UNDER ONE VERSION — the anchor is the deploy, not the version bump", () => {
+  // The exact shape that produced the false 152. `ship 1.1.0` bumps the version; `second block`
+  // lands AFTER it carrying 20 product lines under that SAME version number, and is then deployed.
+  // The version-bump anchor cannot see the second block, so it calls those 20 lines unshipped while
+  // the user is running them. Two blocks per version is this bus's normal practice, not an edge.
+  const dir = makeGitRepo("wl011dep", [
+    { msg: "v1", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+    { msg: "ship 1.1.0", files: { "package.json": pkg("ext", "1.1.0"), "src/app/b.tsx": lines(10) }, daysAgo: 3 },
+    { msg: "second block, same version", files: { "src/app/c.tsx": lines(20) }, daysAgo: 1 },
+  ]);
+  const atBump = git(dir, ["rev-parse", "HEAD~1"]).trim();
+  const atSecond = git(dir, ["rev-parse", "HEAD"]).trim();
+  const opts = { productPaths: { wl011dep: ["src/app/**"] } };
+
+  // THE DIFFERENTIAL, AND IT IS THE POINT: the two artifacts carry the SAME version number and
+  // differ only in CONTENT. Anything that anchors on the version cannot tell them apart, so a test
+  // that checked only the shipped case would pass against the old code for the wrong reason.
+  const shipped = wl.computeWorkLedger(dir,
+    { ...opts, deployRoots: [makeDeployedFrom(dir, "local.ext-1.1.0", atSecond)] });
+  const stale = wl.computeWorkLedger(dir,
+    { ...opts, deployRoots: [makeDeployedFrom(dir, "local.ext-1.1.0", atBump)] });
+
+  eq(shipped.release.anchor, "content", "the artifact's own bytes identified the commit");
+  eq(shipped.release.commit, atSecond, "which is the SECOND block — what was actually deployed");
+  eq(shipped.release.unshippedProduct, 0, "so nothing is outstanding, and this is the false 152");
+  eq(shipped.release.blocksSince, 0, "and no commits stand between the user and HEAD");
+
+  eq(stale.release.anchor, "content", "the same mechanism answers for the older artifact");
+  eq(stale.release.commit, atBump, "which is the bump commit, because that IS what it ships");
+  eq(stale.release.unshippedProduct, 20, "and the second block genuinely IS unshipped here");
+  eq(stale.release.blocksSince, 1, "one block ahead of the user");
+
+  // THE CLAIM, PER READER — not a banned spelling (WL-009). Every reader must DISTINGUISH the two,
+  // because the two situations are opposite: one has nothing outstanding, one has 20 lines. A
+  // reader that reads the same in both is anchored on the version number and has not been repointed.
+  const a = wl011Readers(shipped), b = wl011Readers(stale);
+  for (const name of Object.keys(a)) {
+    if (name === "ledgerAlert") continue;   // keyed on ship share, not on the release line
+    ok(a[name] !== b[name],
+       name + " reads IDENTICALLY for a fully-shipped artifact and one that is a block behind — " +
+       "it is anchored on the version number, which is the same in both");
+  }
+  match(a["panel tile (value)"], /nothing unshipped/, "the shipped artifact claims nothing outstanding");
+  eq(a["panel tile (band)"], "good", "and that is the honest band");
+  match(b["panel tile (value)"], /20 product line\(s\) not in front of a user/,
+        "the stale one names the 20 lines the user does not have");
+});
+
+suite("WL-011: an artifact whose content matches NO commit falls back, and SAYS it is a bump anchor", () => {
+  // A deploy built from a tree git never saw. The release is still real and still named — what
+  // changes is the strength of the evidence, and the reader is owed which one answered.
+  const dir = makeGitRepo("wl011fb", [
+    { msg: "v1", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 4 },
+    { msg: "after", files: { "src/app/b.tsx": lines(7) }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot(["local.ext-1.0.0"])] });
+  eq(r.source, "deployed", "an empty artifact directory is still a deployed release");
+  eq(r.anchor, "manifest-bump", "but the commit came from the version, and the signal says so");
+  eq(r.releasedVersion, "1.0.0", "the version is not in doubt");
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl011fb: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot(["local.ext-1.0.0"])] });
+  match(relTile(w).detail, /BUMPED THE VERSION/,
+        "and the reader carries the weaker basis rather than presenting it as the deploy");
+  match(wl.orchestratorBriefing(w).join("\n"), /anchored on the version bump/,
+        "in the one reader an orchestrator reads before dispatching");
+});
+
+suite("WL-011: A DISTANCE IS ONLY MEASURABLE FROM AN ANCHOR ON THIS HISTORY", () => {
+  // THE LUMEN CASE, verified in the real repo 2026-09-16: 40 release tags, newest `cairn-ios-v0.1.0`
+  // on an iOS train that is not an ancestor of HEAD. `rev-list --count tag..HEAD` returned 189 of
+  // 189 commits, and a two-point diff between the two branches returned unshippedProduct −34719.
+  // Being negative it banded GOOD and the panel printed "nothing unshipped" about a repo that cuts
+  // release trains: a false green with a five-figure number under it. Nothing throws and no branch
+  // is skipped, which is why it survived.
+  const dir = makeGitRepo("wl011anc", [
+    { msg: "base", files: { "package.json": pkg("ext", "0.1.0"), "src/app/a.tsx": lines(5) }, daysAgo: 6 },
+  ]);
+  const base = git(dir, ["rev-parse", "HEAD"]).trim();
+  // A release train cut on its own branch, then abandoned by main — Lumen's shape exactly.
+  git(dir, ["checkout", "-q", "-b", "train"]);
+  fs.writeFileSync(path.join(dir, "src/app/train.tsx"), lines(40));
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "train build"]);
+  const tagged = git(dir, ["rev-parse", "HEAD"]).trim();
+  git(dir, ["tag", "rel-v0.1.0"]);
+  git(dir, ["checkout", "-q", "main"]);
+  fs.writeFileSync(path.join(dir, "src/app/b.tsx"), lines(11));
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "work on main"]);
+
+  ok(base !== tagged, "the tag names a commit main never took");
+  eq(wl.onThisHistory(dir, base), true, "an ancestor of HEAD is on this history");
+  eq(wl.onThisHistory(dir, tagged), false, "a commit on an abandoned train is NOT");
+  eq(wl.onThisHistory(dir, "0".repeat(40)), false, "and neither is a sha that does not exist");
+
+  // THE CHOKEPOINT, asserted directly so a FUTURE reader that measures from a new anchor inherits
+  // the refusal instead of having to remember it (MP-002's lesson, applied here).
+  const cls = wl.classifierFor("wl011anc", { wl011anc: ["src/app/**"] }, []);
+  eq(wl.netProductSince(dir, tagged, cls), null,
+     "netProductSince REFUSES an off-history anchor — a two-point diff across branches is not a " +
+     "distance along this one, and it is the number that reads as a verdict");
+  ok(wl.netProductSince(dir, base, cls) !== null, "while an anchor on this history still measures");
+});
+
+suite("WL-011: the off-history release is NAMED, its distance is unmeasured, and every reader says why", () => {
+  const dir = makeGitRepo("wl011off", [
+    { msg: "base", files: { "package.json": pkg("ext", "0.1.0"), "src/app/a.tsx": lines(5),
+                            "build.gradle": "x\n" }, daysAgo: 6 },
+  ]);
+  git(dir, ["checkout", "-q", "-b", "train"]);
+  fs.writeFileSync(path.join(dir, "src/app/train.tsx"), lines(40));
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "train"]);
+  git(dir, ["tag", "rel-v1.0.0"]);
+  git(dir, ["checkout", "-q", "main"]);
+  fs.writeFileSync(path.join(dir, "src/app/b.tsx"), lines(11));
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "after"]);
+
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl011off: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  eq(w.release.source, "tag", "the Gradle veto sends it to the tag, which is a real release");
+  eq(w.release.releasedVersion, "rel-v1.0.0", "and the release is still NAMED — that much is known");
+  eq(w.release.anchorOffHistory, true, "the anchor is not on the history being measured");
+  eq(w.release.blocksSince, null, "so the commit distance is unmeasured");
+  eq(w.release.unshippedProduct, null, "and so is the line distance — never a number");
+  eq(relTile(w).band, "unknown", "not knowing is not an alarm, and it is not a clean bill either");
+
+  // THE POSITIVE HALF OF THE CONTRACT, per reader: it must SAY it cannot measure the distance, and
+  // say why, rather than going quiet. WL-010's rule — a shrug is not actionable, a reason is.
+  const r = wl011Readers(w);
+  for (const name of ["panel tile (value)", "summaryLine", "orchestratorBriefing"]) {
+    match(r[name], /unmeasured/, name + " must SAY the distance is unmeasured, not simply omit it");
+  }
+  match(r["panel tile (detail)"], /NOT AN ANCESTOR OF HEAD/, "the tile names the cause");
+  match(r["orchestratorBriefing"], /cut on a branch this one never joined/,
+        "and so does the line the orchestrator reads");
+
+  // AND IT MUST NOT BE A FUNCTION OF NUMBERS IT DOES NOT HAVE — WL-010-R1's property, which is why
+  // that block needed an R1: the enum was tested and the SENTENCE was not. The release-line readers
+  // are held to the DISTANCE staying unmeasured no matter what those fields are set to.
+  const before = wl011Readers(w);
+  w.release = { ...w.release, blocksSince: 4242, unshippedProduct: 555 };
+  w.blocksSinceRelease = 4242; w.tag = "v9.9.9";
+  const after = wl011Readers(w);
+  for (const name of Object.keys(before)) {
+    match(after[name].replace(/4242|555|v9\.9\.9/g, "«"), /^[^«]*$/,
+          name + " rendered a distance it was told is unmeasured — the anchor cannot support it");
+  }
+});
+
+suite("WL-011: the briefing names the basis it ACTUALLY has — a tag is not a manifest bump", () => {
+  // It said "manifest bump" for every source that was not `deployed`, so a TAG-sourced release —
+  // the answer livegita and Lumen both get — was reported under a basis it does not have, in the
+  // one reader an orchestrator reads before choosing the next block.
+  const dir = makeGitRepo("wl011bas", [
+    { msg: "base", files: { "package.json": pkg("ext", "0.1.0"), "src/app/a.tsx": lines(5),
+                            "build.gradle": "x\n" }, daysAgo: 6 },
+    { msg: "more", files: { "src/app/b.tsx": lines(4) }, daysAgo: 3 },
+  ]);
+  git(dir, ["tag", "rel-v2.0.0", "HEAD~1"]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl011bas: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  eq(w.release.source, "tag", "a tag on this history answers, and can measure a distance");
+  eq(w.release.anchorOffHistory, false, "because it IS an ancestor of HEAD");
+  const text = wl.orchestratorBriefing(w).join("\n");
+  match(text, /reached a user \(git tag\)/, "the basis named is the one it has");
+  ok(!/manifest bump/.test(text), "and never a basis it does not have");
 });
