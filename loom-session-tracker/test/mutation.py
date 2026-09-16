@@ -1358,6 +1358,33 @@ MUTATIONS = [
   '      out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS,\n                         gate: answered && decl ? "spent" : "none" });',
   "      out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS });"),
 
+
+ # ── WL-009 · a grade produced by chance ────────────────────────────────────────────────────────
+ #
+ # A test that fails at RANDOM can mark a mutant "caught" with no relation to the mutant, because a
+ # mutant is scored caught when a baseline-passing test now fails. The direction seen on 2026-09-16
+ # was the safe one — the flake hit the BASELINE and the gate refused — but the dangerous direction
+ # is silent. `workledger.test.js` banned the bare substring `/999/` across reader text that echoes a
+ # RANDOM base-36 fixture name: p = 1.9e-4 per suite run, 3.8% per 203-run gate, about one gate in 26.
+ # The suite now renders every reader TWICE off one ledger and requires them byte-identical, so the
+ # random name appears in both renders and cancels. These mutants prove that assertion still bites.
+
+ # Killed by "WL-007: ALL FOUR readers take the release line from w.release, not from w.tag"
+ # (rewritten in WL-009 — the differential form, which names WHICH reader drifted).
+ ("a reader appends blocksSinceRelease — the demoted field back in the product, by a spelling no ban would catch",
+  "src/workledger.ts",
+  "    releaseReading(w).text,",
+  "    releaseReading(w).text + ` [${w.blocksSinceRelease} since ${w.tag}]`,"),
+
+ # Killed by "WL-003-R5: no manifest and no deploy target is UNMEASURED — never '0 blocks', never
+ # 'never'". WL-009 ANCHORED that ban (`\b0 block`) because the bare form also matched "10 block(s)"
+ # in the same briefing — the same class as the /999/ flake, latent rather than firing. The anchor
+ # must still ban what it was written to ban, which is what this reintroduces.
+ ("an UNMEASURED release is briefed as '0 block(s)' — unseen rendered as just-shipped",
+  "src/workledger.ts",
+  "    L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed `",
+  "    L.push(`0 block(s) since release. Whether anything has been released is ${UNMEASURED}: no manifest and no deployed `"),
+
 ]
 
 def sh(cmd):
