@@ -1121,7 +1121,11 @@ suite("WL-003-R5: no manifest and no deploy target is UNMEASURED — never '0 bl
   w.release = r;
   const text = wl.orchestratorBriefing(w, true).join("\n");
   match(text, /Whether anything has been released is unmeasured/, "and the line says so");
-  ok(!/0 block/.test(text), "0 blocks would read as 'shipped just now' — the opposite of the truth");
+  // WL-009: ANCHORED. Bare `/0 block/` also matches "10 block(s)", "20 block(s)", ... and this
+  // briefing prints `blocksSinceProduct` as a measured count — so the same class as the `/999/`
+  // flake, latent rather than firing only because this fixture's repo has one commit. A word
+  // boundary excludes "10 block" (no boundary between "1" and "0") and keeps the real ban.
+  ok(!/\b0 block/.test(text), "0 blocks would read as 'shipped just now' — the opposite of the truth");
   ok(!/no release in/i.test(text), "and it must not claim it has never released");
 });
 
@@ -1229,18 +1233,41 @@ function ledgerWithRelease(rel, extra) {
 const relTile = (w) => wl.figuresFor(w).find((f) => f.key === "release");
 
 suite("WL-007: ALL FOUR readers take the release line from w.release, not from w.tag", () => {
-  // The tag proxy set to something loud. If any reader still consults it, its text changes.
-  const w = ledgerWithRelease({}, { tag: "v9.9.9", blocksSinceRelease: 999, daysSinceRelease: 99 });
-  const t = relTile(w);
-  const texts = [t.value, t.detail, wl.summaryLine(w), String(wl.ledgerAlert(w, null) || ""),
-                 wl.orchestratorBriefing(w).join("\n")];
-  texts.forEach((x, i) => {
-    ok(!/v9\.9\.9/.test(x), "reader " + i + " must not name the tag: " + x.slice(0, 120));
-    ok(!/999/.test(x), "reader " + i + " must not use blocksSinceRelease: " + x.slice(0, 120));
-    ok(!/no release in \d+ blocks/.test(x),
-       "reader " + i + " must not print the tag falsehood: " + x.slice(0, 120));
+  // WL-009 REWROTE THIS SUITE. It used to set the tag proxy to loud values and BAN their spellings
+  // across every reader's text — including a bare `/999/`. Two readers echo the repo NAME, and this
+  // fixture's name is `"wl007-" + Math.random().toString(36).slice(2)`, so whenever that random
+  // base-36 string happened to contain "999" the test failed with no defect anywhere near it.
+  // MEASURED: p = 1.9e-4 per suite run (1 in 5,214), which is a 3.8% chance per 203-run gate — about
+  // one gate in 26. It refused a real gate on 2026-09-16.
+  //
+  // The fix is not a deterministic name. The randomness is LOAD-BEARING (these fixtures share one
+  // directory and must not collide); the ASSERTION was the defect. It banned a SPELLING that a
+  // random value could collide with, in place of the BEHAVIOUR it exists to protect: no reader
+  // consults `tag` / `blocksSinceRelease` / `daysSinceRelease`. So it now renders every reader
+  // twice off ONE ledger and requires them byte-identical — the repo name appears in both renders
+  // and cancels, so no spelling can collide, ever. "Ban the trade, not the digit", turned on us.
+  //
+  // This is per-READER on purpose. The differential suite below joins all renders into one string,
+  // which proves the property but cannot say WHICH reader drifted; this one names it.
+  const readers = (x) => ({
+    "panel tile (value)": relTile(x).value,
+    "panel tile (band)": relTile(x).band,
+    "panel tile (detail)": relTile(x).detail,
+    "summaryLine": wl.summaryLine(x),
+    "ledgerAlert": String(wl.ledgerAlert(x, null) || ""),
+    "orchestratorBriefing": wl.orchestratorBriefing(x).join("\n"),
   });
-  match(t.value, /1\.0\.0 is in front of a user/, "it says what actually reached a user");
+  const w = ledgerWithRelease({}, { tag: null, blocksSinceRelease: null, daysSinceRelease: null });
+  const before = readers(w);
+  // The proxy set to something loud, IN PLACE. If any reader consults it, that reader's text moves.
+  w.tag = "v9.9.9"; w.blocksSinceRelease = 999; w.daysSinceRelease = 99;
+  const after = readers(w);
+  for (const name of Object.keys(before)) {
+    eq(after[name], before[name],
+       name + " CONSULTS THE TAG PROXY — it must take the release line from w.release alone");
+  }
+  match(before["panel tile (value)"], /1\.0\.0 is in front of a user/,
+        "and what it does say is what actually reached a user");
 });
 
 suite("WL-007: the tag fields are DIAGNOSIS ONLY -- changing them changes no reader's output", () => {
