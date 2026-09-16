@@ -1847,13 +1847,17 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
               `${w.transcriptsRoot} matches this repo, so its spend is invisible here. This is NOT ` +
               `a cheap week; it is an unwatched one. It` :
             `${fmtTokens(w.tokensSpent as number)} tokens (${w.costEquivalent === null ? UNMEASURED :
-               fmtMoney(w.costEquivalent)} list-price equivalent, not a bill)`} produced ` +
+               // PD-001 · "equivalent" is what "not a bill" already says. Same claim, 11 fewer chars.
+               fmtMoney(w.costEquivalent)} list-price, not a bill)`} produced ` +
          `${nothingShipped ? "NO net product lines" :
             `${w.netProductLines === null ? "?" : `${w.netProductLines >= 0 ? "+" : ""}${w.netProductLines}`} ` +
             `net product line(s)` +
             `${w.costPerProductLine === null ? "" : ` at ${fmtMoney(w.costPerProductLine)}/line`}`}` +
-         `${w.newUserFacingFiles === null ? "" : `, ${w.newUserFacingFiles} new user-facing file(s)`}. ` +
-         `Consider whether the next block ships something.`;
+         `${w.newUserFacingFiles === null ? "" : `, ${w.newUserFacingFiles} new user-facing file(s)`}.`;
+  // PD-001 §4 · "Consider whether the next block ships something." used to close this line and is
+  // now CUT, to pay for the contract the message carries instead. It was the weakest kind of words:
+  // it asked for no decision this alert does not already imply, and the briefing's own header now
+  // says what these figures are for. Cutting it is how the message gets the contract without growing.
 }
 
 // ── WL-003 · the lines the ORCHESTRATOR is shown, where it decides ────────────────────────────
@@ -1931,11 +1935,24 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
            `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);
   }
   if (w.handoffs > 0 && w.loopBackHandoffs > 0) {
-    L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) this window came back for another ` +
-           `pass.`);
+    // PD-001 · "this window" is stated by the header this line sits under. Dropped, not lost.
+    L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) came back for another pass.`);
   }
   if (!L.length) return [];
-  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days:`, ...L.map((x) => `  · ${x}`)];
+  // PD-001 §2(b) · WHAT THESE NUMBERS ARE FOR, on the line they already had. The owner: "the
+  // orchestrators never understood the real meaning of the ledger data… that serves as a reminder
+  // for them if they ever get sidetracked." A REMINDER — not a gate, not a filter, not a thing to
+  // recite upward. Both failures have happened here: an orchestrator that reads "40 of 74 went to
+  // bus mechanics" as a threshold trims real work to move the number, and one that quotes the
+  // figure to the owner has performed looking instead of looking. So the line says whose the
+  // numbers are and what they decide, and names no target, no score and no verdict — folded into
+  // the header rather than added beneath it, because a reminder against volume cannot cost a line.
+  // (The wording dodges "score"/"grade"/"rating" deliberately: WL-003's own guard bans those words
+  // from this text, and a purpose line that had to be exempted from the no-marks rule would be
+  // arguing with it. It says what the figures are FOR, and names no mark to deny.)
+  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days — yours, for choosing the next ` +
+          `block; nothing here is a mark on you, and none of it is for repeating upward:`,
+          ...L.map((x) => `  · ${x}`)];
 }
 
 /** The same thing as ONE block, ready to append to a message already being sent. Empty when the

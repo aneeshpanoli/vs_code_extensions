@@ -526,9 +526,15 @@ suite("WL-001 R5: the alert fires on a RED ships figure, once per day", () => {
   // earned it. The release state here is unmeasured, which raised nothing.
   ok(!/release/.test(msg),
      "the release clause is ABSENT: it is not why this alert fired, so it does not speak here");
-  match(msg, /list-price equivalent, not a bill/, "and is explicit that the dollars are not a bill");
+  match(msg, /list-price, not a bill/, "and is explicit that the dollars are not a bill");
   match(msg, /2 new user-facing file\(s\)/, "and what was actually built");
-  match(msg, /Consider whether the next block ships something\./, "and asks for the decision");
+  // PD-001 §4 · the closing nudge ("Consider whether the next block ships something.") is CUT. It
+  // asked for no decision the figures did not already imply, and cutting it is part of how this
+  // message pays for the reporting contract it now carries instead. Asserted as an absence so it
+  // cannot drift back in beside the contract and say the same thing twice.
+  ok(!/Consider whether/.test(msg), "the nudge is gone — the contract says what to do with figures");
+  ok(!/\[contract\]/.test(msg), "and the contract is attached at the INJECTION boundary, not baked " +
+     "into the text — so the same builder can be read on a panel without it");
   eq(wl.ledgerAlert(w, "2026-09-15", wl.DEFAULT_THRESHOLDS, now), null, "already said today: silent");
   ok(wl.ledgerAlert(w, "2026-09-14", wl.DEFAULT_THRESHOLDS, now), "yesterday does not silence today");
 });
@@ -1034,6 +1040,49 @@ suite("WL-003 R3: the briefing names what HAPPENED — never a score the orchest
   ok(!/efficiency|below target|score|grade|rating|%/i.test(text),
      "never a percentage of its own conduct, and never a word that reads as a mark");
   ok(wl.briefingBlock(w, true).startsWith("\n\n"), "it appends to a message already being sent");
+});
+
+// ── PD-001 §2(b) · the briefing says what its own numbers are FOR ─────────────────────────────
+//
+// The owner: "the orchestrators never understood the real meaning of the ledger data you're passing
+// to them… that serves as a reminder for them if they ever get sidetracked." A REMINDER — so the
+// line has to do two things it is easy to get wrong in opposite directions: an orchestrator that
+// reads "40 of 74 went to bus mechanics" as a THRESHOLD will trim real work to move the number,
+// and one that RECITES the figure to the owner has performed looking instead of looking.
+suite("PD-001: the briefing states what its numbers are for, in one line, on the header", () => {
+  const dir = makeGitRepo("pd001a", [
+    { msg: "ship", files: { "src/app/p.tsx": lines(20) }, daysAgo: 3 },
+    { msg: "docs", files: { "docs/a.md": "a\n" }, daysAgo: 1 },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { pd001a: ["src/app/**"] } });
+  const lines0 = wl.orchestratorBriefing(w, true);
+  ok(lines0.length > 1, "there is a briefing to state the purpose of");
+  const header = lines0[0];
+  match(header, /for choosing the next block/, "the figures are an instrument for the NEXT decision");
+  match(header, /not for repeating upward|none of it is for repeating upward/,
+        "and explicitly not a thing to recite to the owner");
+  eq(lines0.filter((l) => /for choosing the next block/.test(l)).length, 1,
+     "ONE line — the purpose rides the header it already had, it does not cost a new line");
+  ok(!/  · .*for choosing the next block/.test(lines0.join("\n")),
+     "and it is not smuggled in as an extra bullet");
+});
+
+suite("PD-001: the purpose line is a reminder, never a threshold or a quota", () => {
+  const dir = makeGitRepo("pd001b", [
+    { msg: "ship", files: { "src/app/p.tsx": lines(20) }, daysAgo: 3 },
+    { msg: "docs", files: { "docs/a.md": "a\n" }, daysAgo: 1 },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { pd001b: ["src/app/**"] } });
+  const header = wl.orchestratorBriefing(w, true)[0];
+  // A threshold reads as a bar to clear: a limit, a minimum, a "should be under". Any of those turn
+  // a reminder into something an agent can satisfy by stopping work, which is the failure this line
+  // exists to prevent — it must not become the WL-001 defect aimed at the orchestrator.
+  ok(!/threshold|limit|quota|budget|at least|no more than|should be|must be (?:under|over|above|below)|target/i
+       .test(header), "no bar to clear");
+  ok(!/too (?:many|much|few)|halt|stop working|pause/i.test(header),
+     "and nothing that reads as permission to stop");
+  // WL-003's own rule, which this line lives under and does not get an exemption from.
+  ok(!/efficiency|below target|score|grade|rating|%/i.test(header), "still no mark, and no dial");
 });
 
 suite("WL-003 R2: an unmeasured allocation SAYS SO to the orchestrator instead of going quiet", () => {

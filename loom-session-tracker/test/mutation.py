@@ -1664,10 +1664,59 @@ MUTATIONS = [
  # the "context-debug.json" fallback, which no longer even has a REPLY_FOR entry — every context-
  # memory message would get the generic "none — this is a tool" line). Killed by the save-step
  # assertion in extension.test.js, which requires the SAVE-specific line, not the generic fallback.
+ # PD-001 RE-ANCHORED. This mutant used to cut `replyKind ?? ` out of the senderArgs call directly;
+ # that argument is now the local `kind`, computed one line up and used by BOTH the reply hint and
+ # the reporting contract, so the old anchor no longer matches any line in the file. Same defect,
+ # current shape — and it now also collapses the contract's keying, which is the stronger kill.
  ("injectTo ignores replyKind — every context-memory message collapses back onto one debug-log key",
   "src/inject.ts",
-  "...senderArgs(replyKind ?? debugName, target.repo ?? null)];",
-  "...senderArgs(debugName, target.repo ?? null)];"),
+  "const kind = replyKind ?? debugName;",
+  "const kind = debugName;"),
+
+ # ── PD-001 · the reporting contract (owner: orchestrators talk PRODUCT, not statistics) ────────
+ # Each of these is a way the boundary can silently stop being a boundary. The two that matter most
+ # are the second and third: they do not remove the feature, they point it at the WRONG session, and
+ # a worker told to report "product, not figures" would stop sending the counts a block is banked on.
+
+ ("the contract is never attached — the feature is inert and every orchestrator message is unchanged",
+  "src/inject.ts",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;\n  return `${msg}\\n\\n${REPORTING_CONTRACT}`;",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;\n  return msg;"),
+
+ ("the contract goes to EVERYONE — a worker is told to drop the counts its orchestrator banks on",
+  "src/inject.ts",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;",
+  "  if (false) return msg;"),
+
+ ("the gate wake is reclassified as orchestrator-facing — the one message that ASKS for grade counts "
+  "is told not to report figures",
+  "src/inject.ts",
+  '  "gate-debug.json",     // health.ts  — YOUR gate exited; read its log and write your grade counts',
+  '  "unused-gate-debug.json",'),
+
+ ("a command carries the contract — '/clear' is typed with a paragraph after it and stops being a command",
+  "src/inject.ts",
+  '  if (!msg.trim() || msg.trimStart().startsWith("/")) return msg;',
+  "  if (!msg.trim()) return msg;"),
+
+ ("the contract is computed but never typed — it appears in no composer, only in the code",
+  "src/inject.ts",
+  '"--message", outgoing, "--submit",',
+  '"--message", message, "--submit",'),
+
+ ("the debug log claims a contract was attached whichever way it went — the record stops being evidence",
+  "src/inject.ts",
+  "        contract: outgoing !== message,",
+  "        contract: true,"),
+
+ # §2(b) · the briefing's purpose line. Reverting it to the bare header is exactly the state the
+ # owner complained about: figures handed to an orchestrator with nothing saying what they are for,
+ # which is how they came to be recited upward in the first place.
+ ("the briefing stops saying what its numbers are FOR — the reminder against drift is gone",
+  "src/workledger.ts",
+  "  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days — yours, for choosing the next ` +\n"
+  "          `block; nothing here is a mark on you, and none of it is for repeating upward:`,",
+  "  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days:`,"),
 ]
 
 def sh(cmd):
