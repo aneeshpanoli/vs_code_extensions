@@ -1256,13 +1256,16 @@ MUTATIONS = [
  # missing measurement a failure.
  ("an UNMEASURED release renders as 'never shipped' — a measurement claimed where none was made",
   "src/workledger.ts",
-  '    return { text: `release ${UNMEASURED}`, band: "unknown",',
-  '    return { text: `no release in ${w.commits} blocks`, band: "unknown",'),
+  # WL-010 re-anchored: the unmeasured branch gained a REASON and an optional newest-tag suffix.
+  # The defect it protects — a missing measurement stated as a fact about the product — is unchanged.
+  '    return { text: r.newestTag ? `release ${UNMEASURED} — newest tag ${r.newestTag}`',
+  '    return { text: r.newestTag ? `no release in ${w.commits} blocks`'),
 
  ("an UNMEASURED release is coloured a FAILURE — and that band drives the whole ledger node's icon",
   "src/workledger.ts",
-  '    return { text: `release ${UNMEASURED}`, band: "unknown",',
-  '    return { text: `release ${UNMEASURED}`, band: "bad",'),
+  # WL-010 re-anchored onto the band line, which is now its own line.
+  '             band: "unknown",',
+  '             band: "bad",'),
 
  # Killed by "WL-007: the band is a SHARE of the window, not a line count". Found by RUNNING the
  # first version of this band rather than reasoning about it: as a flat count it fired on THIRTEEN
@@ -1369,8 +1372,59 @@ MUTATIONS = [
  # must still ban what it was written to ban, which is what this reintroduces.
  ("an UNMEASURED release is briefed as '0 block(s)' — unseen rendered as just-shipped",
   "src/workledger.ts",
-  "    L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed `",
-  "    L.push(`0 block(s) since release. Whether anything has been released is ${UNMEASURED}: no manifest and no deployed `"),
+  # WL-010 re-anchored: the briefing's unmeasured line now carries the same reason the tile gives.
+  "    L.push(`Whether anything has been released is ${UNMEASURED}: ` +",
+  "    L.push(`0 block(s) since release. Whether anything has been released is ${UNMEASURED}: ` +"),
+
+
+ # ── WL-010 · one manifest speaking for a whole repo ────────────────────────────────────────────
+ #
+ # MEASURED across all 12 buses. findManifest recognises NODE manifests only, and its state was then
+ # rendered as a claim about the entire project: Lumen (40 tags, ships iOS/Android from Gradle and
+ # Xcode) read "never released" RED off a JS corner that never moved; livegita (36 tags, newest three
+ # days old) measured unshipped product from a MAY manifest bump and announced "44476 product line(s)
+ # not in front of a user ... and no build is queued" about a project that shipped that week.
+
+ # Killed by "WL-010: THE LUMEN CASE — a manifest that never moved, in a repo that tags".
+ ("a manifest that never moved still says 'never released' even where the repo's tags contradict it",
+  "src/workledger.ts",
+  "    const auth = manifestAuthority(repoPath, m.rel, null);\n    if (!auth.ok) return fromAuthority(auth);",
+  "    const auth = manifestAuthority(repoPath, m.rel, null);"),
+
+ # Killed by "WL-010: a tag NEWER than anything the manifest records takes the answer from it".
+ ("a STALE manifest bump still anchors the measurement — livegita's 44,476 restored",
+  "src/workledger.ts",
+  "    const auth = manifestAuthority(repoPath, m.rel, bump.sha);\n    if (!auth.ok) return fromAuthority(auth);",
+  "    const auth = manifestAuthority(repoPath, m.rel, bump.sha);"),
+
+ # Killed by "WL-010: a tag OLDER than the manifest bump CORROBORATES — it must not veto".
+ # A tag that AGREES with the manifest must leave it in charge; vetoing on any tag at all would
+ # replace a true verdict with a shrug, which is the other way to be useless.
+ ("ANY tag vetoes the manifest, even one older than its own release commit",
+  "src/workledger.ts",
+  "    tagWins = Number.isFinite(tagAt) && (!Number.isFinite(relAt) || tagAt > relAt);",
+  "    tagWins = Number.isFinite(tagAt);"),
+
+ # Killed by "WL-010: a repo that also builds with another ecosystem is UNMEASURED, not judged".
+ # The first version of this list used bare `build.gradle`, which as a git pathspec matches only the
+ # repo ROOT — so android/build.gradle was invisible and the rule matched nothing. A guard that looks
+ # right and matches nothing is indistinguishable from no guard at all.
+ ("the foreign-build scan only looks at the repo ROOT, so a nested android/ build is invisible",
+  "src/workledger.ts",
+  '  ["*build.gradle", "Gradle"], ["*build.gradle.kts", "Gradle"], ["*settings.gradle", "Gradle"],',
+  '  ["build.gradle", "Gradle"], ["build.gradle.kts", "Gradle"], ["settings.gradle", "Gradle"],'),
+
+ # Killed by "WL-010: a MANIFEST BUMP does not claim a user has it".
+ ("a manifest bump claims the version is in front of a user — a confident green with no artifact",
+  "src/workledger.ts",
+  '                : "was cut (manifest bump — not seen in front of a user)";',
+  '                : "is in front of a user";'),
+
+ # Killed by "WL-010: 'pending a build' is never computed against a TAG NAME".
+ ("'pending a build' is computed against a tag NAME, which is never equal to a manifest version",
+  "src/workledger.ts",
+  '  const pending = r.source !== "tag" && r.version !== null && r.releasedVersion !== null\n                  && r.version !== r.releasedVersion;',
+  "  const pending = r.version !== null && r.releasedVersion !== null\n                  && r.version !== r.releasedVersion;"),
 
 
  # ── MP-002, 2026-09-16: the model policy applies to NON-ORCHESTRATORS ONLY ───────────────────────

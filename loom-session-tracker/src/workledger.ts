@@ -593,7 +593,10 @@ export function productDelta(repoPath: string | null, since: string,
 // bus-mechanics count is the point of WL-003, and it sat next to a line that told its reader the
 // briefing was broken.
 
-export type ReleaseSource = "deployed" | "manifest" | "unmeasured";
+/** WL-010 added `tag`. Where a repo's tags name a release NEWER than anything its manifest records,
+ *  that is a MEASUREMENT and must be rendered as one — answering "I cannot tell" everywhere replaces
+ *  a false verdict with a useless one. `unmeasured` is reserved for what nothing can account for. */
+export type ReleaseSource = "deployed" | "manifest" | "tag" | "unmeasured";
 
 export interface ReleaseSignal {
   /** WHICH OF THE THREE ANSWERED. Shown wherever the line is, so the claim carries its own basis. */
@@ -621,8 +624,13 @@ export interface ReleaseSignal {
    *  shipped, whatever the commit count says. Null when there is no release commit to measure from. */
   unshippedProduct: number | null;
   /** The manifest is tracked but its version has never changed — the ONLY case in which "no release
-   *  in N blocks" is a true statement. */
+   *  in N blocks" is a true statement, AND ONLY when that manifest can answer for the repo. */
   neverMoved?: boolean;
+  /** WL-010 · why a manifest was refused authority over the whole repo, when it was. Carried so the
+   *  reader can say WHAT it could not measure instead of only that it could not. */
+  unmeasuredReason?: string;
+  /** The newest tag, when one contradicted the manifest — named so a reader can go and look. */
+  newestTag?: string | null;
   /** Where a deployed artifact was looked for — named when the answer is `unmeasured`. */
   lookedIn: string[];
 }
@@ -722,6 +730,97 @@ function releaseCommit(repoPath: string, rel: string, want: string | null, cap =
 }
 
 /**
+ * WL-010 · CAN THIS MANIFEST SPEAK FOR THE WHOLE REPO?
+ *
+ * MEASURED 2026-09-16 across the 12 buses this ledger reads. `findManifest` recognises NODE
+ * manifests only, and then its state is rendered as a claim about the entire project:
+ *
+ *   · Lumen    — 40 tags (newest cairn-ios-v0.1.0, 2026-08-23), ships iOS/Android from Gradle and
+ *                Xcode. Its one JS corner, `shell/package.json`, has never moved off 0.1.0, so the
+ *                panel said "never released", RED, about a repo that cuts release trains.
+ *   · livegita — 36 tags, newest ios-v1.11.18-2 dated THREE DAYS before the reading, while
+ *                package.json last changed version on 2026-05-26. It measured unshipped product
+ *                from that May commit and announced "44476 product line(s) not in front of a user
+ *                ... and no build is queued". Worse than Lumen: a precise magnitude and a specific
+ *                claim, both false. WL-002's lie-with-a-number-on-it in its strongest form.
+ *
+ * So the defect is NOT the `neverMoved` branch. It is any verdict derived from one Node manifest
+ * while something else in the repo contradicts it, and it runs in both directions — toward a false
+ * red and toward a false green.
+ *
+ * The rule: a manifest may answer for the repo only when nothing contradicts it. Two contradictions
+ * are checked, both cheap and both evidence the repo itself provides:
+ *
+ *   1. A TAG NEWER THAN THE MANIFEST'S OWN RELEASE COMMIT. WL-007 demoted tags to corroboration and
+ *      then never read them again — but a demoted signal still has one job, which is contradicting
+ *      a confident claim. Corroboration that is never consulted is deleted data with extra steps.
+ *   2. BUILD FILES FROM ECOSYSTEMS THE MANIFEST CANNOT ACCOUNT FOR. A repo that also builds with
+ *      Gradle, Xcode, Cargo, Maven, Go or Flutter is not described by its package.json.
+ *
+ * When either holds the answer is `unmeasured` — never a verdict. That is WL-002's rule in its
+ * third costume: a missing measurement rendered as a verdict is the same lie as one rendered as 0.
+ */
+// EVERY PATTERN IS DEPTH-ANYWHERE. The first version used bare `build.gradle`, which as a git
+// pathspec matches only the repo ROOT — so `android/build.gradle` was invisible and the polyglot
+// repo this rule exists for went on being judged by its `web/package.json`. Found by the test,
+// which is the only reason it is not still in the product: a guard that looks right and matches
+// nothing is indistinguishable from no guard at all.
+export const FOREIGN_BUILD_FILES: Array<[string, string]> = [
+  ["*build.gradle", "Gradle"], ["*build.gradle.kts", "Gradle"], ["*settings.gradle", "Gradle"],
+  ["*pom.xml", "Maven"], ["*Cargo.toml", "Cargo"], ["*go.mod", "Go"],
+  ["*Package.swift", "SwiftPM"], ["*pubspec.yaml", "Flutter"], ["*.xcodeproj/project.pbxproj", "Xcode"],
+];
+
+export interface ManifestAuthority {
+  /** May this manifest answer for the whole repo? */
+  ok: boolean;
+  /** Why not, in the words the reader is shown. */
+  reason: string | null;
+  /** The newest tag, when there is one — named so a reader can go and look. */
+  newestTag: string | null;
+  /** That tag's commit, so unshipped product can be measured FROM it. */
+  newestTagSha: string | null;
+  /** Ecosystems present that this manifest cannot account for. */
+  foreign: string[];
+}
+
+export function manifestAuthority(repoPath: string, manifestRel: string,
+                                  releaseSha: string | null): ManifestAuthority {
+  const foreignSet = new Set<string>();
+  for (const [glob, label] of FOREIGN_BUILD_FILES) {
+    const hit = git(repoPath, ["ls-files", glob]);
+    if (hit && hit.trim()) foreignSet.add(label);
+  }
+  const foreign = [...foreignSet].sort();
+  // The newest tag by creation date, and whether it POSTDATES the manifest's release commit. A tag
+  // older than the bump corroborates rather than contradicts, so it must not veto.
+  const newestTag = ((git(repoPath, ["for-each-ref", "--sort=-creatordate", "--count=1",
+                                     "--format=%(refname:short)", "refs/tags"]) || "").trim()) || null;
+  let tagWins = false;
+  let newestTagSha: string | null = null;
+  if (newestTag) {
+    newestTagSha = ((git(repoPath, ["rev-list", "-1", newestTag]) || "").trim()) || null;
+    const tagAt = Number((git(repoPath, ["log", "-1", "--format=%ct", newestTag]) || "").trim());
+    const relAt = releaseSha
+      ? Number((git(repoPath, ["log", "-1", "--format=%ct", releaseSha]) || "").trim())
+      : NaN;
+    // With no release commit to compare against (the manifest never moved), ANY tag contradicts it.
+    tagWins = Number.isFinite(tagAt) && (!Number.isFinite(relAt) || tagAt > relAt);
+  }
+  if (tagWins) {
+    return { ok: false, newestTag, newestTagSha, foreign,
+             reason: `the newest tag ${newestTag} is more recent than anything ${manifestRel} `
+                   + `records, so this manifest is not how this project releases` };
+  }
+  if (foreign.length) {
+    return { ok: false, newestTag, newestTagSha, foreign,
+             reason: `this repo also builds with ${foreign.join(" and ")}, which ${manifestRel} `
+                   + `cannot account for` };
+  }
+  return { ok: true, reason: null, newestTag, newestTagSha, foreign };
+}
+
+/**
  * The release signal, in the order the owner decided: a deployed artifact beats a manifest bump,
  * and NEITHER BEING VISIBLE IS `unmeasured` — not "never released". A project whose releases cannot
  * be seen is not a project that has never released, which is WL-002's rule applied to the figure
@@ -746,6 +845,20 @@ export function releaseSignal(repoPath: string | null, opts: {
     return Number.isFinite(k) ? k : null;
   };
 
+  /**
+   * WL-010 · what a refused manifest resolves to. A TAG that postdates it is EVIDENCE — it names a
+   * release and carries a commit — so it answers, and unshipped product is measured from there.
+   * Only when nothing can account for the repo is the answer `unmeasured`: a product that says
+   * "I cannot tell" everywhere has replaced a false verdict with a useless one.
+   */
+  const fromAuthority = (auth: ManifestAuthority): ReleaseSignal =>
+    auth.newestTag && auth.newestTagSha
+      ? { ...base, source: "tag", releasedVersion: auth.newestTag,
+          blocksSince: blocks(auth.newestTagSha), commit: auth.newestTagSha,
+          newestTag: auth.newestTag, unmeasuredReason: auth.reason || undefined }
+      : { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null,
+          unmeasuredReason: auth.reason || undefined, newestTag: auth.newestTag };
+
   // 1 · a deployed artifact whose version the manifest history knows.
   const deployed = deployedVersions(m, roots);
   if (deployed.length) {
@@ -764,10 +877,17 @@ export function releaseSignal(repoPath: string | null, opts: {
     return { ...base, source: "deployed", releasedVersion: deployed[0], blocksSince: null };
   }
 
-  // 2 · no artifact, but the manifest version moved: released at that commit.
+  // 2 · no artifact, but the manifest version moved: released at that commit — IF this manifest may
+  // answer for the repo. livegita's could not: 36 tags, newest three days old, against a manifest
+  // that last moved in May, and the panel announced 44,476 lines "not in front of a user ... no
+  // build is queued" about a project that shipped that week.
   const bump = releaseCommit(repoPath, m.rel, null);
-  if (bump) return { ...base, source: "manifest", releasedVersion: bump.version,
-                     blocksSince: blocks(bump.sha), commit: bump.sha };
+  if (bump) {
+    const auth = manifestAuthority(repoPath, m.rel, bump.sha);
+    if (!auth.ok) return fromAuthority(auth);
+    return { ...base, source: "manifest", releasedVersion: bump.version,
+             blocksSince: blocks(bump.sha), commit: bump.sha };
+  }
 
   // 3 · the manifest is tracked but its version has NEVER MOVED. This is the one case where "no
   // release in N blocks" is a TRUE statement, so it is said — with N counted from the commit that
@@ -775,6 +895,11 @@ export function releaseSignal(repoPath: string | null, opts: {
   const first = git(repoPath, ["log", "--format=%H", "--reverse", "--", m.rel]);
   const firstSha = (first || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || null;
   if (firstSha) {
+    // THE LUMEN CASE. A manifest that never moved is only evidence of "never released" when it
+    // speaks for the repo. Lumen's 40 tags say it does not, and a demoted signal's one remaining
+    // job is to contradict a confident claim.
+    const auth = manifestAuthority(repoPath, m.rel, null);
+    if (!auth.ok) return fromAuthority(auth);
     return { ...base, source: "manifest", releasedVersion: null, blocksSince: blocks(firstSha),
              commit: firstSha, neverMoved: true };
   }
@@ -1223,10 +1348,18 @@ export function releaseReading(w: WorkLedger,
   const r = w.release;
   const who = r.product ? `${r.product} ` : "";
   if (r.source === "unmeasured") {
-    return { text: `release ${UNMEASURED}`, band: "unknown",
-             detail: `Whether anything has been released is ${UNMEASURED}: no manifest and no ` +
-                     `deployed artifact under ${r.lookedIn.join(" or ")}. "I cannot measure this" ` +
-                     `and "this never shipped" are different statements.` };
+    // WL-010 · SAY WHAT COULD NOT BE MEASURED, not merely that something could not. An unmeasured
+    // reading with a reason is actionable ("point productPaths at the right manifest"); one without
+    // is just a shrug, and a reader who cannot act on it learns to ignore it.
+    const why = r.unmeasuredReason
+      ? `${r.unmeasuredReason}. Its release state is ${UNMEASURED} rather than guessed from the ` +
+        `one manifest that could be read`
+      : `no manifest and no deployed artifact under ${r.lookedIn.join(" or ")}`;
+    return { text: r.newestTag ? `release ${UNMEASURED} — newest tag ${r.newestTag}`
+                               : `release ${UNMEASURED}`,
+             band: "unknown",
+             detail: `Whether anything has been released is ${UNMEASURED}: ${why}. ` +
+                     `"I cannot measure this" and "this never shipped" are different statements.` };
   }
   if (r.neverMoved) {
     // The ONE case the old wording was right about: a tracked manifest whose version never changed.
@@ -1234,9 +1367,24 @@ export function releaseReading(w: WorkLedger,
              detail: `${r.manifestPath} is tracked and its version has never moved in ` +
                      `${r.blocksSince ?? "?"} commit(s). Nothing here has ever been cut.` };
   }
-  const basis = r.source === "deployed" ? "deployed artifact" : "manifest bump";
+  // WL-010 · THE BASIS, AND HOW STRONGLY IT MAY SPEAK. A deployed artifact is evidence a user HAS
+  // it. A manifest bump is evidence someone CUT a version — shwab_docker renders green off a
+  // manifest alone at 0.0.0 with no artifact anywhere, and the old wording said it was "in front of
+  // a user". That is not a second defect in the signal (WL-003-R5 deliberately answers from a
+  // moved manifest, and its test says so); it is this reader claiming more than its basis carries.
+  const basis = r.source === "deployed" ? "deployed artifact"
+              : r.source === "tag" ? "git tag" : "manifest bump";
+  const reached = r.source === "deployed" ? "is in front of a user"
+                : r.source === "tag" ? "was tagged as released"
+                : "was cut (manifest bump — not seen in front of a user)";
   const un = r.unshippedProduct;
-  const pending = r.version !== null && r.releasedVersion !== null && r.version !== r.releasedVersion;
+  // WL-010 · NOT for a tag-sourced release. `pending` means "the manifest is AHEAD of what shipped",
+  // which is only meaningful when both sides are the same KIND of version. Against a tag NAME
+  // (`ios-v1.11.18-2`) the comparison is always unequal, so livegita read "1.0.0 is pending a build"
+  // purely because a string differed from a tag. A comparison between two things that are not the
+  // same kind of thing is not a measurement.
+  const pending = r.source !== "tag" && r.version !== null && r.releasedVersion !== null
+                  && r.version !== r.releasedVersion;
   // NOT the commit count. Three of this repo's "blocks since release" were HANDOVER and version
   // commits, which are not work; the honest question is how much PRODUCT a user does not have.
   // MEASURED AGAINST THE WINDOW'S OWN OUTPUT, not against a constant. The first version of this
@@ -1254,9 +1402,9 @@ export function releaseReading(w: WorkLedger,
     : share >= t.unshippedShareBad ? "bad"
     : share <= t.unshippedShareGood ? "good" : "warn";
   const text = un === null
-    ? `${who}${r.releasedVersion} reached a user (${basis})`
+    ? `${who}${r.releasedVersion} ${reached}`
     : un <= 0
-      ? `${who}${r.releasedVersion} is in front of a user — nothing unshipped`
+      ? `${who}${r.releasedVersion} ${reached} — nothing unshipped`
       : `${un} product line(s) not in front of a user since ${who}${r.releasedVersion}` +
         `${pending ? `; ${r.version} is pending a build` : `, and no build is queued`}`;
   return { text, band,
@@ -1522,8 +1670,12 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
   // own basis. A line the reader can see is false costs the whole block its credibility.
   const r = w.release;
   if (r.source === "unmeasured") {
-    L.push(`Whether anything has been released is ${UNMEASURED}: no manifest and no deployed ` +
-           `artifact under ${r.lookedIn.join(" or ")}.`);
+    // WL-010 · the SAME reason the tile gives. WL-007's lesson was that a rekeying is only done when
+    // every reader is repointed, and it was learned on this exact field — so this one moves with it.
+    L.push(`Whether anything has been released is ${UNMEASURED}: ` +
+           (r.unmeasuredReason
+             ? `${r.unmeasuredReason}${r.newestTag ? ` (newest tag ${r.newestTag})` : ""}.`
+             : `no manifest and no deployed artifact under ${r.lookedIn.join(" or ")}.`));
   } else if (r.neverMoved) {
     L.push(`No release in ${r.blocksSince ?? "?"} block(s): ${r.product ? `${r.product} ` : ""}` +
            `${r.version} has never changed version.`);
