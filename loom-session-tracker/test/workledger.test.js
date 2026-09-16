@@ -209,14 +209,23 @@ suite("WL-001 R1: a commit OUTSIDE the window is not measured", () => {
   eq(w.productLines, 10, "the 500-line ancient commit is not this week's work");
 });
 
-suite("WL-001 R1: a repo with NO TAG reports never-released — a warning, not a blank", () => {
+// WL-007 REPLACED THIS TEST'S CONTRACT, against a real repo rather than an injected ledger.
+// It used to assert that NO TAG renders RED. That was the defect: `git tag | wc -l` is 0 on this
+// very repo, which has deployed 45 times, so "red for ever" was what an untagged bus that ships
+// daily saw at its headline — statusView derives the node icon from any `bad` band. A tag is
+// corroboration where a project tags; it was never evidence that something reached a user.
+suite("WL-001 R1 / WL-007: NO TAG is not a verdict — an unmeasured release is not a failure", () => {
   const dir = makeGitRepo("fixt6", [{ msg: "c1", files: { "src/app/a.ts": lines(3) } }]);
   const w = wl.computeWorkLedger(dir, { productPaths: { fixt6: ["src/app/**"] } });
-  eq(w.tag, null, "no tag");
+  eq(w.tag, null, "no tag — still COLLECTED, as diagnosis");
   eq(w.blocksSinceRelease, null, "and therefore no count since one");
   const rel = wl.figuresFor(w).find((f) => f.key === "release");
-  eq(rel.band, "bad", "rendered RED — this is ReciEats' answer and it must not be a blank cell");
-  match(rel.value, /never released/, "and it states what it means");
+  ok(rel.band !== "bad",
+     "a repo that simply does not tag is NOT failing: this band drove the whole node's icon red");
+  eq(rel.band, "unknown", "with no manifest and no artifact, the release is unmeasured");
+  match(rel.value, /unmeasured/, "and it states which of the two it is");
+  ok(!/never released/.test(rel.value),
+     "'I cannot measure this' is not 'this never shipped' — the WL-002 distinction, in a new place");
 });
 
 suite("WL-001 R1: a tagged repo counts the blocks since the tag", () => {
@@ -417,7 +426,7 @@ suite("WL-001 R6: the collapsed row carries tokens, $equiv and $/line — that l
   match(s, /\$8,945/, "list-price equivalent");
   match(s, /\$0\.37\/line/, "and the ratio the owner actually asked for");
   match(s, /ships 10\.7%/, "beside the shipping share");
-  match(s, /no release in 221 blocks/, "and the release state");
+  match(s, /release unmeasured/, "and the release state (WL-007: the tag proxy said 'no release in 221 blocks' for ever on an untagged repo that ships daily; this fixture seeds no release signal, so the honest reading is unmeasured)");
 });
 
 // ── R2 · bands ────────────────────────────────────────────────────────────────────────────────
@@ -511,7 +520,12 @@ suite("WL-001 R5: the alert fires on a RED ships figure, once per day", () => {
   match(msg, /^\[loom-ledger\] R:/, "addressed and tagged");
   match(msg, /10\.7% of this week's changed lines reach a user/, "states the shipping figure");
   match(msg, /28% of commits only update the guide/, "and the narration figure");
-  match(msg, /no release in 221 blocks/, "and the release state");
+  // WL-007-R1: this line used to assert the release clause UNCONDITIONALLY. It no longer renders
+  // here, and that is the fix: this alert fired on the shipping and cost thresholds, and a release
+  // figure riding along on someone else's alarm carries the authority of an alarm without having
+  // earned it. The release state here is unmeasured, which raised nothing.
+  ok(!/release/.test(msg),
+     "the release clause is ABSENT: it is not why this alert fired, so it does not speak here");
   match(msg, /list-price equivalent, not a bill/, "and is explicit that the dollars are not a bill");
   match(msg, /2 new user-facing file\(s\)/, "and what was actually built");
   match(msg, /Consider whether the next block ships something\./, "and asks for the decision");
@@ -894,7 +908,17 @@ suite("WL-002 R2: a MEASURED repo is unaffected — the figures still band and s
   ok(w.costPerProductLine > 0, "and priced per line");
   const cell = wl.figuresFor(w).find((f) => f.key === "costPerProductLine");
   ok(cell.band === "bad" || cell.band === "good", "a measured ratio still bands");
-  ok(!/unmeasured/.test(wl.summaryLine(w)), "and says nothing about being unmeasured");
+  // WL-007 NARROWED THIS, and the narrowing is the point rather than an accommodation. Two things
+  // on this line can independently be unmeasured: what this repo SPENT, and whether anything
+  // reached a user. This fixture has transcripts (spend is measured) and no manifest and no
+  // deployed artifact (the release genuinely is not), so a bare `/unmeasured/` over the whole
+  // string now conflates the two axes and would force the release half to lie to keep the token
+  // half honest. The claim WL-002 actually makes is about SPEND, so that is what is asserted.
+  const line = wl.summaryLine(w);
+  ok(!new RegExp(`tokens ${wl.UNMEASURED}|${wl.UNMEASURED} equiv|${wl.UNMEASURED}/line`).test(line),
+     "and says nothing about its SPEND being unmeasured — the claim WL-002 makes");
+  match(line, /release unmeasured/,
+        "while the release, which really is unmeasured here, still says so on its own axis");
 });
 
 // ── WL-003 · where the ORCHESTRATOR's own blocks went ──────────────────────────────────────────
@@ -1177,4 +1201,208 @@ suite("WL-003-R5: a manifest git has never seen is UNMEASURED, not 0 blocks", ()
   eq(r.source, "unmeasured", "but git has never seen it, so nothing can be concluded");
   eq(r.blocksSince, null, "absent, NOT zero");
   ok(!r.neverMoved, "and not claimed to have never moved either — that is a different fact");
+});
+
+// -- WL-007 . one answer to "did this reach a user", for every reader ---------------------------
+//
+// MEASURED 2026-09-15, a day this bus deployed five builds: releaseSignal() resolved
+// deployed / 0.38.3 / blocksSince 3 off the artifacts on disk, and THREE OF FOUR READERS never
+// looked at it. `git tag | wc -l` here is 0, so `w.tag` is null for ever and the panel tile, the
+// summary line and the orchestrator's own message all said "no release in 88 blocks". The tile also
+// hard-coded band "bad" -- and statusView derives the whole ledger node's icon from any "bad" band,
+// so that was not one false row, it was every untagged project's HEADLINE verdict.
+//
+// WL-003-R5 rekeyed the collector and one reader. This is WL-004-R6's lesson again: the fix landed
+// where the defect was noticed rather than everywhere the proxy was read.
+
+/** A ledger with a known release signal, without needing a tagged repo on disk. */
+function ledgerWithRelease(rel, extra) {
+  const dir = makeGitRepo("wl007-" + Math.random().toString(36).slice(2), [
+    { msg: "seed", files: { "src/app/a.tsx": lines(10) }, daysAgo: 2 },
+  ]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { x: ["src/app/**"] } });
+  w.release = Object.assign({ source: "deployed", manifestPath: "package.json", product: null,
+                              version: "1.0.0", releasedVersion: "1.0.0", blocksSince: 0,
+                              commit: "abc123", unshippedProduct: 0, lookedIn: ["/tmp/ext"] }, rel);
+  return Object.assign(w, extra || {});
+}
+const relTile = (w) => wl.figuresFor(w).find((f) => f.key === "release");
+
+suite("WL-007: ALL FOUR readers take the release line from w.release, not from w.tag", () => {
+  // The tag proxy set to something loud. If any reader still consults it, its text changes.
+  const w = ledgerWithRelease({}, { tag: "v9.9.9", blocksSinceRelease: 999, daysSinceRelease: 99 });
+  const t = relTile(w);
+  const texts = [t.value, t.detail, wl.summaryLine(w), String(wl.ledgerAlert(w, null) || ""),
+                 wl.orchestratorBriefing(w).join("\n")];
+  texts.forEach((x, i) => {
+    ok(!/v9\.9\.9/.test(x), "reader " + i + " must not name the tag: " + x.slice(0, 120));
+    ok(!/999/.test(x), "reader " + i + " must not use blocksSinceRelease: " + x.slice(0, 120));
+    ok(!/no release in \d+ blocks/.test(x),
+       "reader " + i + " must not print the tag falsehood: " + x.slice(0, 120));
+  });
+  match(t.value, /1\.0\.0 is in front of a user/, "it says what actually reached a user");
+});
+
+suite("WL-007: the tag fields are DIAGNOSIS ONLY -- changing them changes no reader's output", () => {
+  // THE LINE THE PO ASKED FOR. tag/blocksSinceRelease/daysSinceRelease are kept, like WL-005's
+  // workerStampAt*: a tag IS real corroboration on a repo that tags, and deleting the fields would
+  // lose it. The price of keeping them is that nothing may ever read them again -- asserted
+  // BEHAVIOURALLY, not by grepping the source, because a grep passes against a reader that still runs.
+  const render = (x) => [relTile(x).value, relTile(x).band, relTile(x).detail, wl.summaryLine(x),
+                         String(wl.ledgerAlert(x, null) || ""),
+                         wl.orchestratorBriefing(x).join("\n")].join("");
+  // ONE ledger, mutated in place. The first version of this test built a SECOND ledger, which gets a
+  // fresh random repo name and a new computedAt — so it varied three things and blamed the tag
+  // fields for the difference. A test that cannot isolate its variable proves nothing.
+  const w = ledgerWithRelease({}, { tag: null, blocksSinceRelease: null, daysSinceRelease: null });
+  const before = render(w);
+  w.tag = "v1.2.3"; w.blocksSinceRelease = 42; w.daysSinceRelease = 7;
+  eq(render(w), before, "every reader is byte-identical with the tag fields set to anything");
+  w.tag = null; w.blocksSinceRelease = 0; w.daysSinceRelease = 0;
+  eq(render(w), before, "and with them back at their null/zero readings");
+});
+
+suite("WL-007: unmeasured gets its OWN band -- never a colour that means 'you are failing'", () => {
+  const w = ledgerWithRelease({ source: "unmeasured", releasedVersion: null, version: null,
+                                blocksSince: null, commit: null, unshippedProduct: null });
+  eq(relTile(w).band, "unknown", "unmeasured is its own state, not a failure");
+  match(relTile(w).value, /unmeasured/, "and says so");
+  ok(!/no release/.test(relTile(w).value),
+     "'I could not measure this' and 'this never shipped' are different statements");
+  match(wl.summaryLine(w), /unmeasured/, "the summary line too");
+  match(String(wl.ledgerAlert(w, null) || ""), /unmeasured/, "and the orchestrator's message");
+});
+
+suite("WL-007: a release IN FRONT of a user is good, and does not redden the aggregate", () => {
+  const w = ledgerWithRelease({ unshippedProduct: 0 });
+  eq(relTile(w).band, "good", "nothing unshipped is not a failure");
+  // The FOURTH reader: statusView derives the node icon from .some(f => f.band === "bad"), so a
+  // hard-coded red here made every untagged project's headline verdict red. Asserted at the source.
+  ok(!wl.figuresFor(w).filter((f) => f.band === "bad").map((f) => f.key).includes("release"),
+     "the release figure is not in the set that drives the aggregate icon red");
+});
+
+suite("WL-007: the band is a SHARE of the window, not a line count", () => {
+  // The first version of this band was binary -- any unshipped product with no pending build read
+  // "bad" -- and on this repo it fired on THIRTEEN lines, which would have made the aggregate red
+  // again on a bus that ships daily. Found by RUNNING it, not by reasoning about it.
+  eq(relTile(ledgerWithRelease({ unshippedProduct: 1 })).band, "good",
+     "a trickle of unshipped product is not a failure on any repo");
+  // ledgerWithRelease builds a 10-line product window, so 9 lines is 90% of it.
+  eq(relTile(ledgerWithRelease({ unshippedProduct: 9 })).band, "bad",
+     "most of the week's product missing from the user's hands IS a failure");
+  const pending = ledgerWithRelease({ unshippedProduct: 9, version: "1.1.0", releasedVersion: "1.0.0" });
+  eq(relTile(pending).band, "warn",
+     "a pending build is someone's intent to ship: it may warn, never fail");
+  match(relTile(pending).value, /pending a build/,
+        "and the text says a build is pending rather than that nothing is queued");
+});
+
+suite("WL-007: a manifest that never moved still says so -- the one case the old wording had right", () => {
+  const w = ledgerWithRelease({ source: "manifest", neverMoved: true, releasedVersion: null,
+                                version: "0.0.1", blocksSince: 12, unshippedProduct: 5 });
+  match(relTile(w).value, /never released/,
+        "a tracked manifest whose version never changed HAS never shipped");
+  eq(relTile(w).band, "bad", "and that is a real failure, unlike the tag-count falsehood it replaces");
+});
+
+// -- WL-007 . the COLLECTOR half, measured against a real repo -----------------------------------
+//
+// Written during the WL-007 review pass, because every test above this point INJECTS
+// `unshippedProduct` into a hand-built release object. That covers the four readers and leaves the
+// thing being read — `netProductSince`, the only new measurement in this block — with no test at
+// all. A mutant in it would have SURVIVED as UNCOVERED: the first of the three species, and the one
+// that is a plain hole rather than an argument about the gate.
+
+suite("WL-007: unshipped product is a two-point PRODUCT diff, not a commit count", () => {
+  const dir = makeGitRepo("wl007-net-" + Math.random().toString(36).slice(2), [
+    { msg: "release", files: { "src/app/a.tsx": lines(10) }, daysAgo: 3 },
+    // The three commits that started this block: doc and version churn, which is not work.
+    { msg: "HANDOVER", files: { "HANDOVER.md": lines(40) }, daysAgo: 2 },
+    { msg: "tests", files: { "test/a.test.js": lines(30) }, daysAgo: 2 },
+    { msg: "version", files: { "package.json": '{"version":"0.2.0"}\n' }, daysAgo: 1 },
+  ]);
+  const rel = git(dir, ["rev-list", "--max-parents=0", "HEAD"]).trim().split("\n")[0];
+  const cls = wl.classifierFor("x", { x: ["src/app/**"] });
+  eq(wl.netProductSince(dir, rel, cls), 0,
+     "three commits since the release and ZERO product: the commit count overstated it by three");
+
+  const dir2 = makeGitRepo("wl007-net2-" + Math.random().toString(36).slice(2), [
+    { msg: "release", files: { "src/app/a.tsx": lines(10) }, daysAgo: 3 },
+    { msg: "work", files: { "src/app/b.tsx": lines(7), "docs/x.md": lines(99) }, daysAgo: 1 },
+  ]);
+  const rel2 = git(dir2, ["rev-list", "--max-parents=0", "HEAD"]).trim().split("\n")[0];
+  eq(wl.netProductSince(dir2, rel2, cls), 7,
+     "7 product lines a user does not have; the 99 doc lines are not product");
+
+  // NET, not added: product deleted since the release counts against the total.
+  const dir3 = makeGitRepo("wl007-net3-" + Math.random().toString(36).slice(2), [
+    { msg: "release", files: { "src/app/a.tsx": lines(10) }, daysAgo: 3 },
+    { msg: "trim", files: { "src/app/a.tsx": lines(4) }, daysAgo: 1 },
+  ]);
+  const rel3 = git(dir3, ["rev-list", "--max-parents=0", "HEAD"]).trim().split("\n")[0];
+  eq(wl.netProductSince(dir3, rel3, cls), -6, "a net removal is reported as one, not clamped to 0");
+});
+
+suite("WL-007: with no release commit to measure from, unshipped product is null, NEVER 0", () => {
+  const cls = wl.classifierFor("x", { x: ["src/app/**"] });
+  eq(wl.netProductSince(null, "abc", cls), null, "no repo");
+  eq(wl.netProductSince("/tmp", null, cls), null, "no release commit");
+  // The WL-002 lie-with-a-number-on-it: 0 means "everything shipped", which is a MEASUREMENT.
+  // "I have no commit to measure from" must not borrow that word.
+  const w = ledgerWithRelease({ unshippedProduct: null, releasedVersion: "1.0.0" });
+  eq(relTile(w).band, "unknown", "unmeasurable drift is unknown, not good and not bad");
+  ok(!/nothing unshipped/.test(relTile(w).value),
+     "and must not claim everything shipped when nothing was measured");
+});
+
+// -- WL-007-R1 . an interrupting message states ITS OWN cause -----------------------------------
+//
+// MEASURED 2026-09-16T00:05Z: this alert, raised by the shipping and cost thresholds, appended
+// "no release in 87 blocks" -- a falsehood off the tag proxy -- and it reached the orchestrator
+// mid-decision carrying the authority of the alarm it was riding on. The defect is not only that
+// the string was wrong; it is that a figure which triggered nothing was in an interrupt at all.
+
+suite("WL-007-R1: the release clause renders ONLY when the release is why the alert fired", () => {
+  const base = { repo: "R", empty: false, commits: 10, handoffs: 2, windowDays: 7,
+                 shipsToUser: 5, narrationShare: 40, loopBackRate: 10, narrationCommits: 4,
+                 tokensSpent: 1e6, costEquivalent: 10, costPerProductLine: 0.01,
+                 netProductLines: 100, newUserFacingFiles: 1, transcriptsRoot: "/t",
+                 blocksSinceProduct: 0, heuristic: false, rigRatio: 1, rigLines: 1, productLines: 1,
+                 tag: null, blocksSinceRelease: null, daysSinceRelease: null, allocation: null,
+                 computedAt: "now", unpricedModels: [], tokensPerProductLine: null };
+  const REL = (r) => Object.assign({ source: "deployed", manifestPath: "package.json", product: null,
+                                     version: "1.0.0", releasedVersion: "1.0.0", blocksSince: 0,
+                                     commit: "abc", unshippedProduct: 0, lookedIn: ["/x"] }, r);
+  const at = Date.parse("2026-09-16T10:00:00Z");
+
+  // Fires on the SHIPPING threshold (5% is red); the release is deployed with nothing outstanding.
+  const quiet = wl.ledgerAlert({ ...base, release: REL({}) }, null, wl.DEFAULT_THRESHOLDS, at);
+  ok(quiet, "the shipping figure still raises it");
+  ok(!/release|reached a user|unshipped/.test(quiet),
+     "and the release, which raised nothing, is silent — no riding along on another figure's alarm");
+
+  // Same alert, but the release state is itself bad: a tracked manifest that never moved.
+  const loud = wl.ledgerAlert({ ...base, release: REL({ source: "manifest", neverMoved: true,
+                                                        releasedVersion: null, blocksSince: 30 }) },
+                              null, wl.DEFAULT_THRESHOLDS, at);
+  match(loud, /never released/, "a release state that IS an alarm speaks, in the same message");
+
+  // And it can raise the alert ALONE: a green week that has not shipped is the thing this ledger
+  // exists to notice, and before this it could only be heard if some other figure was already red.
+  const green = { ...base, shipsToUser: 90, narrationShare: 1, costPerProductLine: 0.001,
+                  release: REL({ source: "manifest", neverMoved: true, releasedVersion: null,
+                                 blocksSince: 30 }) };
+  ok(!wl.ledgerAlert({ ...green, release: REL({}) }, null, wl.DEFAULT_THRESHOLDS, at),
+     "a green week with a healthy release is still never nudged");
+  const alone = wl.ledgerAlert(green, null, wl.DEFAULT_THRESHOLDS, at);
+  ok(alone, "but a green week that has never cut a release IS worth one line");
+  match(alone, /never released/, "and the line says why it fired");
+
+  // The band is what gates it, so unmeasured cannot fire it -- the whole reason this is safe to
+  // raise on. Under the old tag proxy every untagged repo banded `bad` and would alarm daily.
+  const un = { ...green, release: REL({ source: "unmeasured", releasedVersion: null, version: null,
+                                        blocksSince: null, commit: null, unshippedProduct: null }) };
+  ok(!wl.ledgerAlert(un, null, wl.DEFAULT_THRESHOLDS, at),
+     "an UNMEASURED release raises nothing: not knowing is not an alarm");
 });

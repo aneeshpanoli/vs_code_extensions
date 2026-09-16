@@ -51,6 +51,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<Node> {
       loopBackBad: num(t.loopBackBad, DEFAULT_THRESHOLDS.loopBackBad),
       narrationGood: num(t.narrationGood, DEFAULT_THRESHOLDS.narrationGood),
       narrationBad: num(t.narrationBad, DEFAULT_THRESHOLDS.narrationBad),
+      unshippedShareGood: num(t.unshippedShareGood, DEFAULT_THRESHOLDS.unshippedShareGood),
+      unshippedShareBad: num(t.unshippedShareBad, DEFAULT_THRESHOLDS.unshippedShareBad),
       costPerLine: num(t.costPerLine, DEFAULT_THRESHOLDS.costPerLine),
     };
   }

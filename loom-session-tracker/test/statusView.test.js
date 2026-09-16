@@ -167,7 +167,7 @@ suite("WL-001 R2: the ledger node sits ABOVE the agents and carries the verdict 
   match(it.description, /\$8,945/, "list-price equivalent");
   match(it.description, /\$0\.37\/line/, "and the ratio the owner actually asked for");
   match(it.description, /ships 10\.7%/, "beside the shipping share");
-  match(it.description, /no release in 221 blocks/, "and the release state");
+  match(it.description, /release unmeasured/, "and the release state (WL-007: the tag proxy said 'no release in 221 blocks' for ever on an untagged repo that ships daily; this fixture seeds no release signal, so the honest reading is unmeasured)");
   eq(it.collapsibleState, 1, "collapsed — the one line has to work on its own");
   eq(it.command.command, "loomSessionTracker.workLedgerReport", "clicking opens the full report");
   match(it.tooltip, /NOTHING here comes from what an agent wrote about itself/,
