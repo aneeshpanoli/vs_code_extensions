@@ -9,7 +9,79 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-15 for 0.38.3)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.38.5)
+
+**Version 0.38.5** is WL-007 + R1: **the release line now reaches every reader, and the mutation
+gate refuses to start on a mutant it could not grade.** WL-003-R5 rekeyed the release signal off git
+tags onto what actually reached a user, and the collector was correct — but only ONE of its four
+readers was repointed. This repo has **0 tags**, so `figuresFor()`, `summaryLine()` and
+`ledgerAlert()` went on printing `no release in N blocks` for ever, and did so minutes after this bus
+deployed its fifth release of the day. **A rekeying is only done when every reader is repointed**;
+a field left "for diagnosis" is exactly how the old one survived, and the fix had been applied where
+the defect was NOTICED rather than everywhere the proxy was READ.
+
+The severity was not the wording. `figuresFor()` hard-coded `band: "bad"` whenever the tag was null,
+and **`statusView.ts:74-76` derives the whole ledger node's icon from
+`figuresFor(...).some(f => f.band === "bad")`** — so every untagged project carried a permanently red
+headline verdict. That was the fourth reader, and it needs no code change now that the band is
+honest. `extension.ts` and `statusView.ts` carry only threshold plumbing for the new settings.
+
+**`blocksSince` is gone from the headline, because a commit is not work** — three of this repo's
+"blocks since release" that day were HANDOVER and version-bump commits. The headline is now measured
+**unshipped product**: the same two-point product diff the rest of the ledger uses, taken from the
+release commit, and **banded as a SHARE of the window rather than a flat count** — the flat form
+fired on 13 unshipped lines and would have put the aggregate icon back to red on a bus that ships
+daily, which is this block's own defect reintroduced by this block's fix, found by running it. The
+`tag` / `blocksSinceRelease` fields are KEPT as corroboration for repos that do tag, and held
+**behaviourally**: one ledger, mutated in place, every reader's output byte-identical with the tag
+fields set to anything. A grep for the old field name is a spelling test; this is not.
+
+**`ledgerAlert()` renders the release clause if and only if the release state is one of the reasons
+the alert fired**, and one boolean drives both the trigger and the clause so they cannot drift apart.
+It is gated on shipping and cost, so before this it appended a release clause to a message the
+release figure had not triggered — **a figure riding along on someone else's alarm carries the
+authority of an alarm without having earned it**, which is precisely how a false line entered a
+dispatch decision at 00:05Z. This is safe to raise on ONLY because the band is now honest:
+`unmeasured` bands `unknown` and a fully-shipped release bands `good`, so neither can fire it —
+**not knowing is not an alarm.**
+
+**R1 is the gate half, and it is the more durable half.** The WL-007 gate reported
+`193/194 caught, 0 survived, 1 stale` — and that "stale" was not a stale anchor at all; the reason
+line beneath it read `(mutant does not compile)`. All 194 anchors had been validated against source
+and reported 0 stale: **sound validation, wrong validation.** An anchor validator proves a find-string
+MATCHES; it cannot prove the text it produces BUILDS. The gate now runs a **pre-flight that applies
+and compiles every mutant before anything is graded**, refusing to start and naming every offender
+at once under its own heading — `STALE ANCHOR` and `DOES NOT BUILD`, each with its own FIX line,
+because one word forced a reader to the parenthetical to know which fix applied, and until then the
+natural first diagnosis was the wrong one. **The two checks are disjoint, proved rather than
+asserted:** in a deliberate probe the stale anchor COMPILED PERFECTLY — nothing had changed for tsc
+to object to — and a compile check only ever runs on a mutant that anchored in the first place. The
+in-run `NOBUILD` branch is kept even though the pre-flight should make it unreachable, for the same
+reason the containment self-check runs at run time: "unreachable" is a claim about the pre-flight,
+and this file exists to disbelieve that kind of claim.
+
+**And the mutant that graded nothing was the guard on this block's own regression** — the
+share-vs-count band. That is not luck: new mutants sit on newly-changed code, which is where anchors
+are most fragile, so the defect a gate silently stops testing is disproportionately the one the
+current block just introduced. **Read the NAMES of any lost mutant against what the block changed,
+never just the count.** This is the fifth costume of the vacuous baseline: red baseline →
+non-compiling mutant → self-check counted outside the set → mutant on a file nothing executes →
+a mutant that anchors but does not build.
+
+Merged `b031c82`, DEPLOYED and pushed 2026-09-16. Gate on main: **196/196 caught, 0 survived,
+0 stale, 0 non-compiling, 0 ungraded**, no-op self-check SURVIVED, containment 0 `loom-*` across 196
+suite runs, 804/804 both modes, tsc 0. **Verified against the deployed artifact, not its tests**:
+the release tile now reads `band: "good"` — "loom-session-tracker 0.38.5 is in front of a user —
+nothing unshipped" — and `ledgerAlert` carries no release clause at all.
+
+**KNOWN BROKEN IN THE FIELD, NOT YET FIXED — 0.38.3's wake does not fire.** developer1 declared its
+WL-007 gate exactly as designed (`handoff`, pid, log, `launched_at`, `mutants`), the gate exited, and
+`stall-state.json` held **`"gatesWoken": {}`** — nobody was woken; 20 minutes later the stall alarm
+fired at the ORCHESTRATOR instead, while the role that had finished waited 35 minutes. It happened
+again on the R1 gate. 0.38.3 shipped behind a 188/188 gate whose tests drove `scanGates` directly
+and never drove what CALLS it on a schedule: **a green gate on a mechanism that does not fire in
+production.** Before believing a background mechanism works, find its record file after a real
+firing, not its unit test. This is the next block.
 
 **Version 0.38.3** is WL-006: **a background mutation gate outlives the turn that launched it, and
 now wakes its own role when it exits.** A worker's turn ends the moment it backgrounds the gate, so
