@@ -1488,7 +1488,7 @@ MUTATIONS = [
  ("the session id is never compared — a role that WAS cleared is reported anyway",
   "src/health.ts",
   "      if (!prev || prev.session !== snap.sessionId) {",
-  "      if (!prev) {"),
+  "      if (!prev || prev.session !== prev.session) {"),
 
  # Killed by "CL-001 scanClears: a NEW handoff id under an UNCHANGED session id raises one event".
  # The opposite loosening, and the one that fails SILENTLY: re-baselining every tick means nothing is
@@ -1557,8 +1557,8 @@ MUTATIONS = [
  # the guard still works, is still fully tested, and never runs.
  ("the tick never calls the clear watcher — the whole guard is dead code in the field",
   "src/extension.ts",
-  '      if (cfg().get<boolean>("clearReminders", true) === true) {',
-  "      if (false) {"),
+  "        for (const ev of healthWatcher.scanClears(report)) {",
+  "        for (const ev of [] as ReturnType<typeof healthWatcher.scanClears>) {"),
 
  # Killed by the same real-tick suite. A guard that ships switched off is a guard nobody has.
  ("the reminder defaults to off — a project that never sets the flag gets nothing",
