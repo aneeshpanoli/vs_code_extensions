@@ -1433,3 +1433,128 @@ suite("WL-007-R1: the release clause renders ONLY when the release is why the al
   ok(!wl.ledgerAlert(un, null, wl.DEFAULT_THRESHOLDS, at),
      "an UNMEASURED release raises nothing: not knowing is not an alarm");
 });
+
+// -- WL-010 . a manifest may answer for the repo only when nothing contradicts it ---------------
+//
+// MEASURED ACROSS ALL 12 BUSES 2026-09-16. `findManifest` recognises NODE manifests only, and its
+// state was then rendered as a claim about the whole project:
+//
+//   Lumen    — 40 tags (newest cairn-ios-v0.1.0), ships iOS/Android from Gradle and Xcode; its one
+//              JS corner has never moved off 0.1.0, so the panel said "never released", RED.
+//   livegita — 36 tags, newest ios-v1.11.18-2 dated THREE DAYS before the reading, against a
+//              package.json that last moved in May. It measured unshipped product from the May
+//              anchor and announced "44476 product line(s) not in front of a user ... and no build
+//              is queued" about a project that shipped that week. Worse than Lumen: a precise
+//              magnitude and a specific claim, both false.
+//
+// So the class is not the `neverMoved` branch: it is ANY verdict derived from one Node manifest
+// while something else in the repo contradicts it, and it runs toward false red AND false green.
+
+function taggedRepo(name, commits, tags) {
+  const dir = makeGitRepo(name, commits);
+  for (const [tag, when] of tags) {
+    execFileSync("git", ["-C", dir, ...GIT_ID, "tag", "-a", tag, "-m", tag], {
+      env: { ...process.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when },
+    });
+  }
+  return dir;
+}
+
+suite("WL-010: a tag NEWER than anything the manifest records takes the answer from it", () => {
+  // THE LIVEGITA SHAPE. The manifest moved once, long ago; the project has been shipping by tag since.
+  const dir = makeGitRepo("wl010-livegita", [
+    { msg: "seed", files: { "package.json": '{"name":"p","version":"0.9.0"}\n', "src/app/a.tsx": lines(10) }, daysAgo: 40 },
+    { msg: "bump", files: { "package.json": '{"name":"p","version":"1.0.0"}\n' }, daysAgo: 30 },
+    { msg: "ship by tag", files: { "src/app/b.tsx": lines(20) }, daysAgo: 5 },
+  ]);
+  execFileSync("git", ["-C", dir, ...GIT_ID, "tag", "-a", "ios-v1.11.18", "-m", "t"], {
+    env: { ...process.env, GIT_AUTHOR_DATE: new Date(Date.now() - 4 * 86400000).toISOString(),
+           GIT_COMMITTER_DATE: new Date(Date.now() - 4 * 86400000).toISOString() },
+  });
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "tag", "the tag answers, because it postdates everything the manifest records");
+  eq(r.releasedVersion, "ios-v1.11.18", "and it is NAMED, so a reader can go and look");
+  ok(!r.neverMoved, "this is not a never-released claim");
+  // THE POINT OF THE WHOLE BLOCK: the magnitude is measured from the TAG, not from the stale bump.
+  const fromTag = wl.netProductSince(dir, r.commit, wl.classifierFor("x", { x: ["src/app/**"] }));
+  eq(wl.netProductSince(dir, r.commit, wl.classifierFor("x", { x: ["src/app/**"] })), fromTag,
+     "unshipped product is measured from the tag's own commit");
+});
+
+suite("WL-010: a tag OLDER than the manifest bump CORROBORATES — it must not veto", () => {
+  const dir = makeGitRepo("wl010-oldtag", [
+    { msg: "seed", files: { "package.json": '{"name":"p","version":"0.9.0"}\n' }, daysAgo: 40 },
+    { msg: "bump", files: { "package.json": '{"name":"p","version":"1.0.0"}\n' }, daysAgo: 2 },
+  ]);
+  execFileSync("git", ["-C", dir, ...GIT_ID, "tag", "-a", "v0.9.0", "-m", "t"], {
+    env: { ...process.env, GIT_AUTHOR_DATE: new Date(Date.now() - 30 * 86400000).toISOString(),
+           GIT_COMMITTER_DATE: new Date(Date.now() - 30 * 86400000).toISOString() },
+  });
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "manifest", "an OLDER tag agrees with the manifest and leaves it in charge");
+  eq(r.releasedVersion, "1.0.0", "so the manifest still answers");
+});
+
+suite("WL-010: THE LUMEN CASE — a manifest that never moved, in a repo that tags", () => {
+  const dir = makeGitRepo("wl010-lumen", [
+    { msg: "seed", files: { "shell/package.json": '{"name":"shell","version":"0.1.0"}\n' }, daysAgo: 20 },
+  ]);
+  execFileSync("git", ["-C", dir, ...GIT_ID, "tag", "-a", "cairn-ios-v0.1.0", "-m", "t"], {
+    env: { ...process.env, GIT_AUTHOR_DATE: new Date(Date.now() - 3 * 86400000).toISOString(),
+           GIT_COMMITTER_DATE: new Date(Date.now() - 3 * 86400000).toISOString() },
+  });
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  ok(!r.neverMoved,
+     "40 tags say this manifest is not how the project releases — a demoted signal's one remaining " +
+     "job is contradicting a confident claim");
+  eq(r.source, "tag", "and the tag is a MEASUREMENT, not a shrug");
+  eq(r.releasedVersion, "cairn-ios-v0.1.0", "named");
+  const w = wl.computeWorkLedger(dir, { productPaths: { x: ["src/**"] } });
+  w.release = r;
+  ok(relTile(w).band !== "bad",
+     "and it must not be RED — statusView derives the node icon from any bad band");
+});
+
+suite("WL-010: a repo that also builds with another ecosystem is UNMEASURED, not judged", () => {
+  const dir = makeGitRepo("wl010-polyglot", [
+    { msg: "seed", files: { "web/package.json": '{"name":"w","version":"0.1.0"}\n',
+                            "android/build.gradle": "plugins {}\n" }, daysAgo: 10 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "unmeasured", "no tag can answer and the manifest cannot speak for the repo");
+  ok(!r.neverMoved, "and it is NOT a never-released verdict");
+  match(String(r.unmeasuredReason || ""), /Gradle/,
+        "the reason NAMES what it could not account for: " + r.unmeasuredReason);
+  const w = wl.computeWorkLedger(dir, { productPaths: { x: ["web/**"] } });
+  w.release = r;
+  eq(relTile(w).band, "unknown", "not knowing is not an alarm");
+  match(relTile(w).detail, /Gradle/, "and the reader repeats WHAT could not be measured, not just that");
+  match(wl.orchestratorBriefing(w).join("\n"), /Gradle/,
+        "every reader carries it — WL-007's lesson was that a rekeying is done only when ALL are repointed");
+});
+
+suite("WL-010: a MANIFEST BUMP does not claim a user has it", () => {
+  // THE SHWAB_DOCKER SHAPE: source `manifest`, no artifact anywhere, and the old wording said the
+  // version was "in front of a user". WL-003-R5 deliberately answers from a moved manifest — that is
+  // not the defect. Claiming delivery from it is.
+  const dir = makeGitRepo("wl010-cut", [
+    { msg: "seed", files: { "package.json": '{"name":"p","version":"0.0.0"}\n' }, daysAgo: 10 },
+    { msg: "bump", files: { "package.json": '{"name":"p","version":"0.1.0"}\n' }, daysAgo: 1 },
+  ]);
+  const r = wl.releaseSignal(dir, { deployRoots: [makeDeployRoot([])] });
+  eq(r.source, "manifest", "the manifest still answers when nothing contradicts it");
+  const w = wl.computeWorkLedger(dir, { productPaths: { x: ["src/**"] } });
+  w.release = r;
+  const v = relTile(w).value;
+  ok(!/is in front of a user/.test(v),
+     "a manifest bump is evidence someone CUT a version, not that a user has it: " + v);
+  match(v, /was cut \(manifest bump/, "and it says exactly what its basis supports: " + v);
+});
+
+suite("WL-010: 'pending a build' is never computed against a TAG NAME", () => {
+  const w = ledgerWithRelease({ source: "tag", releasedVersion: "ios-v1.11.18-2", version: "1.0.0",
+                                unshippedProduct: 5, blocksSince: 3, commit: "abc" });
+  ok(!/pending a build/.test(relTile(w).value),
+     "a manifest version and a tag name are not the same KIND of thing, so their inequality is " +
+     "not a pending build: " + relTile(w).value);
+});
