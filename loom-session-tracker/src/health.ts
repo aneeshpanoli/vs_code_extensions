@@ -163,7 +163,12 @@ export const WORKING_LIKE = ["working", "active", "running", "busy"];
 /** updated_at allowed to lag the file this long before we call it unmaintained. */
 export const DRIFT_HOURS = 6;
 
-export interface StallFinding { role: string; status: string; staleHours: number; }
+/** WL-008 · a stall now SAYS WHICH KIND IT IS. `none`: the role never declared a gate — it simply
+ *  stopped. `spent`: it declared one for a block it has since answered, so the declaration is over
+ *  and the silence since is its own. These are different situations for whoever reads the alarm,
+ *  and rendering both as the bare word "stalled" is one reading standing in for two. */
+export interface StallFinding { role: string; status: string; staleHours: number;
+                                gate?: "none" | "spent"; }
 export interface ConformFinding { role: string; status: string; issue: string; }
 /** WL-006: a role whose declared gate is alive (`gated`) or has finished (`gateExited`). Separate
  *  arrays, not a flag on `stalled`, because neither is a stall and both are positive evidence. */
@@ -244,7 +249,15 @@ export function checkHealth(repo: string | null,
       out.gateExited.push({ role, status, pid: decl.pid, log: decl.log, launchedAt: decl.launchedAt,
                             mutants: decl.mutants, staleHours: (now - s.mtimeMs) / HOUR_MS });
     } else if (isWorkingLike(status) && now - s.mtimeMs > stallMs) {
-      out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS });
+      // THE THIRD STATE, named rather than folded in. WL-006's wake fires on a gate that EXITED;
+      // a role that never launched one is a different thing and was previously indistinguishable.
+      // It is NOT auto-woken, and that is a decision, not an omission: a finished gate is PROOF
+      // that an answer is waiting, which is what justifies typing into a worker unasked. A silent
+      // role with no gate carries no such proof — it may be waiting on a human, blocked, or simply
+      // done badly — so nudging it would be a guess dressed as a measurement, which is the one
+      // move this whole sequence exists to refuse. It is reported, with which kind it is.
+      out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS,
+                         gate: answered && decl ? "spent" : "none" });
     }
   }
   return out;
@@ -401,6 +414,14 @@ interface StallState {
    *  a wake record kept in memory would fire again on every window restart. A NEW declaration is a
    *  new key, so the next gate wakes normally instead of being suppressed for ever by the last one. */
   gatesWoken?: Record<string, string>;
+  /** WL-008 · A WAKE THAT WAS ATTEMPTED AND REFUSED, per role, with the gate it was for.
+   *
+   *  `gatesWoken` records only DELIVERY, which is right — marking on attempt would mean "woken" for
+   *  a role never told. But delivery-only plus a guard that could never pass meant the wake was
+   *  retried every 15 seconds for 36 minutes and NOTHING ever said so: the state file looked
+   *  untouched, which reads identically to "no gate ever finished". The refusals were real events
+   *  and they were the only evidence, so they are now kept. */
+  gatesPending?: Record<string, { key: string; since: string; attempts: number; note: string }>;
   updatedAt?: string;
 }
 function stallFile(repo: string): string { return path.join(LOOM_ROOT, repo, "stall-state.json"); }
@@ -410,10 +431,11 @@ function loadStall(repo: string): StallState {
     const st = JSON.parse(fs.readFileSync(stallFile(repo), "utf8"));
     if (st && st.alerted && typeof st.alerted === "object") {
       return { alerted: st.alerted,
-               gatesWoken: st.gatesWoken && typeof st.gatesWoken === "object" ? st.gatesWoken : {} };
+               gatesWoken: st.gatesWoken && typeof st.gatesWoken === "object" ? st.gatesWoken : {},
+               gatesPending: st.gatesPending && typeof st.gatesPending === "object" ? st.gatesPending : {} };
     }
   } catch { /* none yet */ }
-  return { alerted: {}, gatesWoken: {} };
+  return { alerted: {}, gatesWoken: {}, gatesPending: {} };
 }
 function saveStall(repo: string, st: StallState): void {
   try {
@@ -421,7 +443,8 @@ function saveStall(repo: string, st: StallState): void {
     try {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
       if (JSON.stringify(cur.alerted) === JSON.stringify(st.alerted)
-          && JSON.stringify(cur.gatesWoken || {}) === JSON.stringify(st.gatesWoken || {})) return;
+          && JSON.stringify(cur.gatesWoken || {}) === JSON.stringify(st.gatesWoken || {})
+          && JSON.stringify(cur.gatesPending || {}) === JSON.stringify(st.gatesPending || {})) return;
     } catch { /* write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -430,9 +453,15 @@ function saveStall(repo: string, st: StallState): void {
   } catch { /* ignore */ }
 }
 
-export interface StallEvent { repo: string; role: string; status: string; staleHours: number; }
+export interface StallEvent { repo: string; role: string; status: string; staleHours: number;
+                              gate?: "none" | "spent"; }
 
 /** WL-006: a role whose declared gate has exited and which has not yet been woken for THAT gate. */
+/** WL-008 · a wake that keeps being refused. Reported, because silence looked like success. */
+export interface WakePending {
+  role: string; key: string; since: string; attempts: number; note: string; pendingMinutes: number;
+}
+
 export interface GateEvent {
   repo: string; role: string; pid: number; log: string; mutants: number | null; key: string;
 }
@@ -456,7 +485,8 @@ export class HealthWatcher {
     for (const s of report.stalled) {
       if (st.alerted[s.role]) continue;                       // already told them about this stall
       st.alerted[s.role] = { status: s.status, at: new Date().toISOString() };
-      events.push({ repo: this.repo, role: s.role, status: s.status, staleHours: s.staleHours });
+      events.push({ repo: this.repo, role: s.role, status: s.status, staleHours: s.staleHours,
+                    gate: s.gate });
     }
     saveStall(this.repo, st);
     return events;
@@ -489,7 +519,48 @@ export class HealthWatcher {
     if (!this.repo) return;
     const st = loadStall(this.repo);
     st.gatesWoken = { ...(st.gatesWoken || {}), [role]: key };
+    const pend = { ...(st.gatesPending || {}) };
+    delete pend[role];                      // delivered: it is no longer waiting on anything
+    st.gatesPending = pend;
     saveStall(this.repo, st);
+  }
+
+  /**
+   * WL-008 · Record a wake that was ATTEMPTED and REFUSED, with the reason.
+   *
+   * NOT a retry ceiling, and the field evidence argues against one. A ceiling would have stopped
+   * trying after N attempts and said nothing — the role would still be asleep and the failure would
+   * now also be invisible, which is strictly worse than the loop that at least kept a live attempt
+   * going. What was actually missing was not restraint, it was NOTICING: the wake was refused ~140
+   * times in 36 minutes and no file, message or figure changed. So retrying stays, and the refusal
+   * becomes a fact on disk with a first-attempt instant, so "pending too long" can be SEEN.
+   */
+  recordWakeRefused(role: string, key: string, note: string, now = Date.now()): void {
+    if (!this.repo) return;
+    const st = loadStall(this.repo);
+    const pend = { ...(st.gatesPending || {}) };
+    const prev = pend[role];
+    // A NEW gate restarts the clock: the age that matters is how long THIS wake has been pending.
+    pend[role] = prev && prev.key === key
+      ? { ...prev, attempts: prev.attempts + 1, note }
+      : { key, since: new Date(now).toISOString(), attempts: 1, note };
+    st.gatesPending = pend;
+    saveStall(this.repo, st);
+  }
+
+  /** Wakes that have been refused continuously for longer than `ms` — a mechanism failing silently
+   *  is the one thing this whole sequence exists to make impossible. */
+  pendingBeyond(ms: number, now = Date.now()): WakePending[] {
+    if (!this.repo) return [];
+    const st = loadStall(this.repo);
+    const out: WakePending[] = [];
+    for (const [role, p] of Object.entries(st.gatesPending || {})) {
+      const since = Date.parse(p.since);
+      if (!Number.isFinite(since) || now - since < ms) continue;
+      out.push({ role, key: p.key, since: p.since, attempts: p.attempts, note: p.note,
+                 pendingMinutes: (now - since) / 60_000 });
+    }
+    return out;
   }
 
   /** Wake the ROLE ITSELF — it is the session that can read the log and write the response. The
@@ -497,7 +568,14 @@ export class HealthWatcher {
    *  transport again, which is the workaround this replaces. Not typed into a busy composer. */
   wake(ev: GateEvent, frame: { webviewId: string; busy: boolean } | null,
        done?: (ok: boolean, note: string) => void): void {
-    if (!frame || frame.busy) { if (done) done(false, "composer busy or frame not found"); return; }
+    // WL-008 · TWO STATES, TWO SENTENCES. These wore one note — "composer busy or frame not found" —
+    // and that is the reading-rendered-as-another-reading defect this sequence keeps finding, sitting
+    // in the diagnostic itself. They are not the same event and they do not have the same fix: a busy
+    // composer is TRANSIENT and the next tick retries; no live frame means the role's tab is gone or
+    // unattributed, and retrying will not help until that changes. When the wake was silently failing
+    // in the field, this single note is what made it impossible to tell which was happening.
+    if (!frame) { if (done) done(false, "no live frame for this role — its tab is gone or unattributed"); return; }
+    if (frame.busy) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }
     const n = ev.mutants === null ? "" : ` (${ev.mutants} mutants)`;
     injectTo({ role: ev.role, webviewId: frame.webviewId, repo: ev.repo },
       `[loom-gate] Your background gate${n} has EXITED (pid ${ev.pid}). Read its log yourself — ` +
@@ -510,8 +588,11 @@ export class HealthWatcher {
   /** Tell the orchestrator a worker appears stuck. Fire-and-forget, like the other injectors, and
    *  addressed by the tag's frame id for the same reason (see inject.ts). */
   alert(ev: StallEvent, orchestratorRole: string, done?: (ok: boolean, note: string) => void): void {
+    const why = ev.gate === "spent"
+      ? " Its gate declaration is for a block it has already answered, so nothing is running."
+      : ev.gate === "none" ? " It never declared a gate, so nothing was suppressing this." : "";
     const msg = `[loom-stall] ${ev.role} has been "${ev.status}" with no status update for ` +
-      `${ev.staleHours.toFixed(1)}h. Check whether it is stuck, blocked, or finished without saying so.`;
+      `${ev.staleHours.toFixed(1)}h.${why} Check whether it is stuck, blocked, or finished without saying so.`;
     const tag = getOrchestrator(ev.repo);
     injectTo({ role: orchestratorRole, webviewId: tag ? tag.webviewId : null, repo: ev.repo },
              msg, "stall-debug.json", done);

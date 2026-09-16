@@ -9,15 +9,16 @@
 // hole.
 //
 // THREE STATES, NEVER COLLAPSED: running / exited-and-unanswered / none. Only the third may look idle.
-const { suite, ok, eq, load, makeRepo, busPath, writeJson, readJson } = require("./harness");
+const { suite, ok, eq, match, load, makeRepo, busPath, writeJson, readJson } = require("./harness");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
 const { readGate, gateStateOf, gateKey, checkHealth, HealthWatcher } = load("health.js");
+const health = load("health.js");   // WL-008 additions use the module object
 
-const decl = (pid, log, launchedAt, mutants = 180) =>
-  ({ pid, log, launched_at: launchedAt, mutants });
+const decl = (pid, log, launchedAt, mutants = 180, handoff = undefined) =>
+  ({ pid, log, launched_at: launchedAt, mutants, ...(handoff ? { handoff } : {}) });
 
 suite("WL-006: a declaration is read, and a malformed one is NOT a live gate", () => {
   const good = readGate({ gate: decl(123, "/tmp/g.log", "2026-09-15T21:00:00Z") });
@@ -224,4 +225,117 @@ suite("WL-006: an UNREADABLE start time is not a running gate — the branch a m
      "an unreadable cmdline is the same refusal");
   ok(typeof REAL_GATE_PROBE.cmdline === "function" && typeof REAL_GATE_PROBE.startedAt === "function",
      "and the production default is the real /proc reader pair");
+});
+
+// ── WL-008 · a wake that is REFUSED is an event, and the orchestrator has a gate too ────────────
+//
+// MEASURED 2026-09-16. The wake was refused ~140 times across 36 minutes and NOTHING on disk
+// changed: `gatesWoken` stayed `{}`, which reads exactly like "no gate has ever finished". Marking
+// only on delivery is right — marking on attempt would claim a role was told when it was not — but
+// it left the failure with no trace at all, and that is why two releases shipped with a feature
+// that had never once fired.
+
+suite("WL-008: a refused wake is RECORDED, with its reason and when it started", () => {
+  const repo = makeRepo({ developer1: {} }, "wl008-pending");
+  const w = new health.HealthWatcher(repo);
+  const t0 = Date.parse("2026-09-16T01:00:00Z");
+  w.recordWakeRefused("developer1", "log@t1", "composer busy (mid-turn)", t0);
+  w.recordWakeRefused("developer1", "log@t1", "composer busy (mid-turn)", t0 + 60_000);
+  const st = JSON.parse(fs.readFileSync(busPath(repo, "stall-state.json"), "utf8"));
+  eq(st.gatesPending.developer1.attempts, 2, "every refusal counts");
+  eq(st.gatesPending.developer1.since, "2026-09-16T01:00:00.000Z",
+     "and the clock starts at the FIRST refusal, not the latest — the age is what matters");
+  eq(st.gatesWoken.developer1, undefined, "a refusal is NEVER recorded as a wake");
+});
+
+suite("WL-008: a wake pending too long is reported; a fresh one is not", () => {
+  const repo = makeRepo({ developer1: {} }, "wl008-beyond");
+  const w = new health.HealthWatcher(repo);
+  const t0 = Date.parse("2026-09-16T01:00:00Z");
+  w.recordWakeRefused("developer1", "log@t1", "no live frame for this role", t0);
+  eq(w.pendingBeyond(10 * 60_000, t0 + 60_000).length, 0,
+     "one minute in, a busy composer is ordinary and must not raise anything");
+  const late = w.pendingBeyond(10 * 60_000, t0 + 36 * 60_000);
+  eq(late.length, 1, "36 minutes in — the real field duration — it is a finding");
+  eq(late[0].role, "developer1", "named");
+  ok(late[0].pendingMinutes >= 35, "with how long it has been failing");
+  match(late[0].note, /no live frame/, "and WHY, which the old single note could not say");
+});
+
+suite("WL-008: delivery CLEARS the pending record — it is waiting, not history", () => {
+  const repo = makeRepo({ developer1: {} }, "wl008-clear");
+  const w = new health.HealthWatcher(repo);
+  const t0 = Date.parse("2026-09-16T01:00:00Z");
+  w.recordWakeRefused("developer1", "log@t1", "composer busy", t0);
+  w.markWoken("developer1", "log@t1");
+  eq(w.pendingBeyond(0, t0 + 60 * 60_000).length, 0, "nothing is pending once it was delivered");
+  const st = JSON.parse(fs.readFileSync(busPath(repo, "stall-state.json"), "utf8"));
+  eq(st.gatesWoken.developer1, "log@t1", "and the delivery is the thing that IS recorded");
+});
+
+suite("WL-008: a NEW gate restarts the pending clock", () => {
+  const repo = makeRepo({ developer1: {} }, "wl008-newgate");
+  const w = new health.HealthWatcher(repo);
+  const t0 = Date.parse("2026-09-16T01:00:00Z");
+  w.recordWakeRefused("developer1", "log@t1", "composer busy", t0);
+  // A second gate an hour later must not inherit the first one's age and fire instantly.
+  w.recordWakeRefused("developer1", "log@t2", "composer busy", t0 + 60 * 60_000);
+  eq(w.pendingBeyond(10 * 60_000, t0 + 60 * 60_000 + 60_000).length, 0,
+     "the age is of THIS wake, not of the role");
+});
+
+suite("WL-008: the two refusal states are two SENTENCES, not one word", () => {
+  const ev = { repo: "r", role: "developer1", pid: 1, log: "/l", mutants: null, key: "k" };
+  const w = new health.HealthWatcher("r");
+  let missing = "", busy = "";
+  w.wake(ev, null, (ok, note) => { missing = note; });
+  w.wake(ev, { webviewId: "w1", busy: true }, (ok, note) => { busy = note; });
+  ok(/no live frame/.test(missing), "no frame says so: " + missing);
+  ok(/busy/.test(busy) && !/frame/.test(busy), "a busy composer says that instead: " + busy);
+  ok(missing !== busy,
+     "ONE note for both is what made the field failure undiagnosable — they have different fixes: " +
+     "a busy composer frees itself, a missing frame never will");
+});
+
+suite("WL-008: the ORCHESTRATOR's own declared gate suppresses its stall, like any role's", () => {
+  const repo = makeRepo({ productowner: {}, developer1: {} }, "wl008-owner");
+  // A REAL process wearing a gate's cmdline, exactly as the WL-006 suppression test does — a pid
+  // alone is not proof and this file has said so since that block.
+  const child = spawn("python3", ["-c", "import time; time.sleep(60)  # test/mutation.py"], { stdio: "ignore" });
+  try {
+    writeJson(busPath(repo, "productowner", "status.json"), {
+      status: "working", updated_at: "2026-01-01T00:00:00Z", last_handled: "X-1",
+      gate: decl(child.pid, "/tmp/o.log", new Date().toISOString(), 196),
+    });
+    const f = busPath(repo, "productowner", "status.json");
+    const old = Date.now() - 3 * 3600_000;
+    fs.utimesSync(f, old / 1000, old / 1000);
+    const r = checkHealth(repo, { stallMinutes: 45 });
+    eq(r.stalled.filter((s) => s.role === "productowner").length, 0,
+       "the orchestrator running a gate is NOT stalled — it fired at them twice while a gate ran");
+    eq(r.gated.filter((g) => g.role === "productowner").length, 1,
+       "it is reported as GATED, with the evidence, rather than silently omitted");
+  } finally { child.kill(); }
+});
+
+suite("WL-008: THE THIRD STATE — a stall says whether a gate was ever declared", () => {
+  const repo = makeRepo({ a: {}, b: {} }, "wl008-third");
+  const old = Date.now() - 3 * 3600_000;
+  // `a` simply stopped: no declaration ever. This is WL-006's own 46-minute failure.
+  writeJson(busPath(repo, "a", "status.json"), { status: "working", updated_at: "2026-01-01T00:00:00Z" });
+  // `b` declared a gate for a block it has SINCE ANSWERED — spent, so nothing is running, and the
+  // silence since is its own. WL-006 correctly refuses to read that as a wake; it is still a stall.
+  writeJson(busPath(repo, "b", "status.json"), {
+    status: "working", updated_at: "2026-01-01T00:00:00Z", last_handled: "X-1",
+    gate: decl(999999, "/tmp/b.log", new Date().toISOString(), 10, "X-1"),
+  });
+  for (const r of ["a", "b"]) {
+    const f = busPath(repo, r, "status.json");
+    fs.utimesSync(f, old / 1000, old / 1000);
+  }
+  const rep = checkHealth(repo, { stallMinutes: 45 });
+  const by = Object.fromEntries(rep.stalled.map((s) => [s.role, s.gate]));
+  eq(by.a, "none", "never declared one — it stopped");
+  eq(by.b, "spent", "declared one for a block it already answered — different situation, different fix");
+  eq(rep.gateExited.length, 0, "and neither is a wake: a spent declaration is not an answer waiting");
 });
