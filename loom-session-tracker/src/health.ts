@@ -177,9 +177,71 @@ export interface GateFinding {
   mutants: number | null; staleHours: number;
 }
 
+// ── CL-001 · a worker session that was never cleared ─────────────────────────────────────────
+//
+// Playbook §12: a worker is cleared and re-bound between EVERY handoff, so each block starts from an
+// empty transcript and the handoff file is the whole brief. Measured across every bus 2026-09-16:
+// 18 of the 24 roles whose transcript could be read were carrying more than one block in one
+// session — shwab_docker/trader held 22 blocks in 64.3 MB. It is not one orchestrator's habit, it
+// is universal, and it is INVISIBLE: a worker holding twelve blocks answers exactly like a fresh one
+// right up until it answers from a block it was never given. There is no symptom to notice. What
+// there IS, on the bus the tracker already reads, is a pair of facts that cannot both be innocent:
+//
+//   A NEW HANDOFF ID APPEARING IN status.json WHILE board.json's session_id IS UNCHANGED
+//   means that block was dispatched into a session that was never cleared.
+//
+// THE COUNT IS A FLOOR, NEVER A TOTAL. We can only count blocks that ARRIVE while we are watching.
+// Whatever the status file already names when a session is first seen is the BASELINE — a bind, or
+// the extension reloading mid-block, must not be read as evidence of anything. So the finding says
+// "at least N, since <when>", and `since` is in the message.
+//
+// AND "I CANNOT TELL" IS ITS OWN STATE (WL-002's rule, third time it has bitten this product): a
+// role with no status.json, or no session_id on the board, is NOT a role with zero blocks. It goes
+// in `clearsUnknown` with the reason, and it is never counted, never scored, and never silently
+// dropped into the clean pile.
+export interface ClearSnapshot {
+  role: string;
+  /** From board.json. null when the board does not say — which is unknown, not "no session". */
+  sessionId: string | null;
+  /** Handoff ids this role's status.json names right now (`current`, then `last_handled`). */
+  ids: string[];
+  /** Why this role cannot be judged this tick, or null when it can. */
+  unknown: string | null;
+}
+
 export interface HealthReport {
   repo: string; stalled: StallFinding[]; nonConforming: ConformFinding[];
   gated: GateFinding[]; gateExited: GateFinding[];
+  /** CL-001 · one entry per role on the board, judgeable or not. */
+  clears: ClearSnapshot[];
+}
+
+/** Handoff ids look like `WL-010` / `CL-001` / `DEV-217`. Anything else in `current` (a free-text
+ *  note, a null, a leftover object) is not an id and is not counted — guessing would manufacture
+ *  arrivals out of prose. */
+const HANDOFF_ID = /^[A-Za-z][A-Za-z0-9]{0,7}-\d{1,4}$/;
+
+export function handoffIds(obj: any): string[] {
+  const out: string[] = [];
+  for (const v of [obj && obj.current, obj && obj.last_handled]) {
+    if (typeof v !== "string") continue;
+    const id = v.trim();
+    if (HANDOFF_ID.test(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** The session id the board declares for a role — the thing a `/clear` changes. Both board shapes
+ *  (flat, and wrapped in `roles`) are read, because both exist on the live buses. */
+export function boardSessionId(repo: string, role: string): string | null {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8"));
+    const roles = data && data.roles && typeof data.roles === "object" && !Array.isArray(data.roles)
+      ? data.roles : data;
+    const ent = roles && roles[role];
+    const sid = ent && typeof ent === "object" ? ent.session_id : null;
+    return typeof sid === "string" && sid.trim() ? sid.trim() : null;
+  } catch { return null; }
 }
 
 function readStatus(repo: string, role: string): { obj: any; mtimeMs: number } | null {
@@ -209,9 +271,26 @@ export function checkHealth(repo: string | null,
   if (!repo) return null;
   const now = opts.now ?? Date.now();
   const stallMs = (opts.stallMinutes ?? 45) * 60_000;
-  const out: HealthReport = { repo, stalled: [], nonConforming: [], gated: [], gateExited: [] };
+  const out: HealthReport = { repo, stalled: [], nonConforming: [], gated: [], gateExited: [],
+                              clears: [] };
   for (const role of boardRoles(repo)) {
     const s = readStatus(repo, role);
+    // CL-001 · THE SNAPSHOT IS TAKEN BEFORE THE `continue`. A role whose status.json is missing or
+    // unparseable is exactly the role most likely to be mid-something, and dropping it here is how
+    // it would have silently joined the roles with nothing to report.
+    const sessionId = boardSessionId(repo, role);
+    if (!s) {
+      out.clears.push({ role, sessionId, ids: [],
+                        unknown: "no readable status.json — cannot tell which block it is on" });
+    } else {
+      const ids = handoffIds(s.obj);
+      out.clears.push({
+        role, sessionId, ids,
+        unknown: !sessionId ? "board.json declares no session_id for this role — a clear is undetectable"
+               : ids.length === 0 ? "status.json names no handoff id (no `current`, no `last_handled`)"
+               : null,
+      });
+    }
     if (!s) continue;
     const status = String(s.obj.status ?? "");
     if (status && !KNOWN_STATUSES.includes(status.toLowerCase())) {
@@ -422,6 +501,25 @@ interface StallState {
    *  untouched, which reads identically to "no gate ever finished". The refusals were real events
    *  and they were the only evidence, so they are now kept. */
   gatesPending?: Record<string, { key: string; since: string; attempts: number; note: string }>;
+  /** CL-001 · what each role's CURRENT session has been seen to carry.
+   *
+   *  `session` is the id from board.json at the moment we started watching this session; a different
+   *  one means a `/clear` happened and everything starts over — which is the whole point, and is
+   *  what makes the guard's negative case observable rather than argued.
+   *
+   *  `ids` is the BASELINE (what the status file already named when the session was first seen) and
+   *  `reported` is what has since ARRIVED and been delivered. They are kept apart on purpose: only
+   *  arrivals are evidence, and only delivery may retire an arrival — an arrival marked here on
+   *  ATTEMPT would read as "the orchestrator was told" for a message nobody ever received, which is
+   *  the asserted-is-not-reached shape that has cost this project six findings. */
+  /**  `seen` is every arrival OBSERVED under this session, delivered or not. It exists because
+   *  `reported` alone could not carry the boundary: an arrival raised on a tick where the composer
+   *  was busy is in neither list, so a `/clear` arriving before it was ever delivered seeded the new
+   *  session's baseline with it — and the next reminder named a block from the session that had just
+   *  been cleared. Found by running the compiled code against a copy of the live bus, NOT by the
+   *  unit tests, which had delivered every arrival they raised. */
+  clears?: Record<string, { session: string; ids: string[]; since: string; reported: string[];
+                            seen?: string[] }>;
   updatedAt?: string;
 }
 function stallFile(repo: string): string { return path.join(LOOM_ROOT, repo, "stall-state.json"); }
@@ -432,10 +530,11 @@ function loadStall(repo: string): StallState {
     if (st && st.alerted && typeof st.alerted === "object") {
       return { alerted: st.alerted,
                gatesWoken: st.gatesWoken && typeof st.gatesWoken === "object" ? st.gatesWoken : {},
-               gatesPending: st.gatesPending && typeof st.gatesPending === "object" ? st.gatesPending : {} };
+               gatesPending: st.gatesPending && typeof st.gatesPending === "object" ? st.gatesPending : {},
+               clears: st.clears && typeof st.clears === "object" ? st.clears : {} };
     }
   } catch { /* none yet */ }
-  return { alerted: {}, gatesWoken: {}, gatesPending: {} };
+  return { alerted: {}, gatesWoken: {}, gatesPending: {}, clears: {} };
 }
 function saveStall(repo: string, st: StallState): void {
   try {
@@ -444,7 +543,12 @@ function saveStall(repo: string, st: StallState): void {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
       if (JSON.stringify(cur.alerted) === JSON.stringify(st.alerted)
           && JSON.stringify(cur.gatesWoken || {}) === JSON.stringify(st.gatesWoken || {})
-          && JSON.stringify(cur.gatesPending || {}) === JSON.stringify(st.gatesPending || {})) return;
+          && JSON.stringify(cur.gatesPending || {}) === JSON.stringify(st.gatesPending || {})
+          // CL-001 · the clear baseline MUST be part of the change test. Left out, a tick that
+          // changed only `clears` would take this early return, nothing would reach disk, and every
+          // arrival would be rediscovered and re-sent on the next tick for ever — the same message
+          // every 15 seconds, which is how a reminder becomes a thing people turn off.
+          && JSON.stringify(cur.clears || {}) === JSON.stringify(st.clears || {})) return;
     } catch { /* write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -464,6 +568,14 @@ export interface WakePending {
 
 export interface GateEvent {
   repo: string; role: string; pid: number; log: string; mutants: number | null; key: string;
+}
+
+/** CL-001 · one block dispatched into a session that was never cleared. `blocks` and `ids` are a
+ *  FLOOR measured since `since` — never a total, because nothing can see what a session carried
+ *  before the tracker started watching it. */
+export interface ClearEvent {
+  repo: string; role: string; sessionId: string; newId: string;
+  blocks: number; ids: string[]; since: string;
 }
 
 /** A gate's identity. The log path alone is not enough — a role reusing one path across runs would
@@ -583,6 +695,111 @@ export class HealthWatcher {
       `status.json (status, current, last_handled, the grade counts). Nothing else has read it, and ` +
       `until you do, your outbox still names the previous handoff.`,
       "gate-debug.json", done);
+  }
+
+  /**
+   * CL-001 · Blocks that arrived in a session that was never cleared.
+   *
+   * The rule, and it is the whole mechanism: a handoff id that appears in a role's status.json while
+   * its board session_id is UNCHANGED was dispatched without a `/clear`. A changed session id is a
+   * clear, and resets everything — so the guard's negative case is not an argument, it is the same
+   * code path with one field different, which is what makes it observable in the field.
+   *
+   * This does NOT record the arrival as reported; `markClearReported` does, and only on delivery.
+   * An unreported arrival is therefore raised again every tick until it is actually delivered, which
+   * is deliberate: the orchestrator's composer is busy for most of any given tick, and a reminder
+   * dropped because nobody was listening is a reminder that never happened (WL-006 / WL-008).
+   */
+  scanClears(report: HealthReport | null, now = Date.now()): ClearEvent[] {
+    if (!this.repo || !report) return [];
+    const st = loadStall(this.repo);
+    const cl = { ...(st.clears || {}) };
+    const events: ClearEvent[] = [];
+    for (const snap of report.clears) {
+      // Unknown is never counted and never reset. A role we cannot read this tick keeps whatever
+      // baseline it had: forgetting it would silently re-baseline the session on the next readable
+      // tick, and an unreadable status file would become a way to erase the evidence.
+      if (snap.unknown || !snap.sessionId) continue;
+      const prev = cl[snap.role];
+      if (!prev || prev.session !== snap.sessionId) {
+        // A NEW SESSION — a first sighting, or a `/clear` and re-bind. Everything the status file
+        // already names is the baseline and is NOT evidence: on a re-bind `last_handled` still names
+        // the block that was just finished, and counting it would report a violation on the exact
+        // dispatch that did the right thing.
+        //
+        // AND THE BASELINE DROPS WHAT BELONGED TO THE OLD SESSION. `last_handled` survives a clear —
+        // the worker rewrites its status file, it does not start one — so seeding the new session
+        // with it would carry a finished block across the boundary and name it in a later reminder.
+        // Caught by its own test, not by reading: a reminder after one clear read "at least 3
+        // handoff ids in ONE session (CL-002, CL-001, CL-003)" when that session had carried two.
+        // Only ids we already knew under the OLD session can be dropped — on a FIRST sighting there
+        // is nothing to compare against, so everything present is the baseline and the count is a
+        // floor, which is exactly why the message says "at least".
+        const carried = prev ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || [])] : [];
+        cl[snap.role] = { session: snap.sessionId, ids: snap.ids.filter((i) => !carried.includes(i)),
+                          since: new Date(now).toISOString(), reported: [], seen: [] };
+        continue;
+      }
+      const known = [...prev.ids, ...(prev.reported || [])];
+      const arrived = snap.ids.filter((i) => !known.includes(i));
+      // EVERY arrival is remembered as SEEN, even the ones nobody could be told about yet. Only
+      // `reported` retires an event, so an undelivered arrival is still raised again next tick —
+      // but it no longer crosses a `/clear` boundary and get counted against the new session.
+      if (arrived.length) {
+        cl[snap.role] = { ...prev, seen: [...new Set([...(prev.seen || []), ...arrived])] };
+      }
+      for (const id of arrived) {
+        events.push({ repo: this.repo, role: snap.role, sessionId: snap.sessionId, newId: id,
+                      // A FLOOR, not a total: only blocks seen to arrive since `since` are here.
+                      blocks: known.length + arrived.length, ids: [...known, ...arrived],
+                      since: prev.since });
+      }
+    }
+    st.clears = cl;
+    saveStall(this.repo, st);
+    return events;
+  }
+
+  /** Record a DELIVERED clear reminder, so the same block is not raised again next tick. */
+  markClearReported(role: string, id: string): void {
+    if (!this.repo) return;
+    const st = loadStall(this.repo);
+    const cl = { ...(st.clears || {}) };
+    const prev = cl[role];
+    if (!prev) return;                       // never seen a session for this role: nothing to retire
+    if ((prev.reported || []).includes(id) || prev.ids.includes(id)) return;
+    cl[role] = { ...prev, reported: [...(prev.reported || []), id] };
+    st.clears = cl;
+    saveStall(this.repo, st);
+  }
+
+  /**
+   * The sentence an orchestrator actually reads. It is a TRIGGER, not a verdict.
+   *
+   * What it deliberately is NOT, because the owner was explicit about what these messages are for
+   * ("a reminder… for them if they ever get sidetracked"): not a gate, not a score, not a percentage
+   * of anyone's conduct, and above all not anything that reads as permission to stop working. It
+   * names the role, the floor count with the window it was measured over, and the ONE action —
+   * clear and re-bind at the next dispatch. Nothing here needs undoing and the sentence says so,
+   * because an orchestrator that reads this as a fault will go back and re-do finished work.
+   */
+  clearReminder(ev: ClearEvent): string {
+    return `[loom-clears] ${ev.role} has now carried at least ${ev.blocks} handoff ids in ONE session ` +
+      `(${ev.ids.join(", ")}) — nothing has cleared it since ${ev.since}. ` +
+      `Playbook §12: a worker is cleared and re-bound between every handoff, so each block starts ` +
+      `from an empty transcript and the handoff file is the whole brief. A worker holding several ` +
+      `blocks answers exactly like a fresh one until it answers from a block it was never given, and ` +
+      `it re-reads that whole transcript every turn. Nothing is blocked and nothing needs undoing — ` +
+      `clear ${ev.role} and re-bind it on your NEXT dispatch to it.`;
+  }
+
+  /** Deliver it to the ORCHESTRATOR — it is the one that dispatches, so it is the only one that can
+   *  act on it. Addressed through the tag's frame id, like every other message to the orchestrator. */
+  remindClears(ev: ClearEvent, orchestratorRole: string,
+               done?: (ok: boolean, note: string) => void): void {
+    const tag = getOrchestrator(ev.repo);
+    injectTo({ role: orchestratorRole, webviewId: tag ? tag.webviewId : null, repo: ev.repo },
+             this.clearReminder(ev), "clear-debug.json", done);
   }
 
   /** Tell the orchestrator a worker appears stuck. Fire-and-forget, like the other injectors, and

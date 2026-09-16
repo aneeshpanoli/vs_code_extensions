@@ -316,6 +316,11 @@
           "default": true,
           "description": "Warn (and tell the orchestrator) when a role has been 'working' with no status update for stallMinutes. The finish notifier only sees working -> idle/blocked, so a stalled role is otherwise invisible."
         },
+        "loomSessionTracker.clearReminders": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remind the orchestrator when a handoff id appears in a role's status.json while its board session_id is unchanged — a block dispatched into a session that was never cleared (playbook §12). A reminder for the next dispatch, never a gate: nothing is withheld and no work is stopped."
+        },
         "loomSessionTracker.stallMinutes": {
           "type": "number",
           "default": 45,

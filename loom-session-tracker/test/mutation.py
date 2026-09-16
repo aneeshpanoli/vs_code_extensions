@@ -1474,6 +1474,97 @@ MUTATIONS = [
   "src/models.ts",
   "      done?.(false, `refused: ${v.role} is ${why} — the model policy applies to non-orchestrators only`);\n      return;",
   "      done?.(false, `refused: ${v.role} is ${why} — the model policy applies to non-orchestrators only`);"),
+
+
+ # ── CL-001, 2026-09-16: a block dispatched into a session that was never cleared ─────────────────
+ # Playbook §12 (2026-09-08) requires a clear-and-re-bind between every handoff. Measured across
+ # every bus 2026-09-16: 18 of the 24 roles whose transcript could be read were carrying more than
+ # one block in one session — shwab_docker/trader held 22 in 64.3 MB. The detection is one
+ # comparison (a new handoff id under an unchanged session id) and every way of loosening it is here.
+
+ # Killed by "CL-001 scanClears: a CHANGED session id is a /clear and raises NOTHING". Without the
+ # session comparison the guard can only ever accuse: the orchestrator that DID clear is reported
+ # exactly like the one that did not, which is the fastest way to make a reminder ignored.
+ ("the session id is never compared — a role that WAS cleared is reported anyway",
+  "src/health.ts",
+  "      if (!prev || prev.session !== snap.sessionId) {",
+  "      if (!prev) {"),
+
+ # Killed by "CL-001 scanClears: a NEW handoff id under an UNCHANGED session id raises one event".
+ # The opposite loosening, and the one that fails SILENTLY: re-baselining every tick means nothing is
+ # ever an arrival and the guard reports nothing, for ever, while every test of the message passes.
+ ("every tick re-baselines — nothing is ever an arrival and nothing is ever reported",
+  "src/health.ts",
+  "      const prev = cl[snap.role];",
+  "      const prev = undefined as (typeof cl)[string] | undefined;"),
+
+ # Killed by "CL-001 checkHealth: a role it cannot judge is never counted as clean". WL-002's rule,
+ # and the vacuous-baseline shape a fourth time: a role with no session_id on the board is not a role
+ # with zero blocks, and rendering it as judgeable is one state standing in for another.
+ ("a role that cannot be judged is marked judgeable — 'cannot tell' renders as clean",
+  "src/health.ts",
+  '        unknown: !sessionId ? "board.json declares no session_id for this role — a clear is undetectable"\n'
+  '               : ids.length === 0 ? "status.json names no handoff id (no `current`, no `last_handled`)"\n'
+  "               : null,",
+  "        unknown: null,"),
+
+ # Killed by "CL-001 scanClears: a CHANGED session id is a /clear and raises NOTHING" (its `ids`
+ # assertion). `last_handled` SURVIVES a clear — the worker rewrites its status file, it does not
+ # start one — so seeding the new session with everything present carries a finished block across the
+ # boundary, and the next reminder names a block from the session that was cleared.
+ ("the new session's baseline keeps what the old one carried — a cleared block is named later",
+  "src/health.ts",
+  "        const carried = prev ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || [])] : [];",
+  "        const carried: string[] = [];"),
+
+ # Killed by "CL-001 scanClears: an UNDELIVERED arrival does not cross a /clear boundary". FOUND IN
+ # THE FIELD, not by the suite: every unit test had delivered the arrivals it raised, so an arrival
+ # raised on a tick with a busy composer — in neither the baseline nor `reported` — was invisible to
+ # the boundary rule and followed the role into its next session.
+ ("an arrival is remembered only once DELIVERED — an undelivered one crosses a /clear",
+  "src/health.ts",
+  "        cl[snap.role] = { ...prev, seen: [...new Set([...(prev.seen || []), ...arrived])] };",
+  "        cl[snap.role] = { ...prev, seen: [...(prev.seen || [])] };"),
+
+ # Killed by "CL-001 markClearReported: an event repeats until it is DELIVERED, then stops". Marking
+ # on ATTEMPT is the asserted-is-not-reached shape that has now cost this project six findings: the
+ # state would say the orchestrator was told, for a message a busy composer never took.
+ ("a raised arrival is treated as told — a reminder refused by a busy composer is never re-sent",
+  "src/health.ts",
+  "      const known = [...prev.ids, ...(prev.reported || [])];",
+  "      const known = [...prev.ids, ...(prev.reported || []), ...(prev.seen || [])];"),
+
+ # Killed by "CL-001 scanClears: an UNDELIVERED arrival does not cross a /clear boundary" (through
+ # the state file). saveStall's early return compares field by field; leaving `clears` out of it
+ # means a tick that changed ONLY the clear state reaches no disk at all — and the state file looks
+ # exactly as it does when nothing ever happened.
+ ("the clear state is left out of the change test — it never reaches disk",
+  "src/health.ts",
+  "          && JSON.stringify(cur.clears || {}) === JSON.stringify(st.clears || {})) return;",
+  "          ) return;"),
+
+ # Killed by "CL-001 clearReminder: a reminder naming the next action, never a gate". The count is a
+ # FLOOR — only blocks seen to arrive since `since` are in it — and stating a floor as a total invites
+ # an orchestrator to argue with a number instead of doing the one thing the message asks.
+ ("the floor is stated as a total — a number that can be wrong replaces one that cannot",
+  "src/health.ts",
+  "    return `[loom-clears] ${ev.role} has now carried at least ${ev.blocks} handoff ids in ONE session ` +",
+  "    return `[loom-clears] ${ev.role} has now carried ${ev.blocks} handoff ids in ONE session ` +"),
+
+ # Killed by "CL-001 on the real tick: the reminder is delivered by runTick, and a /clear silences
+ # it". THE WL-008 MUTANT. 188/188 green shipped a mechanism that could never fire because every test
+ # drove scanGates and nothing drove the thing that CALLS it. This mutant severs exactly that wire:
+ # the guard still works, is still fully tested, and never runs.
+ ("the tick never calls the clear watcher — the whole guard is dead code in the field",
+  "src/extension.ts",
+  '      if (cfg().get<boolean>("clearReminders", true) === true) {',
+  "      if (false) {"),
+
+ # Killed by the same real-tick suite. A guard that ships switched off is a guard nobody has.
+ ("the reminder defaults to off — a project that never sets the flag gets nothing",
+  "src/extension.ts",
+  '      if (cfg().get<boolean>("clearReminders", true) === true) {',
+  '      if (cfg().get<boolean>("clearReminders", false) === true) {'),
 ]
 
 def sh(cmd):

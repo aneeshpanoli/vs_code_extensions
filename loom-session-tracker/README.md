@@ -884,6 +884,7 @@ All under `loomSessionTracker.`.
 | `sessionWarnThreshold` | `5` | Highlight past this many simultaneous conversations |
 | `notifyOrchestrator` | `true` | Tell the orchestrator when a worker finishes |
 | `stallWatchdog` / `stallMinutes` | `true` / `45` | Flag roles working but silent |
+| `clearReminders` | `true` | Remind the orchestrator when a new handoff id appears under an unchanged `session_id` — a block dispatched into a session that was never cleared (playbook §12). A reminder for the next dispatch, never a gate |
 | `workingWarnThreshold` | `5` | Digest warning for roles working across all projects |
 | `autoResumeAfterLimit` / `resumeMessage` | `true` / built-in | Resume a session when its usage limit lifts |
 | `enforceWorkerModel` / `workerModel` / `premiumModels` | `true` / `claude-opus-5` / Fable, Mythos | Reserve the expensive tier for the orchestrator |

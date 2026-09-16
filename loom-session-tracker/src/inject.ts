@@ -60,6 +60,9 @@ export const REPLY_FOR: Record<string, string> = {
   "stall-debug.json":   "ring the role named here; this tool reads no chat",
   "context-debug.json": "write the memory file named here; nothing else is read",
   "restart-debug.json": "for any missing role tab, write ~/.claude/loom/<repo>/open-requests.json",
+  // CL-001 · there is nothing to reply TO — the action is the next dispatch, not an answer. Saying
+  // "reads no chat" alone would leave an orchestrator looking for something to respond to.
+  "clear-debug.json":   "no reply — clear and re-bind the role named here on your next dispatch to it",
   "resume":             "keep status.json current; nothing else is read",
   "model":              "none needed — your footer is re-read every tick",
 };

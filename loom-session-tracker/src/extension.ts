@@ -172,6 +172,23 @@ export function activate(context: vscode.ExtensionContext) {
           debugLog({ gateWake: { role: ev.role, pid: ev.pid, log: ev.log, ok, note } });
         });
       }
+      // CL-001 · A BLOCK DISPATCHED INTO A SESSION THAT WAS NEVER CLEARED. Playbook §12 has said to
+      // clear and re-bind between every handoff since 2026-09-08 and, measured across every bus on
+      // 2026-09-16, 18 of the 24 readable roles were carrying more than one block anyway — one of
+      // them 22. A rule in prose is advice; this is the tool noticing. It is a REMINDER to the
+      // orchestrator and nothing else: no gate, no score, nothing withheld, and it is marked only
+      // once it was actually DELIVERED, so a busy composer means "tell it next tick", never
+      // "consider it told".
+      if (cfg().get<boolean>("clearReminders", true) === true) {
+        for (const ev of healthWatcher.scanClears(report)) {
+          if (!orch) { debugLog({ clearReminder: { role: ev.role, blocks: ev.blocks, ok: false,
+                                  note: "no orchestrator tag on this bus — nobody to remind" } }); continue; }
+          healthWatcher.remindClears(ev, orch.role, (ok, note) => {
+            if (ok) healthWatcher.markClearReported(ev.role, ev.newId);
+            debugLog({ clearReminder: { role: ev.role, newId: ev.newId, blocks: ev.blocks, ok, note } });
+          });
+        }
+      }
       // A wake that has been refused continuously is itself a finding: the role is asleep with an
       // answer waiting and the mechanism meant to tell it cannot. Said ONCE per stuck wake, to the
       // orchestrator, because at this point a person is the only remaining transport.
