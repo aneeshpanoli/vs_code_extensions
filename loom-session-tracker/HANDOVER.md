@@ -9,7 +9,113 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.39.0)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.40.0)
+
+**Version 0.40.0** is WL-010 + R1 and MP-002 — one manifest speaking for a whole repo, and the
+extension no longer changing an orchestrator's model.
+
+**WL-010: a release verdict taken from ONE Node manifest while other evidence in the repo
+contradicts it.** I scoped this from Lumen, and the corpus measurement replaced my scope with a
+better one — which is the whole argument for measuring the corpus before fixing. developer1 read all
+19 buses (12 resolve to a repo) and found the MANIFEST branch fails worse than the `neverMoved`
+branch I had written the handoff around: **livegita has 36 tags, newest `ios-v1.11.18-2` dated three
+days earlier, while root `package.json` 1.0.0 was last bumped in May — so it rendered "44476 product
+line(s) not in front of a user since 1.0.0, and no build is queued", band BAD, about a project that
+had shipped that week.** Lumen is vaguely wrong ("never released — 0.1.0 has never changed version",
+on a repo with 40 tags); livegita asserts a precise magnitude and a specific operational claim.
+**The real class is ANY verdict derived from one manifest while other repo evidence contradicts it**,
+not one branch of it. A handoff's scope is a hypothesis and the corpus is what tests it.
+
+**It runs in BOTH directions, and the false GREEN is the one that hides.** In the same corpus,
+**shwab_docker — 0 tags, `frontend/package.json` 0.0.0 — rendered "0.0.0 is in front of a user —
+nothing unshipped", band GOOD, with no artifact anywhere.** Every case anyone had reasoned about was
+a false RED, which is loud and gets reported; a false GREEN suppresses the trigger silently, and
+under this product's own design rule — **triggers, not verdicts** — that is the worse failure,
+because nothing ever fires to make anyone look. **When you find a defect producing wrong verdicts,
+go looking for the direction that produces no complaint.**
+
+The fix: **a demoted signal keeps one job — contradicting a confident claim.** WL-003-R5 demoted tags
+to corroboration "kept for diagnosis" and then never consulted them; corroboration that is never read
+is deleted data with extra steps. Now a tag NEWER than anything the manifest records takes the
+answer, a tag OLDER than the manifest bump corroborates and must NOT veto, a repo that also builds
+with another ecosystem (Gradle, Xcode) is UNMEASURED rather than judged from the one corner a Node
+manifest can see, the foreign-build scan reaches nested `android/` rather than the root alone, and a
+manifest bump on its own never claims a user has it.
+
+**R1: the gate lost exactly one mutant, onto the block's own core rule, for the fourth time in this
+pattern — and the PAIR is what made it legible.** Survivor: "an UNMEASURED release renders as 'never
+shipped'". Its sibling, CAUGHT: "an UNMEASURED release is coloured a FAILURE". **One mutant on the
+band, one on the wording; the band was held and the wording was not.** So the suite enforced that we
+do not *colour* an unmeasured release as failure while leaving us free to *say* it never shipped —
+the defect the block exists to fix, surviving inside the fix. **General form: when a value has both a
+RENDERING and a CLASSIFICATION, tests gravitate to the classification because it is the thing with an
+enum, and the rendered sentence — which is what a human actually reads — goes untested.** The kill is
+behavioural in all four readers: the test moves `commits`, `blocksSinceRelease`, `daysSinceRelease`,
+`tag`, `release.blocksSince`, `release.releasedVersion` and `release.unshippedProduct` at once and
+requires all six reader outputs byte-identical across both shapes of the unmeasured reading — never a
+banned string, which is WL-009's lesson applied BEFORE a gate rather than after one.
+
+**The survivor's species was settled with two probe repos, not by reasoning** — the practice worth
+copying. `fromAuthority` routes every refused manifest with a RESOLVABLE tag to source `tag`, so
+`unmeasured` can carry a `newestTag` only when that tag names no commit; a tag made on a BLOB (whose
+`rev-list -1` is empty) renders exactly that state. So it was UNCOVERED (observable, reachable), not
+EQUIVALENT and not UNDRIVEABLE. **A mutant that survives is not always a missing test — sometimes it
+is a branch that should not exist**; developer1 offered to delete that branch in one line and I kept
+it for this release, because it is correct and tested and deleting it costs a full re-gate. Open.
+
+**MP-002: the owner reversed two of his own model directions — "The extension changing orchestrators
+model version. Must stop. It only applies to non-orchestrators."** Both paths are gone (the
+2026-09-13 promotion that fired with no file at all, and MS-001 R3's `orchestrator-model.json`
+self-shift), `src/memory.ts` no longer instructs every orchestrator to write that file, and the three
+WORKER rules are untouched. **The sequencing lesson is the durable half: the SETTING beat the code
+fix to the problem.** `loomSessionTracker.enforceOrchestratorModel` gates both paths, and flipping it
+to `false` stopped the behaviour on the RUNNING build with no reload, whereas the code fix cannot
+reach a window until someone reloads it. **When a behaviour must stop NOW, look for the config gate
+before writing the handoff.** That setting is now a DEAD KEY in the user's settings.
+
+**And the deliverable was an ABSENCE, which is the part to keep.** I specified "remove both paths";
+developer2 removed them AND put a refusal at the **`enforce()` chokepoint** — every `/model`
+injection passes through it — keyed on owner NAME, tagged ROLE and tagged FRAME, with the tag re-read
+per injection rather than cached. **Its argument is the one I should have made: if you only delete
+code there is nothing left to mutate, so "the orchestrator is never switched" becomes an
+unfalsifiable claim. A property with no guard has no gate.** Five new mutants exist because a guard
+exists. **When a block's deliverable is the absence of a behaviour, ask where the guard lives.**
+
+**A new category of bad test, named inside this block and worth more than the block: a correctly
+passing test whose NAME overclaims its SCOPE.** Two tests — `models: an owner-named role is never
+switched, tagged or not` and `models: the orchestrator's FRAME is never switched, whatever role the
+content says` — were green while the extension was demonstrably switching orchestrators in the field.
+They were honest: both drove **`check()` alone**, the WORKER policy, which had always exempted the
+orchestrator three ways, while **`checkOrchestrator()` — a separate method whose whole purpose was to
+switch the orchestrator — had its own tests asserting that it SHOULD.** In its words: *"The suite was
+not failing to notice a defect. It was asserting the wrong half, under a name that reads as the
+whole."* **That is worse than having no test, because the name answers the question you were about to
+ask and stops you asking it.** Related to the vacuous-baseline family but distinct: there the grade is
+empty, here the grade is real and the LABEL is wrong. **Practice: when a test's name states a general
+property, check which function it actually calls before believing the property.**
+
+Merged `d50ec0d` (WL-010+R1) over `50c3489` (MP-002), DEPLOYED and pushed 2026-09-16. **Gate on main:
+212/212 caught, 0 survived, 0 stale, 0 non-compiling, 0 ungraded**, pre-flight clean on 213 (212 + the
+no-op), baseline green at 819, no-op self-check SURVIVED, containment 0 `loom-*` across 212 suite
+runs, **819/819 BOTH modes**, tsc 0, every grade line counted by hand against the list of names. The
+count reconciles across the two branches: developer1's branch carried 821 and MP-002 retired 2.
+**Verified against the deployed artifact, on the repos the block is about:** livegita now reads
+`source: tag`, "ios-v1.12.0-2 was tagged as released"; Lumen reads "cairn-ios-v0.1.0 was tagged as
+released"; shwab_docker reads "release unmeasured — this repo also builds with Gradle, which
+frontend/package.json cannot account for"; this repo reads `source: deployed`, `releasedVersion
+0.40.0`, band `good`, with `ledgerAlert` carrying no release clause and `tag`/`blocksSinceRelease`
+null and read by nothing.
+
+**One defect found BY that probe and left open:** the tile says "152 product line(s) not in front of a
+user since loom-session-tracker 0.40.0" minutes after those lines were deployed. `releaseCommit`
+anchors on the commit where the VERSION CHANGED (`4ed59da`, MP-002's bump) and WL-010 landed after it
+under the same version, so its lines read as unshipped although they are in the artifact. Band is
+`good`, so nothing is raised loudly — but it is a false sentence with a number in it, and it is this
+very block's class in a new costume: **a verdict from the manifest while the deployed artifact
+contradicts it.** Two blocks under one version number is the trigger. The anchor should be the commit
+that was DEPLOYED — which is knowable, since the artifact is a copy on disk — not the commit that
+bumped the manifest.
+
 
 **Version 0.39.0** is WL-008 + WL-009 — the wake that had never fired once, and a grade produced by
 chance.
