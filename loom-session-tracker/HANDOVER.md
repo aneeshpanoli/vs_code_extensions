@@ -9,7 +9,82 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.38.5)
+## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.39.0)
+
+**Version 0.39.0** is WL-008 + WL-009 — the wake that had never fired once, and a grade produced by
+chance.
+
+**WL-008: the gate wake could never have fired, and it is guaranteed rather than flaky.** `busyRoles`
+(`tracker.ts:403`) is a Set that is only ever ADDED TO. `limits` and `models` are rebuilt fresh every
+tick (`:310-311`); `busyRoles` is not, `:320` only adds, and its sole `.clear()` (`:114`) sits behind
+a human switching the project filter. So the first tick that catches a role mid-turn latches it busy
+for the life of the window, `wake()` takes its `frame.busy` early return for ever, `markWoken` only
+runs on `ok`, and `gatesWoken` stays `{}` — exactly what was measured across two real gates. **The
+part that makes it more than a bug: a worker must be mid-turn to LAUNCH a gate, so it is always
+observed busy BEFORE that gate can exit.** 188/188 had graded a mechanism that never runs — the sixth
+costume of the vacuous baseline and the worst of them, because here the whole feature is the thing
+that never happens. The detail that turned a plausible story into a root cause was explaining the
+NEGATIVE as well: the stall alarm fires from that same `runHealth()` tick because `alert()` never
+consults `busyRoles`. **Demand that shape — a cause that explains what still works, not only what
+broke.**
+
+A second silent failure, found without being asked for: **the ORCHESTRATOR could never be woken
+either** — `wake()` resolved frames from `tracker.view()` (agents) while the owner frame lives in
+`ownerView()`. It is now resolved through the tag.
+
+**The proof is a field observation, and that is the shape to demand from now on.** One log carries
+both halves: ticks 3 and 4 `busy:true, busyRoles:["developer1"]` → `WAKE refused`, then tick 8
+`busy:false, busyRoles:[]` → `WAKE DELIVERED`, `gatesWoken` non-empty. It was then observed a second
+time on a real 18.5-minute gate — exited 03:59:5xZ, wake landed 04:00:13Z, re-keyed to the new gate,
+`gatesPending` cleared, and the worker actually came back to write its response. **One artefact
+showing the failure reproduced AND the fix delivering is worth more than any count of green tests.**
+Note the instrument is cheap: the first acceptance was met by a gate that REFUSED in 38 seconds — to
+observe a gate-EXIT mechanism you need a real exit, not a real hour.
+
+Four judgements, accepted in full: **(1) no retry ceiling** — a ceiling stops trying AND says
+nothing, leaving the role asleep and the failure invisible; what was missing was NOTICING, so a
+refusal is now a fact on disk stamped with the FIRST refusal, and one pending past 10 minutes is
+reported with its reason and attempt count. **(2) The orchestrator's gate belongs in `status.json`**
+as a DECLARATION, never an inference from the process table: a process cannot be attributed to a role,
+and a wrong suppression silences a real alarm. **(3) "Once per `log@launchedAt`" stays** — what was
+wrong was that a NOT-woken state had no name. **(4) A role with no gate is deliberately NOT
+auto-woken** — a finished gate is the PROOF that justifies typing into a worker unasked, and silence
+carries no such proof.
+
+**WL-009: a test in the BASELINE set that fails at random can MANUFACTURE a `caught`.** The gate on
+main refused with a red baseline (813/814) on a test that was green twice in the repo and green in a
+second full gate on the same tree — flaky, not state-dependent. Mechanism, proved rather than
+reasoned: `test/workledger.test.js:1220` names its fixture repo `"wl007-" + Math.random().toString(36).slice(2)`,
+two readers open their text with the repo NAME, and `:1239` banned the **bare substring** `/999/`
+across all five reader strings — so a random name containing `999` fails with no defect present.
+Measured before anything was changed: **p=1.918e-4 per suite run (1 in 5,214) over 5M draws = 3.8%
+per 203-mutant gate, about ONE GATE IN 26.** The refusal is the SAFE direction. `mutation.py` scores
+a mutant caught when a baseline-passing test now fails, so **the same flake inside a mutant run reads
+as a defect correctly caught — a grade produced by chance, and invisible.**
+
+The corpus is clean — no mutant in any of the three real gate logs was ever graded by that test
+ALONE — **but 111 distinct tests HAVE been some mutant's sole grader, which is the exposure surface
+that matters.** The CLASS was swept, not the line: all 39 negative-substring assertions. A collision
+needs the banned pattern to be SPELLABLE in the value it collides with, which rules out `/v9.9.9/`,
+`/$0.00/`, `/$?/` and `/%/` by construction — characters base-36 cannot produce — and the rest are
+English phrases. **A second, latent member was found: `!/0 block/` also matches "10 block(s)"**,
+firing today only because that fixture has one commit; it is now anchored to `\b0 block`.
+
+**The randomness is LOAD-BEARING (a shared fixture dir) — the ASSERTION was the defect.** Every
+reader is now rendered TWICE off ONE ledger and required byte-identical, so the repo name appears in
+both renders and cancels: no spelling can ever collide, and the check is PER-READER, which a
+differential suite joining all renders into one string could not be. **General rule: never assert a
+bare substring over text that echoes a random, live or measured value; assert the behaviour the ban
+exists to protect.** That is "ban the trade, not the spelling" turned on our own tests.
+
+Merged `ab84a7e`, DEPLOYED and pushed 2026-09-16. Gate on main: **203/203 caught, 0 survived,
+0 stale, 0 non-compiling, 0 ungraded**, pre-flight clean on 204 (203 + the no-op), baseline green at
+814, no-op self-check SURVIVED, containment 0 `loom-*` across 203 suite runs, 814/814 both modes,
+tsc 0, every grade line counted by hand against the list of names. **Verified against the deployed
+artifact, not its tests:** `release.source` is `deployed` at `releasedVersion 0.39.0`, the release
+tile bands `good`, `tag` and `blocksSinceRelease` are null and read by nothing, and `ledgerAlert`
+carries no release clause (it fired on ships 7.9% alone).
+
 
 **Version 0.38.5** is WL-007 + R1: **the release line now reaches every reader, and the mutation
 gate refuses to start on a mutant it could not grade.** WL-003-R5 rekeyed the release signal off git
@@ -74,14 +149,18 @@ suite runs, 804/804 both modes, tsc 0. **Verified against the deployed artifact,
 the release tile now reads `band: "good"` — "loom-session-tracker 0.38.5 is in front of a user —
 nothing unshipped" — and `ledgerAlert` carries no release clause at all.
 
-**KNOWN BROKEN IN THE FIELD, NOT YET FIXED — 0.38.3's wake does not fire.** developer1 declared its
+**FIXED IN 0.39.0 (WL-008), AND ONE CHECK REMAINS — 0.38.3's wake did not fire.** developer1 declared its
 WL-007 gate exactly as designed (`handoff`, pid, log, `launched_at`, `mutants`), the gate exited, and
 `stall-state.json` held **`"gatesWoken": {}`** — nobody was woken; 20 minutes later the stall alarm
 fired at the ORCHESTRATOR instead, while the role that had finished waited 35 minutes. It happened
 again on the R1 gate. 0.38.3 shipped behind a 188/188 gate whose tests drove `scanGates` directly
 and never drove what CALLS it on a schedule: **a green gate on a mechanism that does not fire in
 production.** Before believing a background mechanism works, find its record file after a real
-firing, not its unit test. This is the next block.
+firing, not its unit test. **Root cause and fix are above, under 0.39.0, and the fix was observed
+delivering twice — but both observations loaded the WORKTREE's `out/` and called the real exports,
+so they are a field observation of the fixed CODE and not of the scheduler that calls it. The one
+check still outstanding is `gatesWoken` filling from the DEPLOYED build, which needs a window to
+reload onto 0.39.0 and one real gate to exit behind it.**
 
 **Version 0.38.3** is WL-006: **a background mutation gate outlives the turn that launched it, and
 now wakes its own role when it exits.** A worker's turn ends the moment it backgrounds the gate, so
