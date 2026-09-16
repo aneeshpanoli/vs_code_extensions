@@ -247,9 +247,11 @@ MUTATIONS = [
   "      if (!this.inMyWindow(f, validRoles)) continue;",
   "      if (!this.inMyWindow(f, validRoles) && Boolean(0)) continue;"),
 
+ # PD-001 RE-ANCHORED: the senderArgs argument is now the local `kind`, so the old spelling of this
+ # line no longer exists. Same defect — the return address is stripped from every injection.
  ("the extension's notifications carry no return address",
   "src/inject.ts",
-  '                ...senderArgs(replyKind ?? debugName, target.repo ?? null)];',
+  "                ...senderArgs(kind, target.repo ?? null)];",
   "                ];"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
