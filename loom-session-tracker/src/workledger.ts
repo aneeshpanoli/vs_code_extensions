@@ -168,8 +168,16 @@ export interface WorkLedger {
 
   // ── WL-003 · the orchestrator's own blocks, not the project's score ──────────────────────────
   /** Commits (newest first) since one last touched a product path. `0` means the newest commit
-   *  reached a user; `null` when there is no commit in the window to say. THE TRIGGER FIGURE: it
-   *  names what to do next, where a percentage only invites being optimised. */
+   *  CHANGED PRODUCT CODE; `null` when there is no commit in the window to say. THE TRIGGER FIGURE:
+   *  it names what to do next, where a percentage only invites being optimised.
+   *
+   *  WL-011 · IT COUNTS COMMITS THAT CHANGED PRODUCT, AND CHANGING PRODUCT IS NOT REACHING A USER.
+   *  The field was right and its sentence was not: `:1657` rendered it as "N block(s) since anything
+   *  reached a user", and this repo is its own counterexample — a briefing carried "2 block(s) since
+   *  anything reached a user" beside "5 block(s) since loom-session-tracker 0.40.0 reached a user
+   *  (deployed artifact)", two disagreeing claims about reaching a user in one message. Only the
+   *  second measures a release. Reaching a user is `release`, and nothing here; this counts work.
+   *  Same class as WL-010-R1: a value whose rendering claims more than the value ever measured. */
   blocksSinceProduct: number | null;
   /** How many of the newest commits, in an unbroken run, changed ONLY docs and handoffs. */
   narrationRun: number;
@@ -633,6 +641,18 @@ export interface ReleaseSignal {
   newestTag?: string | null;
   /** Where a deployed artifact was looked for — named when the answer is `unmeasured`. */
   lookedIn: string[];
+  /** WL-011 · HOW `commit` WAS IDENTIFIED, carried for the same reason `source` is: a claim travels
+   *  with its basis. `content` means the artifact's own bytes matched that commit and the answer is
+   *  evidence; `manifest-bump` means it is the commit where the version CHANGED, which is right
+   *  about the version and can be several blocks early about the code; `tag` is the tagged commit;
+   *  `none` means no anchor could be placed, so every distance is unmeasured. */
+  anchor?: "content" | "manifest-bump" | "tag" | "none";
+  /** How many shipped files the content anchor matched — the weight behind an `content` answer. */
+  anchorFiles?: number;
+  /** WL-011 · the anchor names a real release that is NOT on the history being measured — a release
+   *  train cut on a side branch, which is what Lumen's 40 iOS/Android tags are. Both distances are
+   *  refused in that case, and this is why, so a reader can say so instead of only going quiet. */
+  anchorOffHistory?: boolean;
 }
 
 /** Standard per-user extension directories. The ROOTS are conventional; the artifact NAME is derived
@@ -690,7 +710,18 @@ export function findManifest(repoPath: string, explicit?: string | null): Manife
 /** Versions of this extension currently deployed, newest-looking last. Matched on the manifest's own
  *  `<publisher>.<name>-<version>` shape, with a bare `<name>-<version>` accepted too. */
 export function deployedVersions(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS): string[] {
-  const out = new Set<string>();
+  return deployedArtifacts(m, roots).map((a) => a.version);
+}
+
+/** WL-011 · the same artifacts, WITH THE DIRECTORY THEY LIVE IN. `deployedVersions` is derived from
+ *  this so the two can never disagree about what is deployed. The directory is the point: the
+ *  artifact is a COPY OF THE SOURCE ON DISK, which is how `deployedCommit` can identify what was
+ *  shipped instead of inferring it from a version number. Insertion order is preserved — a caller
+ *  falls back to `[0]` when nothing else can answer. */
+export function deployedArtifacts(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS):
+    Array<{ version: string; dir: string }> {
+  const out: Array<{ version: string; dir: string }> = [];
+  const seen = new Set<string>();
   const pats = [m.publisher ? `${m.publisher}.${m.name}-` : null, `${m.name}-`]
     .filter((x): x is string => !!x);
   for (const root of roots) {
@@ -698,11 +729,134 @@ export function deployedVersions(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS): str
     try { names = fs.readdirSync(root); } catch { continue; }
     for (const n of names) {
       for (const p of pats) {
-        if (n.startsWith(p)) { const v = n.slice(p.length); if (/^\d/.test(v)) out.add(v); break; }
+        if (n.startsWith(p)) {
+          const v = n.slice(p.length);
+          if (/^\d/.test(v) && !seen.has(v)) { seen.add(v); out.push({ version: v, dir: path.join(root, n) }); }
+          break;
+        }
       }
     }
   }
-  return Array.from(out);
+  return out;
+}
+
+// ── WL-011 · THE RELEASE ANCHOR IS THE DEPLOY, NOT THE VERSION BUMP ───────────────────────────
+//
+// MEASURED 2026-09-16 against this repo's own 49 deployed artifacts. `releaseCommit(rel, want)` is
+// PATHSPEC-LIMITED TO THE MANIFEST, so it answers "the newest commit that TOUCHED package.json and
+// held this version" — the version BUMP. When two blocks ship under one version number, which is
+// this bus's normal practice (0.38.5, 0.39.0 and 0.40.0 were each two blocks), the second block's
+// commits land after that bump and are measured as unshipped while sitting INSIDE the shipped build.
+//
+// The numbers, so the size of the claim is on the record:
+//   · the anchor lands on the WRONG COMMIT in 22 of 48 measurable artifacts (46%);
+//   · the RENDERED NUMBER is wrong in 4 of 48 (8.3%) — the other 18 had only docs in the gap;
+//   · those four: +216, +152, +13 and −412 net product lines.
+//   · 0.40.0 is the +152: anchored at 4ed59da (MP-002's bump), it rendered "152 product line(s) not
+//     in front of a user" MINUTES AFTER those lines were deployed. The true figure is 0.
+//   · 0.33.0 is the −412, AND IT RUNS THE OTHER WAY: that artifact's source PREDATES its own
+//     version-bump commit, so the tile UNDER-reported unshipped work by 412 lines. A false green,
+//     which is the direction that never provokes a complaint — WL-010's finding again.
+//
+// THE FIX IS TO STOP INFERRING. A deployed artifact is a copy of the source on disk, so the commit
+// that was deployed is EVIDENCE: hash the artifact's files and find the newest commit whose blobs
+// are byte-identical. On the 49-artifact corpus this resolved 49 times; the manifest anchor resolved
+// 48. So the content anchor is better on availability AND on correctness, which is why it is
+// preferred rather than merely added.
+//
+// WHEN IT CANNOT BE READ, IT IS `unmeasured` — NEVER A NUMBER (WL-007's rule, and WL-010's). An
+// artifact whose content matches no commit means the deploy came from a tree git cannot see; the
+// release is still real and still named, and it is the DISTANCE that is unknown. That is the branch
+// this module already had for "deployed, but no commit holds that version", and it is reused.
+
+/**
+ * The commit whose tracked content IS what the artifact ships, or null when nothing matches.
+ *
+ * Only paths that are tracked at HEAD *and* present in the artifact are compared — a built `out/`
+ * and a vendored `node_modules/` are in the shipped directory but in no commit, and a file the
+ * artifact does not carry is evidence about neither side. Bounded like `releaseCommit`: the log is
+ * limited to the compared paths, so it walks the commits that could possibly change the answer
+ * rather than one per commit in the repo.
+ */
+export function deployedCommit(repoPath: string, manifestRel: string, artifactDir: string,
+                               cap = 80): { sha: string; matched: number } | null {
+  const dir = path.dirname(manifestRel);
+  const scope = dir === "." || dir === "" ? "." : dir;
+  const prefix = scope === "." ? "" : scope + "/";
+  const tracked = git(repoPath, ["ls-tree", "-r", "--name-only", "HEAD", "--", scope]);
+  if (tracked === null) return null;
+  const want = new Map<string, string>();
+  for (const rel of tracked.split("\n").map((x) => x.trim()).filter(Boolean)) {
+    const shipped = path.join(artifactDir, rel.startsWith(prefix) ? rel.slice(prefix.length) : rel);
+    try { if (!fs.statSync(shipped).isFile()) continue; } catch { continue; }
+    const h = (git(repoPath, ["hash-object", shipped]) || "").trim();
+    if (/^[0-9a-f]{40}$/.test(h)) want.set(rel, h);
+  }
+  if (!want.size) return null;
+  const paths = Array.from(want.keys());
+  const log = git(repoPath, ["log", "--format=%H", "-n", String(cap), "--"].concat(paths));
+  if (log === null) return null;
+  for (const sha of log.split("\n").map((x) => x.trim()).filter(Boolean)) {
+    const tree = git(repoPath, ["ls-tree", "-r", sha, "--", scope]);
+    if (tree === null) continue;
+    const at = new Map<string, string>();
+    for (const line of tree.split("\n")) {
+      // `<mode> SP blob SP <sha> TAB <path>`. A path git had to quote will not match and the answer
+      // becomes `unmeasured` — the safe direction, and never a number.
+      const mm = /^\d+ blob ([0-9a-f]{40})\t(.*)$/.exec(line);
+      if (mm) at.set(mm[2], mm[1]);
+    }
+    let all = true;
+    for (const [p, h] of want) if (at.get(p) !== h) { all = false; break; }
+    if (all) return { sha, matched: want.size };
+  }
+  return null;
+}
+
+// ── WL-011 · A DISTANCE IS ONLY MEASURABLE FROM AN ANCHOR THAT LIES ON THIS HISTORY ───────────
+//
+// FOUND BY MEASURING THE CORPUS FOR THIS BLOCK, AND IT IS BIGGER THAN THE DEFECT THE BLOCK WAS
+// SCOPED TO. Lumen, verified 2026-09-16: 40 release tags, newest `cairn-ios-v0.1.0` (94198a4), an
+// iOS train that is NOT AN ANCESTOR OF HEAD. `rev-list --count 94198a4..HEAD` counts what HEAD can
+// reach and the tag cannot, which here is 189 — THE REPO'S ENTIRE HISTORY, 189 of 189 commits — and
+// `git diff <tag>..HEAD` is a two-point diff between two branches, so `unshippedProduct` is a large,
+// specific, false number. The panel reports that a repo which cuts release trains has shipped
+// nothing. WL-002's lie-with-a-number-on-it, produced by an anchor rather than by arithmetic.
+//
+// IT IS UNDETECTABLE BY INSPECTION, which is why it lasted: both git commands SUCCEED and return a
+// plausible figure. Nothing is thrown, no branch is skipped, no band goes red for the right reason.
+//
+// THE REFUSAL SITS AT THE CHOKEPOINT, NOT AT THE CALLER — MP-002's lesson. Both measurements from an
+// anchor go through `onThisHistory` first, so a future reader that measures from a new anchor
+// inherits the guard instead of having to remember it. The release is still REAL and still NAMED;
+// it is the DISTANCE that is unmeasured, which is the same treatment `unmeasured` already gets.
+
+/**
+ * Is `sha` an ancestor of HEAD — i.e. does the history being measured actually run through it?
+ *
+ * `merge-base --is-ancestor` exits 1 for "no", which `git()` reports as null, and 0 with EMPTY
+ * output for "yes" — so this tests `!== null` and NOT truthiness. An unknown sha also exits
+ * non-zero and is correctly refused.
+ */
+export function onThisHistory(repoPath: string | null, sha: string | null): boolean {
+  if (!repoPath || !sha) return false;
+  return git(repoPath, ["merge-base", "--is-ancestor", sha, "HEAD"]) !== null;
+}
+
+/**
+ * WL-011 · THE DISTANCES A READER IS ENTITLED TO RENDER — the READER's chokepoint.
+ *
+ * `releaseSignal` already nulls both when the anchor is off this history, so in production these
+ * fields cannot disagree with `anchorOffHistory`. This exists because a reader that TRUSTS an
+ * upstream invariant is not holding the claim, it is inheriting it — and that is precisely what
+ * WL-010-R1 was: the enum was guarded and the sentence was not, so the sentence drifted. Found here
+ * by the test rather than by review: set `unshippedProduct` on an off-history reading and the tile
+ * rendered "3468.8% of this window's net product" off an anchor that cannot measure anything.
+ */
+export function measurableDistance(r: ReleaseSignal):
+    { blocksSince: number | null; unshippedProduct: number | null } {
+  if (r.anchorOffHistory) return { blocksSince: null, unshippedProduct: null };
+  return { blocksSince: r.blocksSince, unshippedProduct: r.unshippedProduct };
 }
 
 /** The newest commit at which the manifest held `want` (or, with no `want`, the newest commit that
@@ -832,7 +986,7 @@ export function releaseSignal(repoPath: string | null, opts: {
   const roots = opts.deployRoots || DEFAULT_DEPLOY_ROOTS;
   const none = (): ReleaseSignal => ({ source: "unmeasured", manifestPath: null, product: null,
                                        version: null, releasedVersion: null, blocksSince: null,
-                                       commit: null, unshippedProduct: null, lookedIn: roots });
+                                       commit: null, unshippedProduct: null, lookedIn: roots, anchor: "none" });
   if (!repoPath) return none();
   const m = findManifest(repoPath, opts.manifestPath);
   if (!m) return none();
@@ -840,6 +994,10 @@ export function releaseSignal(repoPath: string | null, opts: {
                  version: m.version, lookedIn: roots,
                  commit: null as string | null, unshippedProduct: null as number | null };
   const blocks = (sha: string): number | null => {
+    // WL-011 · the same chokepoint as `netProductSince`. `rev-list --count A..HEAD` counts what HEAD
+    // reaches and A does not, which for an anchor off this history is very nearly the whole repo —
+    // 189 of 189 commits on Lumen. Unmeasured, not a number.
+    if (!onThisHistory(repoPath, sha)) return null;
     const n = git(repoPath, ["rev-list", "--count", `${sha}..HEAD`]);
     const k = Number((n || "").trim());
     return Number.isFinite(k) ? k : null;
@@ -854,9 +1012,13 @@ export function releaseSignal(repoPath: string | null, opts: {
   const fromAuthority = (auth: ManifestAuthority): ReleaseSignal =>
     auth.newestTag && auth.newestTagSha
       ? { ...base, source: "tag", releasedVersion: auth.newestTag,
-          blocksSince: blocks(auth.newestTagSha), commit: auth.newestTagSha,
+          // WL-011 · `blocks` and `netProductSince` both refuse a tag that is off this history, so
+          // Lumen's iOS train no longer renders 189 of 189 commits as unshipped. The release is
+          // still named; only the distance goes quiet — AND IT SAYS WHY, which is WL-010's rule.
+          blocksSince: blocks(auth.newestTagSha), commit: auth.newestTagSha, anchor: "tag",
+          anchorOffHistory: !onThisHistory(repoPath, auth.newestTagSha),
           newestTag: auth.newestTag, unmeasuredReason: auth.reason || undefined }
-      : { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null,
+      : { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null, anchor: "none",
           unmeasuredReason: auth.reason || undefined, newestTag: auth.newestTag };
 
   // 1 · a deployed artifact whose version the manifest history knows.
@@ -870,11 +1032,24 @@ export function releaseSignal(repoPath: string | null, opts: {
                          .map((x) => ({ x, n: blocks(x.sha) }))
                          .filter((y) => y.n !== null)
                          .sort((a, b) => (a.n as number) - (b.n as number))[0]?.x || null;
+    // WL-011 · THE CONTENT ANCHOR, PREFERRED OVER THE VERSION BUMP. The version number selects WHICH
+    // artifact to believe; the artifact's own bytes then say WHICH COMMIT it is. Exactly one
+    // directory is content-matched — the one this manifest history already chose, or the deployed
+    // version itself when it chose none — so the walk costs one bounded pass, not one per artifact.
+    const chosen = hit ? hit.version : (want || deployed[0]);
+    const art = deployedArtifacts(m, roots).find((a) => a.version === chosen);
+    const byContent = art ? deployedCommit(repoPath, m.rel, art.dir) : null;
+    if (byContent) return { ...base, source: "deployed", releasedVersion: chosen,
+                            blocksSince: blocks(byContent.sha), commit: byContent.sha,
+                            anchor: "content", anchorFiles: byContent.matched };
+    // The manifest bump is the FALLBACK, and it says so rather than passing itself off as the
+    // deploy: it is right about the version and can be several blocks early about the commit.
     if (hit) return { ...base, source: "deployed", releasedVersion: hit.version,
-                      blocksSince: blocks(hit.sha), commit: hit.sha };
-    // Deployed, but no commit in the walked history holds that version: still released, and the
-    // distance is what is unknown — reported as such rather than as 0.
-    return { ...base, source: "deployed", releasedVersion: deployed[0], blocksSince: null };
+                      blocksSince: blocks(hit.sha), commit: hit.sha, anchor: "manifest-bump" };
+    // Deployed, but no commit in the walked history holds that version AND its content matches
+    // nothing: still released, and the distance is what is unknown — reported as such, never as 0.
+    return { ...base, source: "deployed", releasedVersion: deployed[0], blocksSince: null,
+             anchor: "none" };
   }
 
   // 2 · no artifact, but the manifest version moved: released at that commit — IF this manifest may
@@ -886,7 +1061,7 @@ export function releaseSignal(repoPath: string | null, opts: {
     const auth = manifestAuthority(repoPath, m.rel, bump.sha);
     if (!auth.ok) return fromAuthority(auth);
     return { ...base, source: "manifest", releasedVersion: bump.version,
-             blocksSince: blocks(bump.sha), commit: bump.sha };
+             blocksSince: blocks(bump.sha), commit: bump.sha, anchor: "manifest-bump" };
   }
 
   // 3 · the manifest is tracked but its version has NEVER MOVED. This is the one case where "no
@@ -901,12 +1076,13 @@ export function releaseSignal(repoPath: string | null, opts: {
     const auth = manifestAuthority(repoPath, m.rel, null);
     if (!auth.ok) return fromAuthority(auth);
     return { ...base, source: "manifest", releasedVersion: null, blocksSince: blocks(firstSha),
-             commit: firstSha, neverMoved: true };
+             commit: firstSha, neverMoved: true, anchor: "manifest-bump" };
   }
   // 4 · a manifest on disk that git has never seen (untracked, or a checkout with no history for
   // it). Nothing can be concluded, so nothing is: UNMEASURED, and emphatically not `0 blocks`,
   // which would render "we cannot see it" as "shipped just now".
-  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null };
+  return { ...base, source: "unmeasured", releasedVersion: null, blocksSince: null,
+           anchor: "none" };
 }
 
 // ── WL-003 · where the ORCHESTRATOR's own blocks went ─────────────────────────────────────────
@@ -1029,6 +1205,11 @@ export function scanBlocks(repo: string, sinceMs: number, cls: Classifier,
 export function netProductSince(repoPath: string | null, commit: string | null,
                                 cls: Classifier): number | null {
   if (!repoPath || !commit) return null;
+  // WL-011 · THE CHOKEPOINT. `git diff A..HEAD` is a TWO-POINT diff, so an anchor on a side branch
+  // is compared tree-to-tree and yields a large, confident, meaningless figure — Lumen's 40-tag iOS
+  // train reads as "nothing has shipped". An anchor off this history cannot measure a distance
+  // along it, and the answer is `null` (unmeasured), never a number.
+  if (!onThisHistory(repoPath, commit)) return null;
   const out = git(repoPath, ["diff", "--numstat", `${commit}..HEAD`]);
   if (out === null) return null;
   const net = netProductLinesIn(out, cls);
@@ -1114,7 +1295,7 @@ function emptyLedger(repo: string, repoPath: string | null, windowDays: number, 
     blocksSinceProduct: null, narrationRun: 0, allocation: EMPTY_ALLOC(true),
     release: { source: "unmeasured", manifestPath: null, product: null, version: null,
                releasedVersion: null, blocksSince: null, commit: null, unshippedProduct: null,
-               lookedIn: DEFAULT_DEPLOY_ROOTS },
+               lookedIn: DEFAULT_DEPLOY_ROOTS, anchor: "none" },
   };
 }
 
@@ -1198,8 +1379,9 @@ export function computeWorkLedger(repoPath: string | null, opts: ComputeOpts = {
   }
 
   // Newest-first, so the FIRST commit carrying a product line ends both runs. These are the two
-  // facts a dispatching orchestrator can act on: how long since anything reached a user, and how
-  // much of the recent past was only talk about the work.
+  // facts a dispatching orchestrator can act on: how long since PRODUCT CODE LAST CHANGED, and how
+  // much of the recent past was only talk about the work. WL-011: neither is "reached a user" —
+  // that question is answered by `release`, from a deployed artifact, and only there.
   let blocksSinceProduct: number | null = null;
   for (let i = 0; i < commits.length; i++) {
     if (commits[i].lines.some((l) => cls.isProduct(l.file))) { blocksSinceProduct = i; break; }
@@ -1377,7 +1559,9 @@ export function releaseReading(w: WorkLedger,
   const reached = r.source === "deployed" ? "is in front of a user"
                 : r.source === "tag" ? "was tagged as released"
                 : "was cut (manifest bump — not seen in front of a user)";
-  const un = r.unshippedProduct;
+  // WL-011 · taken through the reader's own chokepoint, never straight off the field.
+  const dist = measurableDistance(r);
+  const un = dist.unshippedProduct;
   // WL-010 · NOT for a tag-sourced release. `pending` means "the manifest is AHEAD of what shipped",
   // which is only meaningful when both sides are the same KIND of version. Against a tag NAME
   // (`ios-v1.11.18-2`) the comparison is always unequal, so livegita read "1.0.0 is pending a build"
@@ -1401,7 +1585,12 @@ export function releaseReading(w: WorkLedger,
     : share === null ? "warn"
     : share >= t.unshippedShareBad ? "bad"
     : share <= t.unshippedShareGood ? "good" : "warn";
-  const text = un === null
+  // WL-011 · THE CLAIM, NOT ONLY THE BAND. When the anchor is off this history the honest sentence
+  // is that the distance cannot be measured FROM HERE — Lumen's tag is a real release on a train
+  // this branch never joined, and the old code answered it with 189 of 189 commits unshipped.
+  const text = r.anchorOffHistory
+    ? `${who}${r.releasedVersion} ${reached}; how far ahead of it this branch is, is ${UNMEASURED}`
+    : un === null
     ? `${who}${r.releasedVersion} ${reached}`
     : un <= 0
       ? `${who}${r.releasedVersion} ${reached} — nothing unshipped`
@@ -1409,16 +1598,51 @@ export function releaseReading(w: WorkLedger,
         `${pending ? `; ${r.version} is pending a build` : `, and no build is queued`}`;
   return { text, band,
     detail: `Newest ${basis}: ${who}${r.releasedVersion}. ` +
-            `${un === null ? "Unshipped product lines could not be measured." :
-               `${un} NET product line(s) exist on HEAD that are not in it`} — the two-point diff ` +
-            `over the product paths from the release commit, NOT a commit count: three of this ` +
-            `repo's "blocks since release" were HANDOVER and version commits, which are not work. ` +
-            `Commits since: ${r.blocksSince ?? "?"}. Manifest: ${r.version}.` +
+            // WL-011 · the explanation belongs to the NUMBER. When there is no number the clause
+            // ran on anyway — "could not be measured. — the two-point diff over the product paths
+            // from the release commit" — describing a measurement that was refused.
+            `${un === null ? "Unshipped product lines could not be measured. " :
+               `${un} NET product line(s) exist on HEAD that are not in it — the two-point diff ` +
+               `over the product paths from the release commit, NOT a commit count: three of this ` +
+               `repo's "blocks since release" were HANDOVER and version commits, which are not ` +
+               `work. `}` +
+            `Commits since: ${dist.blocksSince ?? "?"}. Manifest: ${r.version}.` +
+            // WL-011 · HOW THE COMMIT WAS IDENTIFIED travels with the claim, exactly as `source`
+            // does. "Anchored on the deployed artifact's own content" and "anchored on the commit
+            // that bumped the version" are different strengths of evidence and the reader is owed
+            // which one answered — a bump anchor is right about the version and can be several
+            // blocks early about the code, which is how 0.40.0 rendered 152 lines the user had.
+            `${r.anchor === "content"
+               ? ` Anchored on the deployed artifact's own content, matched over ` +
+                 `${r.anchorFiles ?? "?"} shipped file(s) — the commit that was DEPLOYED, not the ` +
+                 `commit that bumped the version.`
+               : r.anchor === "manifest-bump"
+                 ? ` Anchored on the commit that BUMPED THE VERSION, which is not necessarily what ` +
+                   `was deployed: work that ships under an existing version number lands after it.`
+                 : r.anchor === "tag" ? ` Anchored on the tagged commit.` : ""}` +
+            `${r.anchorOffHistory
+               ? ` That anchor is NOT AN ANCESTOR OF HEAD — a release cut on a branch this one ` +
+                 `never joined — so no distance is measured from it. Counting anyway would report ` +
+                 `nearly the whole repository as unshipped, which is what Lumen's 40 release tags ` +
+                 `used to read as.` : ""}` +
             `${share === null ? "" : ` That is ${Math.round(share * 10) / 10}% of this window's ` +
               `net product (red above ${t.unshippedShareBad}%, green at or below ` +
               `${t.unshippedShareGood}%) — a SHARE, because a fixed line count made 13 unshipped ` +
               `lines read as a failure.`}` +
-            `${pending ? " The manifest is AHEAD of what is deployed, so a build is pending." : ""}` };
+            `${pending ? " The manifest is AHEAD of what is deployed, so a build is pending." : ""}` +
+            // WL-011-R1 · THE DOUBT THE OBJECT ALREADY CARRIES. `unmeasuredReason` is computed
+            // whenever a manifest is refused authority, but it was rendered ONLY on the `unmeasured`
+            // branch — so on a TAG reading the line named a tag while never saying why the manifest
+            // had been set aside. That is WL-010's own lesson one layer in: a demoted signal whose
+            // one remaining job is to qualify a confident claim, and which nothing ever consults.
+            //
+            // IT QUALIFIES THE READING, IT DOES NOT SUPPRESS IT. Measured on livegita, whose tag IS
+            // an ancestor of HEAD: "2 product line(s) not in front of a user since ios-v1.12.0-2"
+            // over 5 commits is TRUE and specific, and refusing to say it would replace a correct
+            // verdict with a useless one — which is the trade WL-010 explicitly declined. What makes
+            // Lumen different is not the reason, it is the ANCESTRY, and that is guarded above.
+            `${r.unmeasuredReason ? ` Measured against a tag rather than the manifest: ` +
+               `${r.unmeasuredReason}.` : ""}` };
 }
 
 export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): Figure[] {
@@ -1654,7 +1878,9 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
   const scope = ownBlocks ? "you made this session" : "across this bus";
 
   if (w.blocksSinceProduct !== null && w.blocksSinceProduct > 0) {
-    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +
+    // WL-011 · SAYS WHAT IT COUNTS. The field is commits since a product path was last touched;
+    // it has never been able to see a release, and the release line below is the one that can.
+    L.push(`${w.blocksSinceProduct} block(s) since product code last changed` +
            (w.narrationRun > 0
              ? `; the last ${w.narrationRun} changed only docs and handoffs.` : "."));
   }
@@ -1679,13 +1905,30 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
   } else if (r.neverMoved) {
     L.push(`No release in ${r.blocksSince ?? "?"} block(s): ${r.product ? `${r.product} ` : ""}` +
            `${r.version} has never changed version.`);
-  } else if (r.blocksSince === null) {
+  } else if (measurableDistance(r).blocksSince === null) {
     L.push(`Last reached a user at ${r.releasedVersion ?? UNMEASURED}` +
-           `${r.releasedVersion ? ` (${r.source})` : ""}; how many blocks ago is ${UNMEASURED}.`);
-  } else if (r.blocksSince > 0) {
-    L.push(`${r.blocksSince} block(s) since ${r.product ? `${r.product} ` : ""}` +
-           `${r.releasedVersion} reached a user ` +
-           `(${r.source === "deployed" ? "deployed artifact" : "manifest bump"}).`);
+           `${r.releasedVersion ? ` (${r.source})` : ""}; how many blocks ago is ${UNMEASURED}` +
+           // WL-011 · the reason, in the briefing too. A reader told only that something is
+           // unmeasured cannot act; one told the release was cut on another branch can.
+           `${r.anchorOffHistory ? " — it was cut on a branch this one never joined" : ""}` +
+           // WL-011-R1 · both shapes of a tag reading carry the reason, not just the one that
+           // still renders a number.
+           `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);
+  } else if ((measurableDistance(r).blocksSince as number) > 0) {
+    // WL-011 · NAMES THE BASIS IT ACTUALLY HAS. This said "manifest bump" for every source that was
+    // not `deployed`, so a TAG-sourced release — the answer livegita and Lumen get — was reported
+    // under a basis it does not have, in the one reader the orchestrator reads before dispatching.
+    // And a `deployed` reading now says whether the commit came from the artifact's own content or
+    // from the version bump, because those are different strengths of evidence.
+    const how = r.source === "deployed"
+      ? (r.anchor === "content" ? "deployed artifact, anchored on its content"
+                                : "deployed artifact, anchored on the version bump")
+      : r.source === "tag" ? "git tag" : "manifest bump";
+    L.push(`${measurableDistance(r).blocksSince} block(s) since ` +
+           `${r.product ? `${r.product} ` : ""}${r.releasedVersion} reached a user (${how})` +
+           // WL-011-R1 · and the doubt travels into the briefing too, for the same reason the
+           // basis does: the orchestrator choosing the next block is owed both.
+           `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);
   }
   if (w.handoffs > 0 && w.loopBackHandoffs > 0) {
     L.push(`${w.loopBackHandoffs} of ${w.handoffs} handoff(s) this window came back for another ` +
