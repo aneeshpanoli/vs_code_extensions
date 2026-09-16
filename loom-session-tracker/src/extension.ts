@@ -16,7 +16,7 @@ import { ownerRoleFor, publishNaming } from "./naming";
 import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
-import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, DEFAULT_ORCHESTRATOR_MODELS, desiredModel,
+import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, desiredModel,
          chipFor, detectModel, isPremium } from "./models";
 
 /** What the spawn path's `/model` step actually did, recorded in spawn-debug.json (MS-001 R2b).
@@ -280,36 +280,16 @@ export function activate(context: vscode.ExtensionContext) {
         });
       }
       if (notes.length) { noteModel("frontmatterIgnored", notes); debugLog({ modelFrontmatterIgnored: notes }); }
-      // The mirror: the tagged orchestrator belongs ON the premium tier. With the default model
-      // pinned to the worker tier (user direction 2026-09-13), a restored or restarted orchestrator
-      // comes up on it and is promoted here — only its own declared/tagged frame, only when idle.
+      // AND THAT IS THE WHOLE POLICY — it ends with the workers (MP-002, owner 2026-09-16: "The
+      // extension changing orchestrators model version. Must stop. It only applies to
+      // non-orchestrators."). Two blocks used to follow here and both typed `/model` into the
+      // orchestrator's own frame: the PROMOTION to the premium tier (2026-09-13), and the SELF-SHIFT
+      // through `<repo>/orchestrator-model.json` (MS-001 R3, 2026-09-14). Both owner directions are
+      // reversed; both blocks are gone, along with their settings and every function they called.
       //
-      // MS-001 R3: the orchestrator may ask for its OWN tier — up or down — by writing
-      // `<repo>/orchestrator-model.json`; an id in `orchestratorModels` is the target, anything
-      // else is refused with a note and the configured `orchestratorModel` stands. Both directions.
-      if (cfg().get("enforceOrchestratorModel", true) !== true || !orch || !orch.webviewId) return;
-      const configured = String(cfg().get("orchestratorModel", "claude-fable-5-1[1m]") || "claude-fable-5-1[1m]");
-      const orchAllow = (cfg().get("orchestratorModels", DEFAULT_ORCHESTRATOR_MODELS) as string[]) || DEFAULT_ORCHESTRATOR_MODELS;
-      const req = modelPolicy.orchestratorTarget(configured, orchAllow);
-      if (req.note) {
-        vscode.window.setStatusBarMessage(`Loom: ${req.note}`, 15000);
-        noteModel("orchestratorRefused", [req.note]); debugLog({ modelOrchestratorRefused: [req.note] });
-      }
-      const up = req.target;
-      const frame = tracker.ownerView().find((o) => o.webviewId === orch.webviewId && o.liveness === "live");
-      if (!frame) return;
-      const pv = modelPolicy.checkOrchestrator(orch.role, orch.webviewId, frame.model, frame.busy, premium, Date.now(), up, req);
-      if (!pv) return;
-      const why = req.self ? `it asked for ${up}${req.reason ? ` (${req.reason})` : ""}` : `switching to ${up}`;
-      const what = `orchestrator ${pv.role} is on ${pv.model} — ${why}`;
-      if (pv.attempt === 1) vscode.window.showInformationMessage(`Loom: ${what}.`);
-      else vscode.window.setStatusBarMessage(`Loom: ${what} (retry ${pv.attempt}).`, 8000);
-      modelPolicy.enforce(pv, up, (ok, note) => {
-        modelPolicy.recordResult(pv, ok, note);
-        if (ok && req.self && modelPolicy.recordSelfShift(pv)) debugLog({ modelSelfShift: { from: pv.model, to: up, reason: req.reason } });
-        if (!ok && pv.attempt === 1) vscode.window.showWarningMessage(
-          `Loom: could not switch the orchestrator to ${up} (${note}) — retrying, or run /model ${up} there.`);
-      });
+      // Nothing replaces them, deliberately — an orchestrator's tier is now set by the person or by
+      // the session itself, and the extension has no opinion. `models.enforce()` refuses an
+      // orchestrator frame outright, so re-adding a caller here would not resurrect the behaviour.
     };
     const DEFAULT_RESUME =
       "[loom-resume] Your usage limit has reset. Pick up where you left off: re-read your inbox and " +

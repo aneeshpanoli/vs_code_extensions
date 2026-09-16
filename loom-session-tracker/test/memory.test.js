@@ -573,18 +573,6 @@ suite("memory: a session id that exists in two project directories is read from 
   eq(transcriptFor("sid-twice2"), live2, "newest wins in either order");
 });
 
-suite("MS-001 R4: the fresh-context header tells every orchestrator both model rules — model: on every handoff (§18), orchestrator-model.json for its own tier (§20)", () => {
-  const m = restoreMessage("/bus/memory.md", "demo", "po");
-  match(m, /every handoff you write carries a model: line \(§18/, "rule (a): every handoff carries model:");
-  match(m, /tracker warns once per handoff when it is missing/, "…and the tracker warns when it is missing");
-  match(m, /~\/\.claude\/loom\/demo\/orchestrator-model\.json \{"model":"<id>","reason":"<one line>","at":"<iso>"\} \(§20\)/, "rule (b): the file, its shape, §20 — on THIS repo's bus");
-  match(m, /claude-sonnet-5 for doc banking and status reconciliation/, "Sonnet for banking");
-  match(m, /claude-opus-5 for ordinary review and dispatch/, "Opus for review and dispatch");
-  match(m, /claude-fable-5-1\[1m\] for architecture and adversarial judgement/, "Fable for architecture");
-  match(m, /rewrite it when the task changes/, "and shift back");
-  const added = m.slice(m.indexOf("MODELS:"));
-  ok(added.split("\n").length <= 6 && added.length < 900, "brief: under ~6 lines (" + added.length + " chars)");
-});
 
 // ── WL-003 · the audit rides the one message a fresh orchestrator is guaranteed to read ────────
 suite("WL-003 R2: the briefing is APPENDED to the restore message, after the bind instructions", () => {
@@ -702,4 +690,17 @@ suite("WL-004: MIN_MEMORY_BYTES stays — it is evidence a file was written, not
   for (const text of [t.save, t.restore, t.clear]) {
     ok(!text.includes("200 bytes"), "and it is never quoted at an agent either");
   }
+});
+
+suite("MP-002: the fresh-context header keeps the WORKER model rule and no longer tells orchestrators to shift themselves", () => {
+  const m = restoreMessage("/bus/memory.md", "demo", "po");
+  // what stays: the handoff rule, which is about workers
+  match(m, /every handoff you write carries a model: line \(§18/, "the worker rule stays");
+  match(m, /tracker warns once per handoff when it is missing/, "…with its warning");
+  match(m, /That is a rule about WORKERS/, "…and it is named as a worker rule");
+  // what must be GONE — this text is where the behaviour actually flowed from
+  ok(!/orchestrator-model\.json/.test(m), "the self-shift file is not named: an instruction left standing keeps the file being written");
+  ok(!/§20/.test(m), "nor its playbook section");
+  ok(!/both directions/.test(m), "nor the promise that the tracker switches the orchestrator");
+  match(m, /Your own tier is not the tracker's business and it will never change it/, "it says plainly that the orchestrator is never switched");
 });
