@@ -1927,3 +1927,218 @@ suite("WL-011-R2: the content match is ALL the shipped files, not the first one 
   eq(w2.release.commit, atSecond, "the newer artifact resolves to the newer commit");
   eq(w2.release.unshippedProduct, 0, "with nothing outstanding");
 });
+
+// ── WL-012 · THE POPULATION THAT IS NEVER ASKED ───────────────────────────────────────────────
+//
+// MEASURED ACROSS THE WHOLE BUS 2026-09-16, before a line of src/ was written. Eleven distinct git
+// repos carry a bus; six of them rendered `unmeasured`, and the causes are NOT one cause:
+//
+//   findManifest returned null   — Gaming, funisland, hackomics, tfg_ua   (4)
+//   manifestAuthority vetoed     — ReciEats, shwab_docker (Gradle)        (2, and these ALREADY
+//                                                                          reach the anchor logic)
+//
+// And of the four the finder could not see, THREE ARE CORRECTLY UNMEASURED and must stay that way:
+// funisland (1956 commits, 642 .py, no version-bearing manifest of any kind, 2 tags whose newest is
+// named `gamification-preshapes-backup` and is off history), tfg_ua (no manifest, zero tags) and
+// hackomics (13 commits, nothing tracked, one off-history `v1-legacy`). `unmeasured` is the honest
+// answer for a repo with no release signal, and this block must not turn it into a verdict.
+//
+// The one repo that was wrongly silent is GAMING: 648 commits, 40 tags whose newest is ON this
+// history, and two tracked manifests at DEPTH 2 (`cairn/shell/package.json`). It was never Python
+// that hid it — a Python manifest READER would have changed nothing here, because Gaming releases
+// by tag. It was a NODE repo the Node finder could not reach, one level below where it stopped.
+
+suite("WL-012: a manifest below the one-level scan is FOUND — Gaming's shape, at depth 2", () => {
+  const dir = makeGitRepo("wl012deep", [
+    { msg: "seed", files: { "cairn/shell/package.json": pkg("cairn-shell", "0.1.0"),
+                            "src/app/a.tsx": lines(10) }, daysAgo: 8 },
+  ]);
+  const m = wl.findManifest(dir);
+  ok(m, "a tracked manifest at depth 2 is no longer invisible");
+  eq(m.rel, "cairn/shell/package.json", "and it is the one that is actually there");
+
+  // THE POINT OF THE WHOLE BLOCK, and it is not the manifest: it is that the anchor logic now RUNS.
+  // Before this change the tag was never read, because the gate returned before reaching it.
+  git(dir, ["tag", "-a", "cairn-ios-v0.1.0", "-m", "t"]);
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl012deep: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  eq(w.release.source, "tag", "the 40-tag case: a tag that was previously NEVER READ now answers");
+  eq(w.release.releasedVersion, "cairn-ios-v0.1.0", "and it is named, so a reader can go and look");
+});
+
+suite("WL-012: the deep sweep runs ONLY where the shallow scan found nothing", () => {
+  // The guarantee that makes widening safe: no repo that resolves today can change its reading.
+  const dir = makeGitRepo("wl012shallow", [
+    { msg: "seed", files: { "package.json": pkg("root-product", "1.0.0"),
+                            "deep/nested/pkg/package.json": pkg("deep-product", "9.9.9"),
+                            "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+  ]);
+  eq(wl.findManifest(dir).rel, "package.json",
+     "the ROOT still wins outright — the sweep is a fallback, never a competitor");
+
+  const sub = makeGitRepo("wl012sub", [
+    { msg: "seed", files: { "web/package.json": pkg("web-product", "1.0.0"),
+                            "a/b/c/package.json": pkg("deep-product", "9.9.9"),
+                            "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+  ]);
+  eq(wl.findManifest(sub).rel, "web/package.json",
+     "and a ONE-LEVEL manifest still wins, so pleodo and shwab_docker cannot be re-pointed by it");
+});
+
+suite("WL-012: the sweep asks GIT, so it can only ever find TRACKED product manifests", () => {
+  const dir = makeGitRepo("wl012tracked", [
+    { msg: "seed", files: { "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+  ]);
+  // An UNTRACKED manifest at depth 2 — the shape of a scratch checkout or a build leftover.
+  fs.mkdirSync(path.join(dir, "vendor/thing"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "vendor/thing/package.json"), pkg("not-ours", "3.0.0"));
+  eq(wl.findManifest(dir), null,
+     "an untracked manifest answers for nothing: `ls-files` is the mechanism, not a blocklist");
+
+  // node_modules is excluded even when a repo has (wrongly) committed it.
+  const nm = makeGitRepo("wl012nm", [
+    { msg: "seed", files: { "node_modules/dep/package.json": pkg("some-dep", "2.0.0"),
+                            "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+  ]);
+  eq(wl.findManifest(nm), null,
+     "a COMMITTED node_modules manifest is still a dependency, not this repo's product");
+});
+
+suite("WL-012: the sweep is DEPTH-BOUNDED — a manifest in fixture territory answers for nothing", () => {
+  const deep = "a/b/c/d/package.json";           // depth 4, one past MANIFEST_MAX_DEPTH
+  eq(deep.split("/").length - 1, wl.MANIFEST_MAX_DEPTH + 1, "the fixture is one level too deep");
+  const dir = makeGitRepo("wl012depth", [
+    { msg: "seed", files: { [deep]: pkg("too-deep", "1.0.0"), "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+  ]);
+  eq(wl.findManifest(dir), null, "beyond the bound it is not consulted");
+
+  const okDir = makeGitRepo("wl012depthok", [
+    { msg: "seed", files: { "a/b/c/package.json": pkg("just-deep-enough", "1.0.0"),
+                            "src/app/a.tsx": lines(5) }, daysAgo: 5 },
+  ]);
+  eq(wl.findManifest(okDir).rel, "a/b/c/package.json", "and at the bound it is");
+});
+
+// ── WL-012 · THE VETO'S PYTHON HALF, AND THE PATTERN IS THE WHOLE DECISION ─────────────────────
+
+suite("WL-012: a Python BUILD MANIFEST takes authority from a Node manifest — pleodo's shape", () => {
+  // pleodo: a Python engine with a web shell, whose web/package.json has never moved off 0.1.0. The
+  // panel read that manifest and rendered "never released", RED, with 48,819 lines called unshipped.
+  for (const [marker, shape] of [["pyproject.toml", "pyproject"], ["setup.py", "setup.py"]]) {
+    const dir = makeGitRepo("wl012py-" + shape, [
+      { msg: "seed", files: { "web/package.json": pkg("pleodo-web", "0.1.0"),
+                              [marker]: "[project]\nname='engine'\n",
+                              "src/app/a.tsx": lines(12) }, daysAgo: 6 },
+    ]);
+    const w = wl.computeWorkLedger(dir, { productPaths: { ["wl012py-" + shape]: ["src/app/**"] },
+                                          deployRoots: [makeDeployRoot([])] });
+    eq(w.release.source, "unmeasured",
+       shape + ": a manifest that cannot account for the repo does not get to answer for it");
+    ok(!w.release.neverMoved,
+       shape + ": and it emphatically does not get to say the project NEVER RELEASED");
+    eq(relTile(w).band, "unknown", shape + ": not knowing bands unknown, never the red it banded");
+    match(String(w.release.unmeasuredReason || ""), /Python/,
+          shape + ": and the reason NAMES Python, so the reader can act on it");
+  }
+});
+
+suite("WL-012: a repo that merely HAS Python scripts is not vetoed — livegita and this repo", () => {
+  // THE PATTERN IS THE DECISION. Keying the veto on `*.py` would have vetoed livegita (26 .py files,
+  // 38 tags, a correct `tag` reading) and vs_code_extensions (5 .py files — the mutation harness —
+  // a correct content-anchored `deployed` reading), destroying two right answers to fix one wrong
+  // one. A repo that HAS a Python script is not a repo that RELEASES from Python.
+  const dir = makeGitRepo("wl012pyscript", [
+    { msg: "seed", files: { "package.json": pkg("ext", "1.0.0"),
+                            "test/mutation.py": "print('harness')\n",
+                            "tools/report.py": "print('x')\n",
+                            "src/app/a.tsx": lines(10) }, daysAgo: 6 },
+    { msg: "ship 1.1.0", files: { "package.json": pkg("ext", "1.1.0") }, daysAgo: 2 },
+  ]);
+  const auth = wl.manifestAuthority(dir, "package.json", null);
+  eq(auth.foreign.length, 0, "two .py files with no build manifest are not another ecosystem");
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl012pyscript: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  eq(w.release.source, "manifest", "so the manifest keeps the authority it legitimately has");
+  eq(w.release.releasedVersion, "1.1.0", "and the release it records still answers");
+});
+
+// ── WL-012 · THE FALSE GREEN THE GATE WAS HIDING ──────────────────────────────────────────────
+//
+// `unshippedProduct` is a two-point NET diff, so a release followed by a large deletion comes out
+// NEGATIVE, and every reader took `un <= 0` to mean "nothing unshipped" and banded it GREEN.
+//
+// Gaming, measured 2026-09-16 the moment it entered the population: 228 commits since
+// `cairn-ios-v0.1.0`, +2,695 / -171,230 lines (a whole `lumen/` subtree removed), net -152,056 over
+// the product paths. The tile said "cairn-ios-v0.1.0 was tagged as released - nothing unshipped",
+// in GREEN, about a repo with 2,695 lines of product added since its release and in front of nobody.
+//
+// This branch has been reachable since the field existed and no repo on the bus could reach it,
+// because the only repo whose net had gone negative was one `findManifest` never looked at. A gate
+// does not only hide repos; it hides the defects downstream of it.
+
+suite("WL-012: a NEGATIVE net diff is refused as a quantity — it is not zero and it is not good", () => {
+  // THE CHOKEPOINT FIRST, asserted directly, so a future reader inherits the refusal instead of
+  // having to remember it (MP-002: guard at the chokepoint, not at the caller).
+  const shrunk = { anchorOffHistory: false, blocksSince: 228, unshippedProduct: -152056 };
+  const d = wl.measurableDistance(shrunk);
+  eq(d.unshippedProduct, null, "a negative net is not a count of unshipped work, so it is not one");
+  eq(d.netShrank, -152056, "but the figure is CARRIED, so a reader can qualify rather than go quiet");
+  eq(d.blocksSince, 228,
+     "and the commit distance is untouched: refusing a figure that is sound is the same error " +
+     "pointed the other way");
+
+  // `0` and "the net came out negative" are DIFFERENT STATEMENTS and only the first is good news.
+  const zero = wl.measurableDistance({ anchorOffHistory: false, blocksSince: 3, unshippedProduct: 0 });
+  eq(zero.unshippedProduct, 0, "an exact zero still measures");
+  eq(zero.netShrank, null, "and carries no shrink");
+});
+
+suite("WL-012: the shrink reaches EVERY reader, and it QUALIFIES rather than silences", () => {
+  // A real repo of Gaming's shape: released, then a large deletion, plus product added after it.
+  const dir = makeGitRepo("wl012shrink", [
+    { msg: "seed", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(400),
+                            "src/app/b.tsx": lines(20) }, daysAgo: 10 },
+  ]);
+  git(dir, ["tag", "-a", "rel-v1.0.0", "-m", "t"]);
+  fs.rmSync(path.join(dir, "src/app/a.tsx"));
+  fs.writeFileSync(path.join(dir, "src/app/c.tsx"), lines(9));
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-q", "-m", "delete the big subtree, add a little"]);
+  // The manifest never moved, so the tag takes the answer — Gaming's exact route.
+  const w = wl.computeWorkLedger(dir, { productPaths: { wl012shrink: ["src/app/**"] },
+                                        deployRoots: [makeDeployRoot([])] });
+  eq(w.release.source, "tag", "the tag answers");
+  ok(w.release.unshippedProduct < 0, "and the net over the product paths really is negative");
+
+  const before = wl.measurableDistance(w.release);
+  eq(before.unshippedProduct, null, "which the chokepoint refuses as a quantity");
+
+  // THE BAND IS THE PART THAT MATTERS — statusView derives the whole node's icon from it, and GREEN
+  // is the one colour that tells a reader to stop looking.
+  eq(relTile(w).band, "unknown", "a shrink is NOT a clean bill of health");
+
+  // ASSERT THE CLAIM, NOT THE SPELLING, PER READER. The rendered sentence is the thing a human
+  // reads, and it is the half that goes untested when a classification has an enum to check.
+  const r = wl011Readers(w);
+  for (const name of ["panel tile (value)", "summaryLine", "orchestratorBriefing"]) {
+    match(r[name], /SHRUNK/, name + " must SAY the product shrank, not merely omit a number");
+    match(r[name], /unmeasured/, name + " must say the unshipped magnitude is unmeasured");
+    ok(!/nothing unshipped/.test(r[name]),
+       name + " must never render the false GREEN sentence this suite exists to remove");
+  }
+  match(r["panel tile (detail)"], /NEGATIVE/, "and the detail names what went wrong with the diff");
+  match(r["orchestratorBriefing"], /block\(s\) since/,
+        "while the briefing KEEPS the commit distance, which is still perfectly measurable");
+
+  // AND THE OTHER DIRECTION, so this cannot pass by refusing everything: an exact zero is still the
+  // good news it has always been, and still says so.
+  const clean = makeGitRepo("wl012noshrink", [
+    { msg: "seed", files: { "package.json": pkg("ext", "1.0.0"), "src/app/a.tsx": lines(10) }, daysAgo: 6 },
+  ]);
+  git(clean, ["tag", "-a", "rel-v1.0.0", "-m", "t"]);
+  const cw = wl.computeWorkLedger(clean, { productPaths: { wl012noshrink: ["src/app/**"] },
+                                           deployRoots: [makeDeployRoot([])] });
+  eq(cw.release.unshippedProduct, 0, "nothing was added after the tag");
+  eq(relTile(cw).band, "good", "so this one IS a clean bill, and still bands green");
+  match(relTile(cw).value, /nothing unshipped/, "and still says so in the words a reader knows");
+});

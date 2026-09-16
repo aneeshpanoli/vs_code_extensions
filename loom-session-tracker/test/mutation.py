@@ -1641,6 +1641,71 @@ MUTATIONS = [
   "src/workledger.ts",
   "    L.push(`${w.blocksSinceProduct} block(s) since product code last changed` +",
   "    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +"),
+ # ── WL-012 · the population that is never asked ─────────────────────────────────────────────
+ # Gaming: 648 commits, 40 tags whose newest is ON this history, two tracked manifests at DEPTH 2.
+ # The gate returned null one level above them, so the tag veto and the deployed anchor — two whole
+ # blocks of work — never ran on it, and it rendered `unmeasured` for as long as the panel existed.
+ ("findManifest stops one level above Gaming's manifest — half the corpus is never asked",
+  "src/workledger.ts",
+  "  if (found.length) return active(found);",
+  "  if (found.length) return active(found);\n  return null;"),
+
+ # The sweep must be BOUNDED. Unbounded, a manifest in a fixture or vendor tree answers for a
+ # product nobody ships — the confidently-wrong line one layer down, which is R5's whole subject.
+ ("the tracked sweep is unbounded — a fixture manifest four levels down answers for the repo",
+  "src/workledger.ts",
+  '    .filter((rel) => rel.split("/").length - 1 <= MANIFEST_MAX_DEPTH);',
+  "    ;"),
+
+ # `ls-files` is the MECHANISM that keeps dependencies out. Reading the filesystem instead would let
+ # a committed or vendored dependency manifest speak for the repo.
+ ("a committed node_modules dependency is allowed to answer for the repo",
+  "src/workledger.ts",
+  '    .filter((rel) => !rel.split("/").includes("node_modules"))',
+  "    "),
+
+ # pleodo: a Python engine with a web shell, rendering "never released — pleodo-web 0.1.0 has never
+ # changed version" in RED with 48,819 lines called unshipped, off a manifest that cannot see its
+ # releases. The livegita shape in a second ecosystem.
+ ("a Python build manifest no longer contradicts the Node manifest — pleodo's false RED returns",
+  "src/workledger.ts",
+  '  ["*pyproject.toml", "Python"], ["*setup.py", "Python"],',
+  "  "),
+
+ # And the PATTERN is the decision. Keying on `*.py` vetoes livegita (26 .py, 38 tags, a correct
+ # `tag` reading) and this repo (5 .py — the mutation harness — a correct `deployed` reading),
+ # destroying two right answers to fix one wrong one.
+ ("the Python veto keys on .py FILES, so any repo carrying a script is refused a measurement",
+  "src/workledger.ts",
+  '  ["*pyproject.toml", "Python"], ["*setup.py", "Python"],',
+  '  ["*.py", "Python"],'),
+
+ # THE FALSE GREEN THE GATE WAS HIDING. Gaming: 228 commits since its tag, +2,695/-171,230 lines,
+ # net -152,056 — rendered as "nothing unshipped", in GREEN, with 2,695 lines in front of nobody.
+ ("a NEGATIVE net diff is read as zero — 'nothing unshipped' about product that shrank",
+  "src/workledger.ts",
+  "  if (r.unshippedProduct !== null && r.unshippedProduct < 0) {\n"
+  "    return { blocksSince: r.blocksSince, unshippedProduct: null, netShrank: r.unshippedProduct };\n"
+  "  }",
+  "  "),
+
+ # The band is the part that matters: statusView derives the whole node's icon from it, and GREEN is
+ # the one colour that tells a reader to stop looking.
+ ("a repo whose product SHRANK since its release is banded green",
+  "src/workledger.ts",
+  '  const band: Band = dist.netShrank !== null ? "unknown"',
+  '  const band: Band = dist.netShrank !== null ? "good"'),
+
+ # WL-011-R1's rule, in its next costume: the doubt the object already carries must QUALIFY the
+ # sentence, not merely be absent from it. An orchestrator told "228 block(s) since" and nothing
+ # else reads the magnitude as small; it is not small, it is refused.
+ ("the briefing keeps the commit distance but drops the shrink that makes it unreadable",
+  "src/workledger.ts",
+  "           `${measurableDistance(r).netShrank !== null\n"
+  "              ? `; product has NET SHRUNK by ` +\n"
+  "                `${Math.abs(measurableDistance(r).netShrank as number)} line(s) since, so how much ` +\n"
+  "                `is unshipped is ${UNMEASURED}` : \"\"}` +",
+  '           `` +'),
 ]
 
 def sh(cmd):

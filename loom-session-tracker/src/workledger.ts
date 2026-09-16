@@ -666,14 +666,36 @@ interface Manifest { rel: string; name: string; publisher: string; version: stri
                      /** How many manifests this repo holds. >1 means the line must name which. */
                      siblings: number; }
 
+/** WL-012 · how deep the TRACKED sweep below will look. Gaming's manifest is at depth 2
+ *  (`cairn/shell/package.json`) and that is the deepest real product manifest in the corpus; three
+ *  is one level of headroom. Deeper than that is fixture and vendor territory, and a manifest found
+ *  there would answer for a product nobody ships. */
+export const MANIFEST_MAX_DEPTH = 3;
+
 /**
- * The project's manifest: the root `package.json`, else a single-level subdirectory one.
+ * The project's manifest: the root `package.json`, else a single-level subdirectory one, else the
+ * most recently touched TRACKED one anywhere within `MANIFEST_MAX_DEPTH`.
  *
  * A REPO CAN HOLD SEVERAL PRODUCTS AND THIS ONE DOES — `claude-auto-accept`, `claude-chat-reader`
  * and `loom-session-tracker`. Taking the first by name picked `claude-auto-accept` and reported
  * "111 blocks since 1.0.0 reached a user" for a repo whose active product had shipped that morning:
  * the same confidently-wrong line R5 exists to remove, one layer down. The ACTIVE one is chosen
  * instead — most recently touched by a commit — and the line says which product it is about.
+ *
+ * WL-012 · THE THIRD STEP EXISTS BECAUSE THIS IS A GATE, NOT A STEP. `manifestAuthority` and the
+ * deployed-artifact anchor both run only after this function answers, so a repo it cannot see is
+ * not measured and rejected — it is never asked, and a repo that renders `unmeasured` generates no
+ * complaint. Measured across the bus 2026-09-16: of the four repos this returned `null` for, three
+ * (funisland, tfg_ua, hackomics) have no release signal of any kind and `unmeasured` is their
+ * correct answer — but GAMING has 648 commits, 40 tags whose newest is ON this history, and two
+ * tracked manifests at DEPTH 2, one level below where the scan stopped. It was never Python that
+ * hid it. It was a Node repo the Node finder could not reach, and its 40 tags were never read.
+ *
+ * The sweep asks GIT rather than the filesystem, which is the whole reason it is safe to widen:
+ * `ls-files` enumerates only TRACKED paths, so `node_modules`, build output and anything ignored
+ * are excluded by the mechanism instead of by a blocklist that has to be kept correct. Across all
+ * eleven bus repos it returns zero junk. It runs ONLY where the answer is currently `null`, so no
+ * repo that resolves today can change its reading because of it.
  */
 export function findManifest(repoPath: string, explicit?: string | null): Manifest | null {
   const tryOne = (rel: string): Manifest | null => {
@@ -686,25 +708,40 @@ export function findManifest(repoPath: string, explicit?: string | null): Manife
     } catch { /* not one */ }
     return null;
   };
+  // MOST RECENTLY TOUCHED WINS — the product actually being worked on, not the first alphabetically.
+  // One place, so the deep sweep cannot pick a different product than the shallow scan would.
+  const active = (found: Manifest[]): Manifest | null => {
+    if (!found.length) return null;
+    let best = found[0], bestAt = -1;
+    for (const m of found) {
+      const t = Number(((git(repoPath, ["log", "-1", "--format=%ct", "--", m.rel]) || "").trim()));
+      if (Number.isFinite(t) && t > bestAt) { bestAt = t; best = m; }
+    }
+    return { ...best, siblings: found.length };
+  };
   if (explicit) return tryOne(explicit);
   const root = tryOne("package.json");
   if (root) return root;
-  let entries: string[];
-  try { entries = fs.readdirSync(repoPath); } catch { return null; }
+  let entries: string[] = [];
+  try { entries = fs.readdirSync(repoPath); } catch { /* fall through to the tracked sweep */ }
   const found: Manifest[] = [];
   for (const d of entries.sort()) {
     if (d.startsWith(".") || d === "node_modules") continue;
     const m = tryOne(path.join(d, "package.json"));
     if (m) found.push(m);
   }
-  if (!found.length) return null;
-  // MOST RECENTLY TOUCHED WINS — the product actually being worked on, not the first alphabetically.
-  let best = found[0], bestAt = -1;
-  for (const m of found) {
-    const t = Number(((git(repoPath, ["log", "-1", "--format=%ct", "--", m.rel]) || "").trim()));
-    if (Number.isFinite(t) && t > bestAt) { bestAt = t; best = m; }
+  if (found.length) return active(found);
+  // WL-012 · THE POPULATION THAT WAS NEVER ASKED. Nothing shallow answered; ask git.
+  const tracked = (git(repoPath, ["ls-files", "*package.json"]) || "")
+    .split("\n").map((x) => x.trim()).filter(Boolean)
+    .filter((rel) => !rel.split("/").includes("node_modules"))
+    .filter((rel) => rel.split("/").length - 1 <= MANIFEST_MAX_DEPTH);
+  const deep: Manifest[] = [];
+  for (const rel of tracked.sort()) {
+    const m = tryOne(rel);
+    if (m) deep.push(m);
   }
-  return { ...best, siblings: found.length };
+  return active(deep);
 }
 
 /** Versions of this extension currently deployed, newest-looking last. Matched on the manifest's own
@@ -853,10 +890,36 @@ export function onThisHistory(repoPath: string | null, sha: string | null): bool
  * by the test rather than by review: set `unshippedProduct` on an off-history reading and the tile
  * rendered "3468.8% of this window's net product" off an anchor that cannot measure anything.
  */
+/**
+ * WL-012 · AND THE SECOND THING A NET DIFF CANNOT SAY.
+ *
+ * `unshippedProduct` is a TWO-POINT NET diff from the release commit to HEAD, so a release followed
+ * by a large deletion comes out NEGATIVE. Every reader then took `un <= 0` to mean "nothing
+ * unshipped" and banded it `good`.
+ *
+ * MEASURED ON GAMING 2026-09-16, the repo this block brought into the population: 228 commits since
+ * `cairn-ios-v0.1.0`, +2,695 / −171,230 lines — a whole `lumen/` subtree removed — for a net of
+ * −152,056 over the product paths. The tile said "cairn-ios-v0.1.0 was tagged as released — nothing
+ * unshipped", in GREEN, about a repo with 2,695 lines of product added since its release and not in
+ * front of anyone. A false GREEN, which is the direction that never provokes a complaint.
+ *
+ * Note WHERE this was found. `un <= 0` has been here since the field existed and no repo on the bus
+ * could reach it, because the only repo whose net had gone negative was one `findManifest` never
+ * looked at. A gate does not only hide repos; it hides the defects downstream of it, and they stay
+ * hidden for exactly as long as the population goes unasked.
+ *
+ * So a negative net is refused as a QUANTITY OF UNSHIPPED WORK — it is not one, and zero is not what
+ * it means — while `netShrank` carries the figure so a reader can QUALIFY rather than go quiet
+ * (WL-011-R1). `blocksSince` is untouched: the commit distance is still perfectly measurable, and
+ * refusing a figure that is sound would be the same error pointed the other way.
+ */
 export function measurableDistance(r: ReleaseSignal):
-    { blocksSince: number | null; unshippedProduct: number | null } {
-  if (r.anchorOffHistory) return { blocksSince: null, unshippedProduct: null };
-  return { blocksSince: r.blocksSince, unshippedProduct: r.unshippedProduct };
+    { blocksSince: number | null; unshippedProduct: number | null; netShrank: number | null } {
+  if (r.anchorOffHistory) return { blocksSince: null, unshippedProduct: null, netShrank: null };
+  if (r.unshippedProduct !== null && r.unshippedProduct < 0) {
+    return { blocksSince: r.blocksSince, unshippedProduct: null, netShrank: r.unshippedProduct };
+  }
+  return { blocksSince: r.blocksSince, unshippedProduct: r.unshippedProduct, netShrank: null };
 }
 
 /** The newest commit at which the manifest held `want` (or, with no `want`, the newest commit that
@@ -919,10 +982,26 @@ function releaseCommit(repoPath: string, rel: string, want: string | null, cap =
 // repo this rule exists for went on being judged by its `web/package.json`. Found by the test,
 // which is the only reason it is not still in the product: a guard that looks right and matches
 // nothing is indistinguishable from no guard at all.
+// WL-012 · PYTHON, AND WHY IT IS KEYED ON A MANIFEST RATHER THAN ON `*.py`. pleodo is a Python
+// engine with a web shell: 218 tracked `.py` files and a root `pyproject.toml`, against a
+// `web/package.json` that has never moved off 0.1.0. The panel read that manifest and rendered
+// "never released — pleodo-web 0.1.0 has never changed version" in the RED band, with 48,819
+// product lines called unshipped, about a project whose releases this manifest cannot see. That is
+// the livegita shape in a second ecosystem, and the veto was written for exactly this case.
+//
+// THE PATTERN IS THE WHOLE DECISION. Keying on `*.py` would have vetoed livegita (26 `.py` files,
+// 38 tags, currently a correct `tag` reading) and this very repo (5 `.py` files — the mutation
+// harness — currently a correct content-anchored `deployed` reading), destroying two right answers
+// to fix one wrong one. A repo that HAS a Python script is not a repo that RELEASES from Python;
+// a repo carrying a Python build manifest is. Measured on the corpus: `*pyproject.toml` changes
+// pleodo (a false red retired) and widens shwab_docker's existing Gradle reason to name Python too.
+// `requirements.txt` is deliberately NOT here — it is a dependency list, not a version-bearing
+// manifest, and on this corpus it would have vetoed nothing that is not already vetoed.
 export const FOREIGN_BUILD_FILES: Array<[string, string]> = [
   ["*build.gradle", "Gradle"], ["*build.gradle.kts", "Gradle"], ["*settings.gradle", "Gradle"],
   ["*pom.xml", "Maven"], ["*Cargo.toml", "Cargo"], ["*go.mod", "Go"],
   ["*Package.swift", "SwiftPM"], ["*pubspec.yaml", "Flutter"], ["*.xcodeproj/project.pbxproj", "Xcode"],
+  ["*pyproject.toml", "Python"], ["*setup.py", "Python"],
 ];
 
 export interface ManifestAuthority {
@@ -1578,7 +1657,11 @@ export function releaseReading(w: WorkLedger,
   // actually has: is a meaningful part of this week's product missing from the user's hands?
   const window = w.netProductLines !== null && w.netProductLines > 0 ? w.netProductLines : null;
   const share = un !== null && un > 0 && window !== null ? (un / window) * 100 : null;
-  const band: Band = un === null ? "unknown"
+  // WL-012 · `un === 0` and "the net came out negative" are DIFFERENT STATEMENTS and only the first
+  // one is good news. A shrink bands `unknown`, never `good`: the quantity of unshipped work is not
+  // known, and green is the one colour that tells a reader to stop looking.
+  const band: Band = dist.netShrank !== null ? "unknown"
+    : un === null ? "unknown"
     : un <= 0 ? "good"
     // A pending build is someone's intent to ship; it can warn, never fail.
     : pending ? "warn"
@@ -1590,6 +1673,11 @@ export function releaseReading(w: WorkLedger,
   // this branch never joined, and the old code answered it with 189 of 189 commits unshipped.
   const text = r.anchorOffHistory
     ? `${who}${r.releasedVersion} ${reached}; how far ahead of it this branch is, is ${UNMEASURED}`
+    // WL-012 · the release is still REAL and still NAMED; it is the MAGNITUDE that is refused, and
+    // the sentence says which way the diff ran so the reader knows why rather than only that.
+    : dist.netShrank !== null
+    ? `${who}${r.releasedVersion} ${reached}; product has NET SHRUNK by ` +
+      `${Math.abs(dist.netShrank)} line(s) since, so how much is unshipped is ${UNMEASURED}`
     : un === null
     ? `${who}${r.releasedVersion} ${reached}`
     : un <= 0
@@ -1601,7 +1689,13 @@ export function releaseReading(w: WorkLedger,
             // WL-011 · the explanation belongs to the NUMBER. When there is no number the clause
             // ran on anyway — "could not be measured. — the two-point diff over the product paths
             // from the release commit" — describing a measurement that was refused.
-            `${un === null ? "Unshipped product lines could not be measured. " :
+            `${dist.netShrank !== null
+               ? `Unshipped product lines could not be measured: the two-point diff over the ` +
+                 `product paths from the release commit came out NEGATIVE ` +
+                 `(${dist.netShrank} net), so product has shrunk since the release rather than ` +
+                 `grown. A net diff cannot count unshipped work across a deletion that large, and ` +
+                 `0 is not what it means. `
+               : un === null ? "Unshipped product lines could not be measured. " :
                `${un} NET product line(s) exist on HEAD that are not in it — the two-point diff ` +
                `over the product paths from the release commit, NOT a commit count: three of this ` +
                `repo's "blocks since release" were HANDOVER and version commits, which are not ` +
@@ -1926,6 +2020,14 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
       : r.source === "tag" ? "git tag" : "manifest bump";
     L.push(`${measurableDistance(r).blocksSince} block(s) since ` +
            `${r.product ? `${r.product} ` : ""}${r.releasedVersion} reached a user (${how})` +
+           // WL-012 · THE FOURTH READER GETS THE SAME QUALIFICATION. The commit distance here is
+           // sound and stays, but an orchestrator told "228 block(s) since cairn-ios-v0.1.0" and
+           // nothing else would reasonably read the magnitude as small. It is not small; it is
+           // refused, and the briefing says so in the same breath as the number it kept.
+           `${measurableDistance(r).netShrank !== null
+              ? `; product has NET SHRUNK by ` +
+                `${Math.abs(measurableDistance(r).netShrank as number)} line(s) since, so how much ` +
+                `is unshipped is ${UNMEASURED}` : ""}` +
            // WL-011-R1 · and the doubt travels into the briefing too, for the same reason the
            // basis does: the orchestrator choosing the next block is owed both.
            `${r.unmeasuredReason ? `; ${r.unmeasuredReason}` : ""}.`);
