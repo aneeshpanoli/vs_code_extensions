@@ -118,6 +118,11 @@ export function activate(context: vscode.ExtensionContext) {
     const healthWatcher = new HealthWatcher(repo);
     // Roles that go `working` and never come back are invisible to the finish notifier, so watch
     // for them explicitly; and publish the cross-project working count that no single window sees.
+    // WL-008 · how long a refused wake may go unremarked before the orchestrator is told. Ten
+    // minutes: long enough that an ordinary mid-turn worker is never reported (the composer frees up
+    // within a turn), short enough that 36 minutes of silence could not happen again.
+    const PENDING_WAKE_MS = 10 * 60_000;
+    const pendingWarned = new Set<string>();
     const runHealth = () => {
       const working = countWorking();
       publishWorking(working);
@@ -138,17 +143,47 @@ export function activate(context: vscode.ExtensionContext) {
       // MARKED ONLY ON DELIVERY. A worker mid-turn cannot be typed into (dispatch.ts: the line would
       // queue as an ordinary message and never run), so a busy composer leaves the event unmarked and
       // the next tick tries again. Marking on attempt would mean "woken" for a role never told.
-      for (const ev of healthWatcher.scanGates(report)) {
-        // The WORKER's own frame: tracker.view() is the tracked agents (ownerView is orchestrators
-        // only), and busy-ness comes from tracker.busyRoles, the same source every other injector
-        // on this tick trusts.
-        const a = tracker.view().find((v) => v.role === ev.role && v.repo === ev.repo
+      //
+      // WL-008 · THE FRAME, FOR A WORKER *OR* THE ORCHESTRATOR. `tracker.view()` is the tracked
+      // AGENTS; the orchestrator's own frame lives in `ownerView()`. So an orchestrator that
+      // declared a gate raised an event that could never find a frame and would have sat refused
+      // for ever — the same silent failure as the busy latch, one role over, and invisible for the
+      // same reason. It is resolved through the TAG, which is how every other message to the
+      // orchestrator is addressed.
+      const frameFor = (role: string, forRepo: string): { webviewId: string; busy: boolean } | null => {
+        const a = tracker.view().find((v) => v.role === role && v.repo === forRepo
                                              && v.liveness === "live");
-        healthWatcher.wake(ev, a ? { webviewId: a.webviewId, busy: tracker.busyRoles.has(a.role) } : null,
-          (ok, note) => {
-            if (ok) healthWatcher.markWoken(ev.role, ev.key);
-            debugLog({ gateWake: { role: ev.role, pid: ev.pid, log: ev.log, ok, note } });
-          });
+        if (a) return { webviewId: a.webviewId, busy: tracker.busyRoles.has(a.role) };
+        const tag = repo ? getOrchestrator(repo) : null;
+        if (tag && tag.role === role && tag.webviewId) {
+          const o = tracker.ownerView().find((x) => x.webviewId === tag.webviewId
+                                                   && x.liveness === "live");
+          if (o) return { webviewId: o.webviewId, busy: o.busy };
+        }
+        return null;
+      };
+      for (const ev of healthWatcher.scanGates(report)) {
+        healthWatcher.wake(ev, frameFor(ev.role, ev.repo), (ok, note) => {
+          if (ok) healthWatcher.markWoken(ev.role, ev.key);
+          // REFUSALS ARE RECORDED. Delivery-only marking is right, but it meant a wake refused on
+          // every tick for 36 minutes changed nothing on disk, and "never finished" and "refused
+          // 140 times" looked identical from outside. Now they do not.
+          else healthWatcher.recordWakeRefused(ev.role, ev.key, note);
+          debugLog({ gateWake: { role: ev.role, pid: ev.pid, log: ev.log, ok, note } });
+        });
+      }
+      // A wake that has been refused continuously is itself a finding: the role is asleep with an
+      // answer waiting and the mechanism meant to tell it cannot. Said ONCE per stuck wake, to the
+      // orchestrator, because at this point a person is the only remaining transport.
+      for (const p of healthWatcher.pendingBeyond(PENDING_WAKE_MS)) {
+        if (!orch || pendingWarned.has(p.key)) continue;
+        pendingWarned.add(p.key);
+        vscode.window.showWarningMessage(
+          `Loom: ${p.role}'s gate finished but the wake has been refused for ` +
+          `${p.pendingMinutes.toFixed(0)} min (${p.attempts} attempts): ${p.note}`);
+        healthWatcher.alert({ repo: report ? report.repo : (repo || ""), role: p.role,
+                              status: "gate finished, wake refused", staleHours: p.pendingMinutes / 60 },
+                            orch.role);
       }
     };
     // CH-001 R2, the half the tracker cannot refuse. The spawn path REFUSES an overlapping handoff

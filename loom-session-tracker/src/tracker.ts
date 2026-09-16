@@ -115,10 +115,25 @@ export class Tracker {
   }
   filter(): string | null { return this.repoFilter; }
 
+  /**
+   * An EXPLICIT frame source, for driving `tick()` from a known frame list.
+   *
+   * A seam already existed — rebind.test.js swaps the `cdp.readFrames` module binding — so the
+   * honest statement about WL-008 is not "this was untestable": it is that nothing ever drove
+   * `tick()` to check BUSY-NESS, and every test of busy-ness drove the pure `isBusy()` helper
+   * beside it instead. A helper can be perfect while the state built from it latches, which is
+   * exactly what happened. This field is null by default so the module binding stays swappable
+   * (resolving `readFrames` at CALL time, not at construction, which capturing it here would break).
+   */
+  private readFramesFn: (() => Promise<Frame[]>) | null = null;
+
+  /** Drive this tracker from a known frame list. Test seam; the default is the live CDP read. */
+  setFrameSource(fn: () => Promise<Frame[]>): void { this.readFramesFn = fn; }
+
   /** One refresh. Never throws. */
   async tick(): Promise<TickResult> {
     let frames: Frame[] = [];
-    try { frames = await readFrames(); }
+    try { frames = await (this.readFramesFn ? this.readFramesFn() : readFrames()); }
     catch (e: any) { this.lastError = String(e && e.message || e).slice(0, 120); frames = []; }
 
     if (frames.length === 0) {
@@ -309,6 +324,16 @@ export class Tracker {
     const now = Date.now();
     this.limits = new Map();
     this.models = new Map();
+    // WL-008 · REBUILT EVERY TICK, like `limits` and `models` beside it. It was a Set that was only
+    // ever ADDED to: its single `clear()` is in setFilter(), which runs when a human switches the
+    // project filter. So the first tick that saw a role mid-turn latched it busy FOR EVER.
+    //
+    // That silently disabled the WL-006 gate wake in the field, twice, and could never have done
+    // anything else: to LAUNCH a gate a worker must be mid-turn, so it is always observed busy
+    // before its gate can possibly exit. wake() then took its `frame.busy` early return on every
+    // tick, markWoken was never reached, and `gatesWoken` stayed `{}` — which is precisely what was
+    // measured across both real gates. The stall alarm was unaffected because it never reads this.
+    this.busyRoles = new Set();
     for (const [role, b] of best) {
       this.agents.set(role, { role, repo: b.repo, webviewId: b.webviewId, lastSeen: now,
                               contextPct: b.contextPct });

@@ -1114,8 +1114,11 @@ MUTATIONS = [
 
  ("a BUSY composer is typed into anyway, so the wake queues as a message and never runs",
   "src/health.ts",
-  '    if (!frame || frame.busy) { if (done) done(false, "composer busy or frame not found"); return; }',
-  '    if (!frame) { if (done) done(false, "composer busy or frame not found"); return; }'),
+  # WL-008 re-anchored: the single guard this aimed at is now TWO, one per state. The defect it
+  # protects (a busy composer is typed into, and the wake queues as an ordinary message that never
+  # runs) is unchanged, so only the anchor moves.
+  '    if (frame.busy) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }',
+  '    if (false) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }'),
 
  # ── WL-005 · two numbers the bus stated without measuring ───────────────────────────
  # MEASURED 2026-09-15. `started` came from the worker's status.updated_at, which at the moment a
@@ -1307,6 +1310,45 @@ MUTATIONS = [
   "src/workledger.ts",
   "  if (!shipsBad && !costBad && !nothingShipped && !unmeasured && !releaseBad) return null;",
   "  if (!shipsBad && !costBad && !nothingShipped && !unmeasured) return null;"),
+
+
+ # ── WL-008 · a mechanism that fails silently is the worst kind ────────────────────────────────
+ #
+ # MEASURED IN THE FIELD 2026-09-16: the WL-006 gate wake shipped in 0.38.3 behind a 188/188 gate
+ # and NEVER FIRED ONCE, across two real gates. `busyRoles` was a Set only ever added to, so the
+ # first tick that saw a role mid-turn latched it busy for ever — and since a worker MUST be mid-turn
+ # to launch a gate, the feature could never have fired at all. Every existing test drove the pure
+ # isBusy() helper, which was correct the whole time. Nothing drove the STATE BUILT FROM IT.
+
+ # Killed by "WL-008: a role that STOPS being busy stops being in busyRoles".
+ ("busyRoles latches: the Set is never rebuilt, so one mid-turn tick marks a role busy for ever",
+  "src/tracker.ts",
+  "    this.busyRoles = new Set();",
+  "    // busyRoles deliberately not rebuilt"),
+
+ # Killed by "WL-008: the two refusal states are two SENTENCES, not one word".
+ ("the two refusal states wear ONE note again — the line that made the field failure undiagnosable",
+  "src/health.ts",
+  '    if (!frame) { if (done) done(false, "no live frame for this role — its tab is gone or unattributed"); return; }',
+  '    if (!frame) { if (done) done(false, "composer busy or frame not found"); return; }'),
+
+ # Killed by "WL-008: a refused wake is RECORDED, with its reason and when it started".
+ ("the pending clock restarts on every refusal — a wake refused for hours always looks one tick old",
+  "src/health.ts",
+  "    pend[role] = prev && prev.key === key\n      ? { ...prev, attempts: prev.attempts + 1, note }\n      : { key, since: new Date(now).toISOString(), attempts: 1, note };",
+  "    pend[role] = { key, since: new Date(now).toISOString(), attempts: 1, note };"),
+
+ # Killed by "WL-008: delivery CLEARS the pending record — it is waiting, not history".
+ ("a delivered wake stays on the pending list — the alarm then reports a wake that already landed",
+  "src/health.ts",
+  "    const pend = { ...(st.gatesPending || {}) };\n    delete pend[role];                      // delivered: it is no longer waiting on anything",
+  "    const pend = { ...(st.gatesPending || {}) };"),
+
+ # Killed by "WL-008: THE THIRD STATE — a stall says whether a gate was ever declared".
+ ("a stall no longer says whether a gate was ever declared — two situations, one word again",
+  "src/health.ts",
+  '      out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS,\n                         gate: answered && decl ? "spent" : "none" });',
+  "      out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS });"),
 
 ]
 
