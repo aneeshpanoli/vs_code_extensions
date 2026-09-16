@@ -1118,7 +1118,11 @@ MUTATIONS = [
   # protects (a busy composer is typed into, and the wake queues as an ordinary message that never
   # runs) is unchanged, so only the anchor moves.
   '    if (frame.busy) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }',
-  '    if (false) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }'),
+  # `if (false)` makes the block UNREACHABLE, and TypeScript performs no control-flow narrowing in
+  # unreachable code, so the `if (done)` guard stops narrowing `done` and the call fails TS2722.
+  # `&& false` keeps the branch reachable and typed while still never firing — the defect, compiling.
+  # Found by the WL-007-R1 pre-flight on its FIRST field use: refused in 60s instead of 20 minutes.
+  '    if (frame.busy && false) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }'),
 
  # ── WL-005 · two numbers the bus stated without measuring ───────────────────────────
  # MEASURED 2026-09-15. `started` came from the worker's status.updated_at, which at the moment a
