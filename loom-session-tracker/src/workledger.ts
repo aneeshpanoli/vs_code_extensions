@@ -1,13 +1,10 @@
 // workledger.ts — ONE JOB: answer "how much of this week's output actually SHIPS?" from evidence a
 // session cannot author about itself. Pure fs + `git`; no vscode import, so it is testable headless.
 //
-// WHY THIS FILE EXISTS (owner audit, 2026-09-15). Two products ran ~70,000 agent turns and ~15
-// billion cache-read tokens in seven days, and the owner's reading of it was "coding nonstop for
-// days and the product hasn't moved much at all." Measured from git, it had not: 10.7 % of
-// ReciEats' changed lines reached a user's screen, 171 of 614 commits did nothing but update the
-// guide, 0 releases were ever cut. The panel could not have told anyone, because EVERYTHING it
-// showed — status.json's `last_line`, the ledger's test counts, "DEV-219 landed" — is the agents'
-// own account of themselves, and by that account the week was excellent.
+// WHY THIS FILE EXISTS: the owner audit of 2026-09-15, in which the panel had nothing that could
+// contradict the agents' own account of themselves — EVERYTHING it showed (status.json's
+// `last_line`, the ledger's test counts, "DEV-219 landed") is that account, and by it the week was
+// excellent. Measured from git it was not.
 //
 // So the rule this module is built to, and the one thing to preserve when editing it:
 //   EVERY FIGURE HERE COMES FROM GIT OR FROM THE LEDGER FILE. Nothing may come from what an agent
@@ -45,11 +42,10 @@ export interface Thresholds {
   narrationGood: number; narrationBad: number;   // low  is good  (≤10 green, >25 red)
   /** Dollars of list-price equivalent per NET product line above which the row goes red (R6). */
   costPerLine: number;
-  /** WL-007: unshipped product as a PERCENTAGE of the window's own net product. A share, not an
-   *  absolute count, because the first version of this band went red on 13 unshipped lines — any
-   *  product landing on main before a version bump turned the project red, which reproduces the
-   *  permanent-red defect this block removes. A share self-scales: a trickle is fine on any repo,
-   *  and most of a week sitting unshipped is not fine on any repo. */
+  /** WL-007: unshipped product as a PERCENTAGE of the window's own net product. A SHARE, not an
+   *  absolute count: the first version of this band went red on 13 unshipped lines, so any product
+   *  landing on main before a version bump turned the project red — the permanent-red defect this
+   *  block removes. A share self-scales. */
   unshippedShareGood: number; unshippedShareBad: number;
 }
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -68,8 +64,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
  *  THE ONE EXCEPTION, ratified 2026-09-15 (WL-001-R7): Claude Fable 5.1 prices cache READS at
  *  $0.25/MTok, not the $1.00 that 0.1× input would give. Cache reads are ~100× every other class and
  *  the ORCHESTRATOR is the session on Fable, so $1.00 overstates the single largest line in the whole
- *  figure fourfold. WL-001's handoff carried $1.00; it was checked against the published table and
- *  corrected, and the correction was ratified.
+ *  figure fourfold.
  *
  *  THESE ARE DATED CONSTANTS AND PRICES MOVE. A stale number here is the failure mode of a cost
  *  figure — it stays plausible while being wrong, which is the one thing this module must not do.
@@ -172,12 +167,11 @@ export interface WorkLedger {
    *  it names what to do next, where a percentage only invites being optimised.
    *
    *  WL-011 · IT COUNTS COMMITS THAT CHANGED PRODUCT, AND CHANGING PRODUCT IS NOT REACHING A USER.
-   *  The field was right and its sentence was not: `:1657` rendered it as "N block(s) since anything
-   *  reached a user", and this repo is its own counterexample — a briefing carried "2 block(s) since
-   *  anything reached a user" beside "5 block(s) since loom-session-tracker 0.40.0 reached a user
-   *  (deployed artifact)", two disagreeing claims about reaching a user in one message. Only the
-   *  second measures a release. Reaching a user is `release`, and nothing here; this counts work.
-   *  Same class as WL-010-R1: a value whose rendering claims more than the value ever measured. */
+   *  The field was right and its sentence was not: a renderer that said "since anything reached a
+   *  user" put two disagreeing claims about reaching a user in one briefing. Reaching a user is
+   *  `release` — whichever of its three sources says so, a deployed artifact, a git tag or a
+   *  manifest bump — and nothing here; this counts work. Same class as WL-010-R1: a value whose
+   *  rendering claims more than the value ever measured. */
   blocksSinceProduct: number | null;
   /** How many of the newest commits, in an unbroken run, changed ONLY docs and handoffs. */
   narrationRun: number;
@@ -260,13 +254,12 @@ export interface Classifier {
  * R7a — SUBTRACTED FROM PRODUCT, WHATEVER `productPaths` SAYS, and kept as its own visible list
  * rather than buried inside the product globs, so the next person can see what was taken out.
  *
- * This exists because it was measured wrong. `productPaths` for ReciEats is `src/app/**` +
- * `src/lib/**`, and 39,150 of the 63,225 "product" lines those globs matched over the audited week
- * were TEST files living under `src/` — `src/app/page.test.tsx` alone was +10,782, the single
- * largest file in the product figure. A ledger whose entire purpose is to separate what reached a
- * user from the rig around it, and which counts `page.test.tsx` as product, reports exactly the
- * number it exists to refute. With this applied ReciEats reports +24,075 net, and its headline
- * shipping share falls from 56.8 % to 25.1 %.
+ * This exists because it was measured wrong: of the 63,225 "product" lines ReciEats'
+ * `src/app/**` + `src/lib/**` matched OVER THE AUDITED WEEK, 39,150 were TEST files living under
+ * `src/` — and a ledger whose purpose is
+ * to separate what reached a user from the rig around it reports exactly the number it exists to
+ * refute if it counts `page.test.tsx` as product. With this applied ReciEats' headline shipping
+ * share falls from 56.8 % to 25.1 %.
  *
  * The leading globstar on each pattern is deliberate: a root-anchored `__tests__` pattern would miss
  * `src/__tests__/`, which is where they actually live.
@@ -445,11 +438,10 @@ export function transcriptDirsFor(repo: string, root = PROJECTS_ROOT): string[] 
     // applies to the canonical forms — the guard is not relaxed to buy the match.
     .filter((n) => { const l = canonProject(n);
                      // The repo IS the last segment, or a dot-directory of the repo follows it.
-                     // `--` is an encoded `/.`, which is what every worktree path
+                     // `--` is an encoded `/.`, what every worktree path
                      // (`…/<repo>/.claude/worktrees/<role>`) becomes, and is the ONLY thing allowed
-                     // after the repo name. A bare `-` here would match a SIBLING repo:
-                     // `-…-pleodo-archive` contains `-pleodo-`, so the guard this replaces let
-                     // `pleodo` swallow `pleodo-archive` after all, which its comment denied.
+                     // after the repo name: a bare `-` would match a SIBLING repo, since
+                     // `-…-pleodo-archive` contains `-pleodo-`.
                      return l.endsWith("-" + needle) || l.includes("-" + needle + "--"); })
     .map((n) => path.join(root, n));
 }
@@ -537,11 +529,9 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
  * NET product lines in a `git diff --numstat` body: added minus deleted, over the files the
  * classifier calls product, binary files skipped because no line count exists for them.
  *
- * WL-007 extracted this from `productDelta` when `netProductSince` was written as a verbatim copy
- * of the same eight lines. Two copies of a measurement are two things to keep in agreement, and the
- * defect this very block fixes was one reader drifting from another — so a second copy of the
- * arithmetic was exactly the wrong thing to add. It also gives the mutation gate ONE line to aim at
- * rather than an ambiguous match, which is how the duplication was noticed.
+ * WL-007 · ONE reader of this arithmetic, never two. `netProductSince` had been written as a
+ * verbatim copy of these eight lines, and the defect that block fixes was one reader drifting from
+ * another. It also gives the mutation gate ONE line to aim at rather than an ambiguous match.
  */
 function netProductLinesIn(out: string, cls: Classifier): number {
   let net = 0;
@@ -596,10 +586,6 @@ export function productDelta(repoPath: string | null, since: string,
 // is the release. Measured 2026-09-15: 42 deployed versions, 56 manifest bumps in history, 0 tags —
 // and the panel reported "never released", which is the proxy-for-the-thing error this module
 // exists to refuse, made about the repo the module lives in.
-//
-// THE CREDIBILITY OF THE ONE LINE THAT MATTERS IS SET BY THE LEAST CREDIBLE LINE IN THE BLOCK. The
-// bus-mechanics count is the point of WL-003, and it sat next to a line that told its reader the
-// briefing was broken.
 
 /** WL-010 added `tag`. Where a repo's tags name a release NEWER than anything its manifest records,
  *  that is a MEASUREMENT and must be rendered as one — answering "I cannot tell" everywhere replaces
@@ -678,24 +664,20 @@ export const MANIFEST_MAX_DEPTH = 3;
  *
  * A REPO CAN HOLD SEVERAL PRODUCTS AND THIS ONE DOES — `claude-auto-accept`, `claude-chat-reader`
  * and `loom-session-tracker`. Taking the first by name picked `claude-auto-accept` and reported
- * "111 blocks since 1.0.0 reached a user" for a repo whose active product had shipped that morning:
- * the same confidently-wrong line R5 exists to remove, one layer down. The ACTIVE one is chosen
- * instead — most recently touched by a commit — and the line says which product it is about.
+ * "111 blocks since 1.0.0 reached a user" for a repo whose active product had shipped that morning.
+ * The ACTIVE one is chosen instead — most recently touched by a commit — and the line says which
+ * product it is about.
  *
- * WL-012 · THE THIRD STEP EXISTS BECAUSE THIS IS A GATE, NOT A STEP. `manifestAuthority` and the
+ * WL-012 · THE THIRD STEP EXISTS BECAUSE THIS IS A GATE, NOT A STEP: `manifestAuthority` and the
  * deployed-artifact anchor both run only after this function answers, so a repo it cannot see is
- * not measured and rejected — it is never asked, and a repo that renders `unmeasured` generates no
- * complaint. Measured across the bus 2026-09-16: of the four repos this returned `null` for, three
- * (funisland, tfg_ua, hackomics) have no release signal of any kind and `unmeasured` is their
- * correct answer — but GAMING has 648 commits, 40 tags whose newest is ON this history, and two
- * tracked manifests at DEPTH 2, one level below where the scan stopped. It was never Python that
- * hid it. It was a Node repo the Node finder could not reach, and its 40 tags were never read.
+ * never asked, and a repo that renders `unmeasured` generates no complaint. Gaming was that repo —
+ * 648 commits and 40 tags, its two tracked manifests at DEPTH 2, one level below where the scan
+ * stopped.
  *
  * The sweep asks GIT rather than the filesystem, which is the whole reason it is safe to widen:
  * `ls-files` enumerates only TRACKED paths, so `node_modules`, build output and anything ignored
- * are excluded by the mechanism instead of by a blocklist that has to be kept correct. Across all
- * eleven bus repos it returns zero junk. It runs ONLY where the answer is currently `null`, so no
- * repo that resolves today can change its reading because of it.
+ * are excluded by the mechanism instead of by a blocklist that has to be kept correct. It runs ONLY
+ * where the answer is currently `null`, so no repo that resolves today can change its reading.
  */
 export function findManifest(repoPath: string, explicit?: string | null): Manifest | null {
   const tryOne = (rel: string): Manifest | null => {
@@ -744,7 +726,8 @@ export function findManifest(repoPath: string, explicit?: string | null): Manife
   return active(deep);
 }
 
-/** Versions of this extension currently deployed, newest-looking last. Matched on the manifest's own
+/** Versions of this extension currently deployed, in the order the roots enumerate them — NOT
+ *  sorted, so `[0]` is a fallback and not "the newest". Matched on the manifest's own
  *  `<publisher>.<name>-<version>` shape, with a bare `<name>-<version>` accepted too. */
 export function deployedVersions(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS): string[] {
   return deployedArtifacts(m, roots).map((a) => a.version);
@@ -779,21 +762,15 @@ export function deployedArtifacts(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS):
 
 // ── WL-011 · THE RELEASE ANCHOR IS THE DEPLOY, NOT THE VERSION BUMP ───────────────────────────
 //
-// MEASURED 2026-09-16 against this repo's own 49 deployed artifacts. `releaseCommit(rel, want)` is
+// MEASURED 2026-09-16 over this repo's own 49 deployed artifacts. `releaseCommit(rel, want)` is
 // PATHSPEC-LIMITED TO THE MANIFEST, so it answers "the newest commit that TOUCHED package.json and
 // held this version" — the version BUMP. When two blocks ship under one version number, which is
-// this bus's normal practice (0.38.5, 0.39.0 and 0.40.0 were each two blocks), the second block's
-// commits land after that bump and are measured as unshipped while sitting INSIDE the shipped build.
-//
-// The numbers, so the size of the claim is on the record:
-//   · the anchor lands on the WRONG COMMIT in 22 of 48 measurable artifacts (46%);
-//   · the RENDERED NUMBER is wrong in 4 of 48 (8.3%) — the other 18 had only docs in the gap;
-//   · those four: +216, +152, +13 and −412 net product lines.
-//   · 0.40.0 is the +152: anchored at 4ed59da (MP-002's bump), it rendered "152 product line(s) not
-//     in front of a user" MINUTES AFTER those lines were deployed. The true figure is 0.
-//   · 0.33.0 is the −412, AND IT RUNS THE OTHER WAY: that artifact's source PREDATES its own
-//     version-bump commit, so the tile UNDER-reported unshipped work by 412 lines. A false green,
-//     which is the direction that never provokes a complaint — WL-010's finding again.
+// this bus's normal practice, the second block's commits land after that bump and are measured as
+// unshipped while sitting INSIDE the shipped build: the anchor lands on the WRONG COMMIT in 22 of
+// 48 measurable artifacts (46%), and the RENDERED NUMBER is wrong in 4 of 48 (8.3%) — in BOTH
+// directions. 0.40.0 rendered "152 product line(s) not in front of a user" MINUTES AFTER those
+// lines were deployed (true figure 0); 0.33.0 UNDER-reported by 412 lines, a false green, which is
+// the direction that never provokes a complaint.
 //
 // THE FIX IS TO STOP INFERRING. A deployed artifact is a copy of the source on disk, so the commit
 // that was deployed is EVIDENCE: hash the artifact's files and find the newest commit whose blobs
@@ -803,8 +780,8 @@ export function deployedArtifacts(m: Manifest, roots = DEFAULT_DEPLOY_ROOTS):
 //
 // WHEN IT CANNOT BE READ, IT IS `unmeasured` — NEVER A NUMBER (WL-007's rule, and WL-010's). An
 // artifact whose content matches no commit means the deploy came from a tree git cannot see; the
-// release is still real and still named, and it is the DISTANCE that is unknown. That is the branch
-// this module already had for "deployed, but no commit holds that version", and it is reused.
+// release is still real and still named, and it is the DISTANCE that is unknown — reusing the
+// branch this module already had for "deployed, but no commit holds that version".
 
 /**
  * The commit whose tracked content IS what the artifact ships, or null when nothing matches.
@@ -852,16 +829,13 @@ export function deployedCommit(repoPath: string, manifestRel: string, artifactDi
 
 // ── WL-011 · A DISTANCE IS ONLY MEASURABLE FROM AN ANCHOR THAT LIES ON THIS HISTORY ───────────
 //
-// FOUND BY MEASURING THE CORPUS FOR THIS BLOCK, AND IT IS BIGGER THAN THE DEFECT THE BLOCK WAS
-// SCOPED TO. Lumen, verified 2026-09-16: 40 release tags, newest `cairn-ios-v0.1.0` (94198a4), an
-// iOS train that is NOT AN ANCESTOR OF HEAD. `rev-list --count 94198a4..HEAD` counts what HEAD can
-// reach and the tag cannot, which here is 189 — THE REPO'S ENTIRE HISTORY, 189 of 189 commits — and
+// Lumen, verified 2026-09-16: 40 release tags, newest `cairn-ios-v0.1.0` (94198a4), an iOS train
+// that is NOT AN ANCESTOR OF HEAD. `rev-list --count 94198a4..HEAD` counts what HEAD can reach and
+// the tag cannot, which here is 189 — THE REPO'S ENTIRE HISTORY, 189 of 189 commits — and
 // `git diff <tag>..HEAD` is a two-point diff between two branches, so `unshippedProduct` is a large,
-// specific, false number. The panel reports that a repo which cuts release trains has shipped
-// nothing. WL-002's lie-with-a-number-on-it, produced by an anchor rather than by arithmetic.
-//
-// IT IS UNDETECTABLE BY INSPECTION, which is why it lasted: both git commands SUCCEED and return a
-// plausible figure. Nothing is thrown, no branch is skipped, no band goes red for the right reason.
+// specific, false number: the panel reports that a repo which cuts release trains has shipped
+// nothing. IT IS UNDETECTABLE BY INSPECTION, which is why it lasted — both git commands SUCCEED and
+// return a plausible figure.
 //
 // THE REFUSAL SITS AT THE CHOKEPOINT, NOT AT THE CALLER — MP-002's lesson. Both measurements from an
 // anchor go through `onThisHistory` first, so a future reader that measures from a new anchor
@@ -885,28 +859,21 @@ export function onThisHistory(repoPath: string | null, sha: string | null): bool
  *
  * `releaseSignal` already nulls both when the anchor is off this history, so in production these
  * fields cannot disagree with `anchorOffHistory`. This exists because a reader that TRUSTS an
- * upstream invariant is not holding the claim, it is inheriting it — and that is precisely what
- * WL-010-R1 was: the enum was guarded and the sentence was not, so the sentence drifted. Found here
- * by the test rather than by review: set `unshippedProduct` on an off-history reading and the tile
- * rendered "3468.8% of this window's net product" off an anchor that cannot measure anything.
- */
-/**
- * WL-012 · AND THE SECOND THING A NET DIFF CANNOT SAY.
+ * upstream invariant is not holding the claim, it is inheriting it — precisely WL-010-R1, where the
+ * enum was guarded and the sentence was not. Found here by the test rather than by review: set
+ * `unshippedProduct` on an off-history reading and the tile rendered "3468.8% of this window's net
+ * product" off an anchor that cannot measure anything.
  *
- * `unshippedProduct` is a TWO-POINT NET diff from the release commit to HEAD, so a release followed
- * by a large deletion comes out NEGATIVE. Every reader then took `un <= 0` to mean "nothing
- * unshipped" and banded it `good`.
- *
- * MEASURED ON GAMING 2026-09-16, the repo this block brought into the population: 228 commits since
- * `cairn-ios-v0.1.0`, +2,695 / −171,230 lines — a whole `lumen/` subtree removed — for a net of
- * −152,056 over the product paths. The tile said "cairn-ios-v0.1.0 was tagged as released — nothing
- * unshipped", in GREEN, about a repo with 2,695 lines of product added since its release and not in
- * front of anyone. A false GREEN, which is the direction that never provokes a complaint.
- *
- * Note WHERE this was found. `un <= 0` has been here since the field existed and no repo on the bus
- * could reach it, because the only repo whose net had gone negative was one `findManifest` never
- * looked at. A gate does not only hide repos; it hides the defects downstream of it, and they stay
- * hidden for exactly as long as the population goes unasked.
+ * WL-012 · AND THE SECOND THING A NET DIFF CANNOT SAY. `unshippedProduct` is a TWO-POINT NET diff
+ * from the release commit to HEAD, so a release followed by a large deletion comes out NEGATIVE,
+ * and every reader took `un <= 0` to mean "nothing unshipped" and banded it `good`. Measured on
+ * Gaming 2026-09-16: 228 commits since `cairn-ios-v0.1.0`, +2,695 / −171,230 lines for a net of
+ * −152,056 over the product paths, and the tile said "nothing unshipped" in GREEN about a repo with
+ * 2,695 lines of product added since its release and not in front of anyone — a false GREEN, the
+ * direction that never provokes a complaint. Note WHERE it was found: `un <= 0` had been here since
+ * the field existed and no repo on the bus could reach it, because the only repo whose net had gone
+ * negative was one `findManifest` never looked at. A gate hides the defects downstream of it for
+ * exactly as long as the population goes unasked.
  *
  * So a negative net is refused as a QUANTITY OF UNSHIPPED WORK — it is not one, and zero is not what
  * it means — while `netShrank` carries the figure so a reader can QUALIFY rather than go quiet
@@ -958,43 +925,39 @@ function releaseCommit(repoPath: string, rel: string, want: string | null, cap =
  *   · livegita — 36 tags, newest ios-v1.11.18-2 dated THREE DAYS before the reading, while
  *                package.json last changed version on 2026-05-26. It measured unshipped product
  *                from that May commit and announced "44476 product line(s) not in front of a user
- *                ... and no build is queued". Worse than Lumen: a precise magnitude and a specific
- *                claim, both false. WL-002's lie-with-a-number-on-it in its strongest form.
+ *                ... and no build is queued" — a precise magnitude and a specific claim, both false.
  *
  * So the defect is NOT the `neverMoved` branch. It is any verdict derived from one Node manifest
  * while something else in the repo contradicts it, and it runs in both directions — toward a false
  * red and toward a false green.
  *
- * The rule: a manifest may answer for the repo only when nothing contradicts it. Two contradictions
- * are checked, both cheap and both evidence the repo itself provides:
+ * The rule: a manifest may answer for the repo only when nothing contradicts it. EXACTLY TWO
+ * contradictions are checked, both cheap and both evidence the repo itself provides:
  *
  *   1. A TAG NEWER THAN THE MANIFEST'S OWN RELEASE COMMIT. WL-007 demoted tags to corroboration and
- *      then never read them again — but a demoted signal still has one job, which is contradicting
- *      a confident claim. Corroboration that is never consulted is deleted data with extra steps.
- *   2. BUILD FILES FROM ECOSYSTEMS THE MANIFEST CANNOT ACCOUNT FOR. A repo that also builds with
- *      Gradle, Xcode, Cargo, Maven, Go or Flutter is not described by its package.json.
+ *      then never read them again — but a demoted signal's one remaining job is contradicting a
+ *      confident claim. Corroboration that is never consulted is deleted data with extra steps.
+ *   2. BUILD FILES FROM ECOSYSTEMS THE MANIFEST CANNOT ACCOUNT FOR — every ecosystem listed in
+ *      `FOREIGN_BUILD_FILES`: Gradle, Maven, Cargo, Go, SwiftPM, Flutter, Xcode and Python. A repo
+ *      that also builds with one of those is not described by its package.json.
  *
  * When either holds the answer is `unmeasured` — never a verdict. That is WL-002's rule in its
  * third costume: a missing measurement rendered as a verdict is the same lie as one rendered as 0.
  */
 // EVERY PATTERN IS DEPTH-ANYWHERE. The first version used bare `build.gradle`, which as a git
 // pathspec matches only the repo ROOT — so `android/build.gradle` was invisible and the polyglot
-// repo this rule exists for went on being judged by its `web/package.json`. Found by the test,
-// which is the only reason it is not still in the product: a guard that looks right and matches
-// nothing is indistinguishable from no guard at all.
-// WL-012 · PYTHON, AND WHY IT IS KEYED ON A MANIFEST RATHER THAN ON `*.py`. pleodo is a Python
-// engine with a web shell: 218 tracked `.py` files and a root `pyproject.toml`, against a
-// `web/package.json` that has never moved off 0.1.0. The panel read that manifest and rendered
-// "never released — pleodo-web 0.1.0 has never changed version" in the RED band, with 48,819
-// product lines called unshipped, about a project whose releases this manifest cannot see. That is
-// the livegita shape in a second ecosystem, and the veto was written for exactly this case.
+// repo this rule exists for went on being judged by its `web/package.json`. Found by the test: a
+// guard that looks right and matches nothing is indistinguishable from no guard at all.
 //
-// THE PATTERN IS THE WHOLE DECISION. Keying on `*.py` would have vetoed livegita (26 `.py` files,
-// 38 tags, currently a correct `tag` reading) and this very repo (5 `.py` files — the mutation
-// harness — currently a correct content-anchored `deployed` reading), destroying two right answers
-// to fix one wrong one. A repo that HAS a Python script is not a repo that RELEASES from Python;
-// a repo carrying a Python build manifest is. Measured on the corpus: `*pyproject.toml` changes
-// pleodo (a false red retired) and widens shwab_docker's existing Gradle reason to name Python too.
+// WL-012 · PYTHON, AND THE PATTERN IS THE WHOLE DECISION — IT IS KEYED ON A BUILD MANIFEST, NOT ON
+// `*.py`. Keying on `*.py` would have vetoed livegita (26 `.py` files, 38 tags, currently a correct
+// `tag` reading) and this very repo (5 `.py` files — the mutation harness — currently a correct
+// content-anchored `deployed` reading), destroying two right answers to fix one wrong one. A repo
+// that HAS a Python script is not a repo that RELEASES from Python; a repo carrying a Python build
+// manifest is. pleodo is the wrong one: a Python engine with a root `pyproject.toml` behind a
+// `web/package.json` that never moved off 0.1.0, rendered "never released" in the RED band with
+// 48,819 product lines called unshipped. Measured on the corpus: `*pyproject.toml` changes pleodo
+// (a false red retired) and widens shwab_docker's existing Gradle reason to name Python too.
 // `requirements.txt` is deliberately NOT here — it is a dependency list, not a version-bearing
 // manifest, and on this corpus it would have vetoed nothing that is not already vetoed.
 export const FOREIGN_BUILD_FILES: Array<[string, string]> = [
@@ -1132,9 +1095,7 @@ export function releaseSignal(repoPath: string | null, opts: {
   }
 
   // 2 · no artifact, but the manifest version moved: released at that commit — IF this manifest may
-  // answer for the repo. livegita's could not: 36 tags, newest three days old, against a manifest
-  // that last moved in May, and the panel announced 44,476 lines "not in front of a user ... no
-  // build is queued" about a project that shipped that week.
+  // answer for the repo (livegita's could not; see `manifestAuthority`).
   const bump = releaseCommit(repoPath, m.rel, null);
   if (bump) {
     const auth = manifestAuthority(repoPath, m.rel, bump.sha);
@@ -1166,14 +1127,13 @@ export function releaseSignal(repoPath: string | null, opts: {
 
 // ── WL-003 · where the ORCHESTRATOR's own blocks went ─────────────────────────────────────────
 //
-// `shipsToUser`, `$/line` and `rigRatio` score the PROJECT. They do not tell the session deciding
-// what to do next how it spent its own turns, and that is the thing the add-on exists to change.
+// `shipsToUser`, `$/line` and `rigRatio` score the PROJECT; they do not tell the session deciding
+// what to do next how it spent its own turns, which is what this add-on exists to change.
 //
-// The bus tree is NOT a git repository — measured 2026-09-15, `~/.claude/loom` has no `.git` of any
-// kind — so "bus mechanics from the loom tree's history" cannot be had, and mtimes cannot supply it
-// either: a `board.json` rewritten two hundred times carries ONE mtime, so the volume of bus work is
-// exactly the quantity mtimes destroy. The transcripts DO record every tool call with its input, so
-// that is what this counts. It is the same thing the owner counted by hand.
+// COUNTED FROM THE TRANSCRIPTS, which record every tool call with its input, because nothing else
+// can: the bus tree is NOT a git repository (measured 2026-09-15, `~/.claude/loom` has no `.git` of
+// any kind), and mtimes cannot supply it either — a `board.json` rewritten two hundred times carries
+// ONE mtime, so the volume of bus work is exactly the quantity mtimes destroy.
 
 /** A tool call is BUS MECHANICS when its input names the bus rather than the product: the loom tree
  *  itself, the files the roles talk through, or the two scripts that drive tabs and composers. */
@@ -1278,16 +1238,15 @@ export function scanBlocks(repo: string, sinceMs: number, cls: Classifier,
  *
  * The same two-point diff as `productDelta`, from a KNOWN commit rather than from a date, because
  * "since the release" is a point in history and not a point in time. Reported instead of a commit
- * count: three of this repo's "blocks since release" on 2026-09-15 were HANDOVER and version commits,
- * which are not work, so the count overstated the drift by three while the honest answer was zero.
+ * count, which on 2026-09-15 overstated this repo's drift by three HANDOVER and version commits
+ * while the honest answer was zero.
  */
 export function netProductSince(repoPath: string | null, commit: string | null,
                                 cls: Classifier): number | null {
   if (!repoPath || !commit) return null;
   // WL-011 · THE CHOKEPOINT. `git diff A..HEAD` is a TWO-POINT diff, so an anchor on a side branch
   // is compared tree-to-tree and yields a large, confident, meaningless figure — Lumen's 40-tag iOS
-  // train reads as "nothing has shipped". An anchor off this history cannot measure a distance
-  // along it, and the answer is `null` (unmeasured), never a number.
+  // train reads as "nothing has shipped". Off this history the answer is `null`, never a number.
   if (!onThisHistory(repoPath, commit)) return null;
   const out = git(repoPath, ["diff", "--numstat", `${commit}..HEAD`]);
   if (out === null) return null;
@@ -1595,8 +1554,8 @@ export interface Figure {
  * WL-003-R5 rekeyed the COLLECTOR off git tags and exactly ONE of four readers. The other three kept
  * reading `w.tag`, which is null for ever on a repo with no tags — so on 2026-09-15, a day this bus
  * deployed five builds, the panel tile, the summary line and the orchestrator's own message all said
- * "no release in 88 blocks", and the tile hard-coded `band: "bad"`. That is WL-004-R6's lesson in a
- * new place: the fix was applied where the defect was NOTICED rather than everywhere the proxy was
+ * "no release in 88 blocks", and the tile hard-coded `band: "bad"` — WL-004-R6's lesson in a new
+ * place: the fix was applied where the defect was NOTICED rather than everywhere the proxy was
  * read. This function exists so there is one place to change next time.
  *
  * THE BAND IS THE PART THAT MATTERS, because a fourth reader consumes it: statusView derives the
@@ -1648,13 +1607,12 @@ export function releaseReading(w: WorkLedger,
   // same kind of thing is not a measurement.
   const pending = r.source !== "tag" && r.version !== null && r.releasedVersion !== null
                   && r.version !== r.releasedVersion;
-  // NOT the commit count. Three of this repo's "blocks since release" were HANDOVER and version
-  // commits, which are not work; the honest question is how much PRODUCT a user does not have.
-  // MEASURED AGAINST THE WINDOW'S OWN OUTPUT, not against a constant. The first version of this
-  // band was binary — any unshipped product with no pending build read `bad` — and on this repo that
-  // fired on THIRTEEN lines, which would have made the aggregate icon red again on a bus that ships
-  // daily. Found by running it, not by reasoning about it. A share answers the question a reader
-  // actually has: is a meaningful part of this week's product missing from the user's hands?
+  // NOT the commit count: three of this repo's "blocks since release" were HANDOVER and version
+  // commits, which are not work, and the honest question is how much PRODUCT a user does not have.
+  // MEASURED AGAINST THE WINDOW'S OWN OUTPUT, not against a constant — the first version of this
+  // band was binary (any unshipped product with no pending build read `bad`) and fired on THIRTEEN
+  // lines here, which would have made the aggregate icon red again on a bus that ships daily. Found
+  // by running it, not by reasoning about it.
   const window = w.netProductLines !== null && w.netProductLines > 0 ? w.netProductLines : null;
   const share = un !== null && un > 0 && window !== null ? (un / window) * 100 : null;
   // WL-012 · `un === 0` and "the net came out negative" are DIFFERENT STATEMENTS and only the first
@@ -1725,16 +1683,15 @@ export function releaseReading(w: WorkLedger,
               `lines read as a failure.`}` +
             `${pending ? " The manifest is AHEAD of what is deployed, so a build is pending." : ""}` +
             // WL-011-R1 · THE DOUBT THE OBJECT ALREADY CARRIES. `unmeasuredReason` is computed
-            // whenever a manifest is refused authority, but it was rendered ONLY on the `unmeasured`
-            // branch — so on a TAG reading the line named a tag while never saying why the manifest
-            // had been set aside. That is WL-010's own lesson one layer in: a demoted signal whose
-            // one remaining job is to qualify a confident claim, and which nothing ever consults.
+            // whenever a manifest is refused authority but was rendered ONLY on the `unmeasured`
+            // branch, so a TAG reading named a tag while never saying why the manifest had been set
+            // aside — WL-010's own lesson one layer in.
             //
-            // IT QUALIFIES THE READING, IT DOES NOT SUPPRESS IT. Measured on livegita, whose tag IS
-            // an ancestor of HEAD: "2 product line(s) not in front of a user since ios-v1.12.0-2"
-            // over 5 commits is TRUE and specific, and refusing to say it would replace a correct
-            // verdict with a useless one — which is the trade WL-010 explicitly declined. What makes
-            // Lumen different is not the reason, it is the ANCESTRY, and that is guarded above.
+            // IT QUALIFIES THE READING, IT DOES NOT SUPPRESS IT. livegita's tag IS an ancestor of
+            // HEAD: "2 product line(s) not in front of a user since ios-v1.12.0-2" over 5 commits is
+            // TRUE and specific, and refusing to say it would replace a correct verdict with a
+            // useless one. What makes Lumen different is not the reason, it is the ANCESTRY, and
+            // that is guarded above.
             `${r.unmeasuredReason ? ` Measured against a tag rather than the manifest: ` +
                `${r.unmeasuredReason}.` : ""}` };
 }
@@ -1772,10 +1729,9 @@ export function figuresFor(w: WorkLedger, t: Thresholds = DEFAULT_THRESHOLDS): F
               `product.\n${win}` },
     { key: "release", label: "release",
       // WL-007 · value, band AND detail all off `w.release`. The band used to be hard-coded `bad`
-      // whenever `w.tag` was null, which on a repo with no tags is for ever — and statusView derives
-      // the whole ledger node's icon from any `bad` band, so an untagged bus that ships daily was
-      // permanently red at its headline. A release that IS in front of a user is not a failure, and
-      // `unmeasured` is not one either.
+      // whenever `w.tag` was null — for ever on an untagged repo — and statusView derives the whole
+      // ledger node's icon from any `bad` band, so an untagged bus that ships daily was permanently
+      // red at its headline. A release in front of a user is not a failure, nor is `unmeasured`.
       value: rel.text,
       band: rel.band,
       detail: `${rel.detail}\n${win}` },
@@ -1901,13 +1857,14 @@ export function summaryLine(w: WorkLedger): string {
 // ── R5 · the line the orchestrator is told, once per project per day ──────────────────────────
 
 /** The message, or null when nothing warrants one. Separate from the sending so the DECISION is
- *  testable without a composer: shipsToUser must be RED, and the day must not already be spoken for. */
+ *  testable without a composer: one of the five triggers below must fire, and the day must not
+ *  already be spoken for. */
 export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined,
                             t: Thresholds = DEFAULT_THRESHOLDS, nowMs = Date.now()): string | null {
   if (w.empty && !w.commits && !w.tokensSpent) return null;
-  // EITHER half can raise it. Shipping share was the original trigger; cost per product line is the
-  // owner's actual question, and a week can be green on shares while costing a fortune per line —
-  // the two are not the same alarm and neither may be silent because the other is calm.
+  // SHARES AND COST ARE SEPARATE ALARMS. Shipping share was the original trigger; cost per product
+  // line is the owner's actual question, and a week can be green on shares while costing a fortune
+  // per line — neither may be silent because the other is calm.
   const shipsBad = band(w.shipsToUser, t.shipsGood, t.shipsBad, true) === "bad";
   const costBad = w.costPerProductLine !== null && w.costPerProductLine > t.costPerLine;
   const nothingShipped = (w.tokensSpent ?? 0) > 0 &&
@@ -1917,18 +1874,14 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
   // Once a day, it says so instead.
   const unmeasured = w.tokensSpent === null;
   // WL-007-R1 · A FOURTH TRIGGER, AND THE CONDITION ON THE RELEASE CLAUSE — one rule, both ways.
-  //
-  // This message used to append the release state unconditionally, to an alert raised by the
-  // shipping and cost thresholds. So a release figure rode along on someone else's alarm and
-  // carried the authority of an alarm without having earned it — which is exactly how the false
-  // "no release in 87 blocks" reached the orchestrator mid-decision at 00:05Z on 2026-09-16. A
-  // message that interrupts someone should state ITS OWN cause, not a digest of every figure.
-  //
-  // So the release state is now a trigger in its own right when it is genuinely bad, and the clause
-  // renders IF AND ONLY IF that is one of the reasons the alert fired. The two cannot drift apart,
-  // because they are the same boolean. This is safe to raise on only because WL-007 made the band
-  // honest: `unmeasured` bands `unknown` and a deployed release with nothing outstanding bands
-  // `good`, so neither can fire it — under the old tag proxy this would have alarmed every day.
+  // The release state used to be appended unconditionally to an alert raised by the shipping and
+  // cost thresholds, carrying an alarm's authority without earning it — which is how the false "no
+  // release in 87 blocks" reached the orchestrator mid-decision at 00:05Z on 2026-09-16. So the
+  // release state is now a trigger in its own right, and the clause renders IF AND ONLY IF that is
+  // one of the reasons the alert fired: the same boolean, so the two cannot drift apart. Safe to
+  // raise on only because WL-007 made the band honest — `unmeasured` bands `unknown` and a deployed
+  // release with nothing outstanding bands `good`, so neither can fire it; under the old tag proxy
+  // this would have alarmed every day.
   const releaseBad = releaseReading(w, t).band === "bad";
   if (!shipsBad && !costBad && !nothingShipped && !unmeasured && !releaseBad) return null;
   const today = new Date(nowMs).toISOString().slice(0, 10);
@@ -1949,21 +1902,18 @@ export function ledgerAlert(w: WorkLedger, notifiedOn: string | null | undefined
             `${w.costPerProductLine === null ? "" : ` at ${fmtMoney(w.costPerProductLine)}/line`}`}` +
          `${w.newUserFacingFiles === null ? "" : `, ${w.newUserFacingFiles} new user-facing file(s)`}.`;
   // PD-001 §4 · "Consider whether the next block ships something." used to close this line and is
-  // now CUT, to pay for the contract the message carries instead. It was the weakest kind of words:
-  // it asked for no decision this alert does not already imply, and the briefing's own header now
-  // says what these figures are for. Cutting it is how the message gets the contract without growing.
+  // now CUT, to pay for the contract the message carries instead: it asked for no decision this
+  // alert does not already imply, and the briefing's own header now says what the figures are for.
 }
 
 // ── WL-003 · the lines the ORCHESTRATOR is shown, where it decides ────────────────────────────
 //
 // R3, and it is a WORDING rule, not a reason to withhold anything: name what the week CONTAINED and
-// let the orchestrator draw the conclusion. Never hand it a score. "orchestrator efficiency: 8.6%
-// (below target)" is a number an agent can move without doing any of the work it stands for — the
-// WL-001 failure class, aimed this time at the one reader who can act on it. So: no percentage of
-// its own conduct, no target, no grade, no verdict word. Counts of things that happened.
-//
-// Kept to a handful of lines on purpose. An orchestrator handed a wall of figures skims it, and a
-// skimmed audit is the panel behind the window all over again.
+// let the orchestrator draw the conclusion. Never hand it a score — "orchestrator efficiency: 8.6%
+// (below target)" is a number an agent can move without doing any of the work it stands for, the
+// WL-001 failure class aimed at the one reader who can act on it. So: no percentage of its own
+// conduct, no target, no grade, no verdict word; counts of things that happened. And kept to a
+// handful of lines on purpose, because an orchestrator handed a wall of figures skims it.
 
 /** The audit, as trigger lines. Empty array when there is nothing worth interrupting for. */
 export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[] {
@@ -2015,19 +1965,19 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
   } else if ((measurableDistance(r).blocksSince as number) > 0) {
     // WL-011 · NAMES THE BASIS IT ACTUALLY HAS. This said "manifest bump" for every source that was
     // not `deployed`, so a TAG-sourced release — the answer livegita and Lumen get — was reported
-    // under a basis it does not have, in the one reader the orchestrator reads before dispatching.
-    // And a `deployed` reading now says whether the commit came from the artifact's own content or
-    // from the version bump, because those are different strengths of evidence.
+    // under a basis it does not have, in the ONE reader the orchestrator reads before dispatching.
+    // A `deployed` reading also says whether the commit came from
+    // the artifact's own content or from the version bump: different strengths of evidence.
     const how = r.source === "deployed"
       ? (r.anchor === "content" ? "deployed artifact, anchored on its content"
                                 : "deployed artifact, anchored on the version bump")
       : r.source === "tag" ? "git tag" : "manifest bump";
     L.push(`${measurableDistance(r).blocksSince} block(s) since ` +
            `${r.product ? `${r.product} ` : ""}${r.releasedVersion} reached a user (${how})` +
-           // WL-012 · THE FOURTH READER GETS THE SAME QUALIFICATION. The commit distance here is
-           // sound and stays, but an orchestrator told "228 block(s) since cairn-ios-v0.1.0" and
-           // nothing else would reasonably read the magnitude as small. It is not small; it is
-           // refused, and the briefing says so in the same breath as the number it kept.
+           // WL-012 · THE FOURTH READER GETS THE SAME QUALIFICATION. The commit distance is sound
+           // and stays, but an orchestrator told "228 block(s) since cairn-ios-v0.1.0" and nothing
+           // else would read the magnitude as small. It is not small; it is refused, and the
+           // briefing says so in the same breath as the number it kept.
            `${measurableDistance(r).netShrank !== null
               ? `; product has NET SHRUNK by ` +
                 `${Math.abs(measurableDistance(r).netShrank as number)} line(s) since, so how much ` +
@@ -2044,14 +1994,12 @@ export function orchestratorBriefing(w: WorkLedger, ownBlocks = false): string[]
   // PD-001 §2(b) · WHAT THESE NUMBERS ARE FOR, on the line they already had. The owner: "the
   // orchestrators never understood the real meaning of the ledger data… that serves as a reminder
   // for them if they ever get sidetracked." A REMINDER — not a gate, not a filter, not a thing to
-  // recite upward. Both failures have happened here: an orchestrator that reads "40 of 74 went to
-  // bus mechanics" as a threshold trims real work to move the number, and one that quotes the
-  // figure to the owner has performed looking instead of looking. So the line says whose the
-  // numbers are and what they decide, and names no target, no score and no verdict — folded into
-  // the header rather than added beneath it, because a reminder against volume cannot cost a line.
-  // (The wording dodges "score"/"grade"/"rating" deliberately: WL-003's own guard bans those words
-  // from this text, and a purpose line that had to be exempted from the no-marks rule would be
-  // arguing with it. It says what the figures are FOR, and names no mark to deny.)
+  // recite upward; both failures have happened here, one orchestrator reading "40 of 74 went to bus
+  // mechanics" as a threshold and trimming real work to move it, another quoting the figure upward.
+  // So the line names no target, no score and no verdict, and is folded into the header rather than
+  // added beneath it, because a reminder against volume cannot cost a line. The wording dodges
+  // "score"/"grade"/"rating" deliberately: WL-003's own guard bans those words from this text, and a
+  // purpose line that had to be exempted from the no-marks rule would be arguing with it.
   return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days — yours, for choosing the next ` +
           `block; nothing here is a mark on you, and none of it is for repeating upward:`,
           ...L.map((x) => `  · ${x}`)];
@@ -2193,10 +2141,10 @@ export function renderReport(entries: Array<{ w: WorkLedger; rows: HandoffRow[] 
         L.push(`| ${r.id} | ${r.role} | ${r.model} | ${r.loopBacks} | ` +
                // WL-005 · A NULL AND A SUPPRESSED VALUE ARE DIFFERENT FACTS. `—` for both meant a
                // block whose duration was never measured looked exactly like one whose duration was
-               // nonsense, and the nonsense (2455 minutes from a stale `started`, -39.3 on ReciEats)
+               // nonsense (2455 minutes from a stale `started`, -39.3 on ReciEats), and the nonsense
                // was hidden at render time while the same poisoned field fed the median. A negative
-               // is now impossible from the recorded pair, so if one ever appears it is a fact about
-               // the bus and is SHOWN rather than blanked.
+               // is now impossible from the recorded pair, so one that appears is a fact about the
+               // bus and is SHOWN, never blanked.
                `${r.wallMinutes === null ? UNMEASURED : r.wallMinutes} | ` +
                `${r.linesShipped === null ? "— (no commit names it)" : r.linesShipped} |`);
       }

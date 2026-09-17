@@ -1,17 +1,15 @@
 // health.ts — ONE JOB: notice the failure modes the finish-notifier structurally cannot see.
 //
-// The notifier fires on `working -> idle/blocked`. So a role that goes `working` and never comes
-// back is invisible forever: a stall is indistinguishable from a busy session. Measured on the real
-// buses 2026-09-08, four roles claimed to be working with stale status files — one of them
-// (gaming/leveldesign) for 1681 hours. Nothing would ever have told you.
+// The notifier fires on the TRANSITION `working -> idle/blocked`, so a role that goes `working` and
+// never comes back is invisible for ever: a stall is indistinguishable from a busy session. Measured
+// on the real buses 2026-09-08 — four roles working against stale status files, one (gaming/
+// leveldesign) for 1681 hours, and nothing would ever have said so.
 //
-// Two related blind spots, also measured:
-//   * Non-conforming statuses. The protocol is idle | working | blocked, but `shwab_docker/trader`
-//     sat in "active" and `livegita/po` in "orchestrating". The notifier now baselines on any
-//     WORKING_LIKE status so those finishes still announce, but the roles are still reported: a
-//     status nothing else recognises is a protocol break worth fixing at the source.
-//   * `updated_at` drift: trader's timestamp was 1205h stale while its file had been touched 4.9h
-//     ago, i.e. something rewrites the file without maintaining the field the panel displays.
+// Two related blind spots, also measured. A status outside the protocol (idle | working | blocked)
+// bypasses the notifier; baselining on any WORKING_LIKE status keeps those finishes announcing, but
+// the role is still REPORTED, because a status nothing else recognises is a protocol break worth
+// fixing at the source. And `updated_at` can lag the file's own mtime — something rewrites the file
+// without maintaining the field the panel displays.
 //
 // Everything here is read-only analysis; the one destructive helper (removeWorktree) refuses dirty
 // work exactly like deleter.ts, and never uses --force.
@@ -35,14 +33,12 @@ const HOUR_MS = 3_600_000;
 // mutation gate in the background, its turn ends, and the gate finishes ~18 minutes later with
 // nothing to wake it. Its `outbox.md` line 1 still names the PREVIOUS handoff and `status.json`
 // still says the previous `current`, which to anything reading the bus is indistinguishable from a
-// worker that has done nothing — the same shape as a stall. The orchestrator then either waits on a
-// worker that will never speak, or rings a worker that IS busy and burns the context doing the work.
+// worker that has done nothing — the same shape as a stall.
 //
 // WHY THIS LIVES IN health.ts and not beside the ledger tick: the stall alarm and the gate wake are
 // THE SAME MEASUREMENT of the same field. The stall clock asks "how long since status.json was
-// written", which cannot tell stuck from busy — it fired at 0.8h during FX-002 with ten files
-// edited. A live gate is positive evidence of work on exactly that question. Splitting the two
-// across files is how one state ends up rendered as another.
+// written", which cannot tell stuck from busy. A live gate is positive evidence of work on exactly
+// that question. Splitting the two across files is how one state ends up rendered as another.
 //
 // THREE STATES, NEVER COLLAPSED (the `unmeasured`-as-zero mistake, sixth sighting):
 //   · "running" — a declared gate positively identified as alive. NOT a stall; suppresses the alarm.
@@ -57,12 +53,10 @@ export interface GateDeclaration {
   launchedAt: string;
   mutants: number | null;
   /** WHICH BLOCK THE GATE BELONGS TO, so a finished block's leftover declaration does not wake
-   *  anyone. Found live in developer1's own status.json 2026-09-15: WL-005's declaration — pid dead,
-   *  block merged 90 minutes earlier — was still sitting there, and under
-   *  "unidentified -> exited -> wake" it was a wake for a block that was over. The `log@launchedAt`
-   *  key bounds that to ONE spurious wake rather than one per tick, which is the important half, but
-   *  one wake still costs a role a whole turn of the context this block exists to protect. Optional:
-   *  a declaration without it still behaves as before, bounded by the key. */
+   *  anyone — found live 2026-09-15, a dead gate's declaration outliving its merged block by 90
+   *  minutes. The `log@launchedAt` key bounds that to ONE spurious wake rather than one per tick;
+   *  one wake still costs a role a whole turn. Optional: a declaration without it still behaves as
+   *  before, bounded by the key — this field is a refinement of that guard, not the guard itself. */
   handoff: string | null;
 }
 
@@ -119,13 +113,16 @@ const GATE_START_TOLERANCE_MS = 120_000;
  * Is the declared gate actually running?
  *
  * A PID IS NOT PROOF — pids are reused, and a wake fired at a recycled pid is worse than no wake.
- * Three facts must agree, and each covers a different way the pid alone lies:
+ * FOUR facts must agree, and the list must stay exhaustive because each one is a separate `exited`
+ * branch below — a fact dropped from here is a branch nothing explains:
  *   1. /proc/<pid> exists                  — something is alive there.
  *   2. its command line names `mutation.py` — it is the KIND of process that was declared; a pid
  *                                            recycled by an editor or a shell fails here.
  *   3. its start time is within tolerance of `launched_at` — it is THIS launch. A second gate that
  *                                            happened to inherit the pid, or a long-lived process
  *                                            that had it all along, fails here.
+ *   4. that start is not in the FUTURE beyond tolerance — a declaration post-dated past `now`
+ *                                            cannot be describing a process already running.
  *
  * Any of them unreadable means NOT identified, and therefore "exited". That direction is deliberate:
  * a missed suppression costs one spurious stall warning, while a false "running" suppresses the
@@ -136,11 +133,10 @@ export interface GateProbe {
   startedAt(pid: number): number | null;
 }
 
-/** The real /proc readers. Injectable ONLY so the unreadable-start case can be asserted: there is no
- *  way to make /proc/<pid>/stat unreadable while /proc/<pid>/cmdline is readable from a test, and a
- *  branch no test can reach is exactly where a wrong default hides — a mutant flipping that `exited`
- *  to `running` survived the whole suite, which suppresses the alarm for ever. The seam exists to
- *  make the default testable, not to vary it in production. */
+/** The real /proc readers. Injectable ONLY so the unreadable-start case can be asserted — no test can
+ *  make /proc/<pid>/stat unreadable while cmdline stays readable, and a mutant flipping that branch's
+ *  `exited` to `running` survived the whole suite, which suppresses the alarm for ever. The seam
+ *  exists to make the default TESTABLE, not to vary it in production. */
 export const REAL_GATE_PROBE: GateProbe = { cmdline: cmdlineOf, startedAt: processStartMs };
 
 export function gateStateOf(decl: GateDeclaration | null, now = Date.now(),
@@ -181,25 +177,25 @@ export interface GateFinding {
 // ── CL-001 · a worker session that was never cleared ─────────────────────────────────────────
 //
 // Playbook §12: a worker is cleared and re-bound between EVERY handoff, so each block starts from an
-// empty transcript and the handoff file is the whole brief. Measured across every bus 2026-09-16:
-// 18 of the 24 roles whose transcript could be read were carrying more than one block in one
-// session — shwab_docker/trader held 22 blocks in 64.3 MB. It is not one orchestrator's habit, it
-// is universal, and it is INVISIBLE: a worker holding twelve blocks answers exactly like a fresh one
-// right up until it answers from a block it was never given. There is no symptom to notice. What
-// there IS, on the bus the tracker already reads, is a pair of facts that cannot both be innocent:
+// empty transcript and the handoff file is the whole brief. Measured across every bus 2026-09-16, 18
+// of the 24 roles whose transcript could be read were carrying more than one block in one session —
+// shwab_docker/trader held 22 blocks in 64.3 MB. It is universal rather than one orchestrator's
+// habit, and it is INVISIBLE: a worker holding twelve blocks answers exactly like a fresh one right
+// up until it answers from a block it was never given. There is no symptom to notice. The one
+// observable is a pair of facts that cannot both be innocent:
 //
 //   A NEW HANDOFF ID APPEARING IN status.json WHILE board.json's session_id IS UNCHANGED
 //   means that block was dispatched into a session that was never cleared.
 //
-// THE COUNT IS A FLOOR, NEVER A TOTAL. We can only count blocks that ARRIVE while we are watching.
-// Whatever the status file already names when a session is first seen is the BASELINE — a bind, or
-// the extension reloading mid-block, must not be read as evidence of anything. So the finding says
-// "at least N, since <when>", and `since` is in the message.
+// THE COUNT IS A FLOOR, NEVER A TOTAL — only blocks that ARRIVE while we are watching can be counted.
+// Whatever the status file already names when a session is first seen is the BASELINE, because a bind
+// or a mid-block extension reload must not read as evidence. Hence "at least N, since <when>" — and
+// `since` is in the message, because a floor without its window is an unbounded count.
 //
-// AND "I CANNOT TELL" IS ITS OWN STATE (WL-002's rule, third time it has bitten this product): a
-// role with no status.json, or no session_id on the board, is NOT a role with zero blocks. It goes
-// in `clearsUnknown` with the reason, and it is never counted, never scored, and never silently
-// dropped into the clean pile.
+// AND "I CANNOT TELL" IS ITS OWN STATE (WL-002's rule, third time it has bitten this product): a role
+// with no status.json, or no session_id on the board, is NOT a role with zero blocks. It carries its
+// reason in `ClearSnapshot.unknown`, and is never counted, never scored, and never silently dropped
+// into the clean pile.
 export interface ClearSnapshot {
   role: string;
   /** From board.json. null when the board does not say — which is unknown, not "no session". */
@@ -232,14 +228,9 @@ export function handoffIds(obj: any): string[] {
   return out;
 }
 
-/** The session id the board declares for a role — the thing a `/clear` changes. Both board shapes
- *  (flat, and wrapped in `roles`) are read, because both exist on the live buses. */
-/**
- * PB-001 · The session id a role's OWN status.json claims, if it claims one.
- *
- * It exists to be compared with the board's, and the comparison is the fix for a detector that cried
- * wolf twice in one day. See `sessionAgreement` below.
- */
+/** PB-001 · The session id a role's OWN status.json claims, if it claims one. It exists to be
+ *  compared with the board's — see `sessionAgreement` below, which is the fix for a detector that
+ *  cried wolf twice in one day. */
 export function statusSessionId(obj: any): string | null {
   const sid = obj && typeof obj === "object" ? (obj.session_id || obj.sessionId) : null;
   return typeof sid === "string" && sid.trim() ? sid.trim() : null;
@@ -248,34 +239,23 @@ export function statusSessionId(obj: any): string | null {
 /**
  * PB-001 · DO THE IDENTITY RECORDS AGREE ABOUT WHICH SESSION THIS ROLE IS?
  *
- * MEASURED, twice on 2026-09-17, both false: the clear-detector told the orchestrator that
- * `developer2` "has now carried at least 2 handoff ids in ONE session (PB-001, PD-001) — nothing has
- * cleared it since 15:50:12Z", when that tab had DIED and been respawned as a brand-new session
- * minutes earlier. It did the same to `developer1` at 06:53Z.
+ * THE RACE, measured twice on 2026-09-17 and false both times: the clear-detector reported a §12
+ * violation against a tab that had DIED and been respawned as a brand-new session minutes earlier.
+ * A clear is detected from the board's `session_id`, and `scanClears` re-baselines correctly when
+ * that changes — but the board is written by TWO parties (the role when it binds, the tracker when
+ * it rebinds by session id) while §12 requires the inbox be rewritten BEFORE the new tab exists. So
+ * there is a window in which the NEW handoff id is already visible while the board still names the
+ * DEAD session, and the arrival is judged against the wrong one. The trigger is met on every correct
+ * respawn BY CONSTRUCTION — and since a respawn is the strongest clear there is (the transcript is
+ * GONE, not merely reset), reporting one as a violation is not slightly wrong, it is inverted.
  *
- * THE MECHANISM, and it is a race rather than a missing rule. A clear is detected by comparing the
- * board's `session_id` against the one remembered from last tick, and `scanClears` already
- * re-baselines correctly when that changes. But the board is written by TWO parties — the role
- * itself when it binds, and the tracker when it rebinds by session id — and playbook §12 requires
- * the inbox be rewritten BEFORE the new tab exists. So there is a window in which the NEW handoff id
- * is already visible while the board still names the DEAD session, and in that window the arrival is
- * judged against the wrong session and reads as a §12 violation. The trigger is met on every correct
- * respawn by construction, which is the worst possible property for a rule-enforcement message.
+ * THE FIX: session identity is the AND of the records that name it, not the board's alone. A
+ * disagreement means a transition is in flight, which is precisely the clear this detector must not
+ * report against — neither a clean bill of health nor a violation, but UNKNOWN, a state this module
+ * already has, and unknown is never counted and never re-baselined.
  *
- * THE FIX: session identity is the AND of the records that name it, not the board's alone. When the
- * role's own status.json names a session and it differs from the board's, a transition is in flight
- * — and a transition is precisely the clear this detector must not report against. That is not a
- * clean bill of health and it is not a violation either: it is UNKNOWN, which this module already
- * has a state for, and unknown is never counted and never re-baselined.
- *
- * A respawn is the strongest clear there is — the transcript is gone, not merely reset — so a
- * detector that reports one as a violation is not slightly wrong, it is inverted. And a reminder
- * that fires on correct behaviour trains its reader to ignore every reminder from the same tool,
- * which in a product whose whole job is keeping directives from falling through the cracks is not a
- * cosmetic defect but the defect itself.
- *
- * Absent is not disagreement: a status.json with no `session_id` (the protocol in playbook §2 does
- * not require one) leaves the board unchallenged and behaviour exactly as before.
+ * Absent is not disagreement: playbook §2 does not require `session_id` in status.json, so a file
+ * without one leaves the board unchallenged and behaviour exactly as before.
  */
 export function sessionAgreement(boardSid: string | null, statusSid: string | null):
     { agree: boolean; note: string | null } {
@@ -286,6 +266,8 @@ export function sessionAgreement(boardSid: string | null, statusSid: string | nu
                  `${statusSid.slice(0, 8)}…) — a session transition is in flight` };
 }
 
+/** The session id the board declares for a role — the thing a `/clear` changes. Both board shapes
+ *  (flat, and wrapped in `roles`) are read, because both exist on the live buses. */
 export function boardSessionId(repo: string, role: string): string | null {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8"));
@@ -316,26 +298,18 @@ export function isWorkingLike(status: any): boolean {
 }
 
 /**
- * Stalled roles (working-like but not writing status any more) and protocol violations.
- * `stallMinutes` is how long a working role may go quiet before we call it stuck.
- */
-/**
  * PB-001 · Is this role the bus's tagged orchestrator?
  *
- * WHY THE STALL CHECK SKIPS IT, and this is a correction rather than an exemption. The stall clock
- * is the mtime of a role's `status.json`, and that file is a WORKER's heartbeat: a worker is bound,
- * works a block, and keeps the file current because the orchestrator reads it to know where the
- * block stands. An orchestrator's entry is written when it binds and then largely left alone — its
- * `status` sits at "working" for days, which is true — so the stall clock on it measures nothing but
- * how long ago somebody last touched a file nobody is required to touch.
- *
- * MEASURED on this bus: the alarm fired at the orchestrator four times in one day, and its
- * instruction ("check whether it is stuck, blocked, or finished without saying so" — with the reply
- * hint "ring the role named here") named the orchestrator itself. Ringing yourself is the one action
- * that cannot help, so this was a diagnosis that was wrong and a prescription that was empty.
+ * WHY THE STALL CHECK SKIPS IT — a correction, not an exemption. The stall clock is the mtime of
+ * `status.json`, and that file is a WORKER's heartbeat: a worker keeps it current because the
+ * orchestrator reads it to know where the block stands. An orchestrator's entry is written at bind
+ * and then largely left alone, its `status` truthfully sitting at "working" for days, so the clock
+ * on it measures nothing but how long since somebody touched a file nobody is required to touch.
+ * Measured on this bus: the alarm fired at the orchestrator four times in one day, and told it to
+ * ring itself — a diagnosis that was wrong and a prescription that was empty.
  *
  * Nothing is lost by the skip: an orchestrator's liveness is observed DIRECTLY from its frame every
- * tick (`OwnerView.busy`, `liveness`), which is a live signal rather than a file's age, and PB-001's
+ * tick (`OwnerView.busy`, `liveness`), a live signal rather than a file's age, and PB-001's
  * delegation detector is built on exactly that. An untagged bus has no orchestrator to skip and
  * every role is checked as before.
  */
@@ -344,6 +318,8 @@ export function isTaggedOrchestrator(repo: string, role: string): boolean {
   return !!(tag && tag.role && tag.role === role) || isOwnerRole(role);
 }
 
+/** Stalled roles (working-like but not writing status any more) and protocol violations.
+ *  `stallMinutes` is how long a working role may go quiet before we call it stuck. */
 export function checkHealth(repo: string | null,
                             opts: { now?: number; stallMinutes?: number } = {}): HealthReport | null {
   if (!repo) return null;
@@ -393,11 +369,10 @@ export function checkHealth(repo: string | null,
     // role moves to `gated`, so the report says "this one is working and here is the evidence"
     // instead of simply omitting it. Omitting would render `running` as `none`.
     const decl = readGate(s.obj);
-    // A declaration whose block is ALREADY ANSWERED is spent, not a wake. `last_handled` is the
-    // worker's own statement that it finished that block — so the leftover names a block that is
-    // over, and reading it as "gate exited, response not yet written" is one state rendered as
-    // another, the mistake this whole sequence keeps catching. A worker SHOULD also clear its `gate`
-    // when it writes its response; this makes the tracker correct whether or not it does.
+    // A declaration whose block is ALREADY ANSWERED is spent, not a wake: `last_handled` is the
+    // worker's own statement that it finished, so reading the leftover as "gate exited, response not
+    // yet written" renders one state as another. A worker SHOULD clear its `gate` when it answers;
+    // this keeps the tracker correct whether or not it does.
     const answered = !!(decl && decl.handoff && decl.handoff === String(s.obj.last_handled || ""));
     const gate = answered ? "none" : gateStateOf(decl, now);
     if (gate === "running" && decl) {
@@ -409,13 +384,13 @@ export function checkHealth(repo: string | null,
       out.gateExited.push({ role, status, pid: decl.pid, log: decl.log, launchedAt: decl.launchedAt,
                             mutants: decl.mutants, staleHours: (now - s.mtimeMs) / HOUR_MS });
     } else if (isWorkingLike(status) && now - s.mtimeMs > stallMs && !isTaggedOrchestrator(repo, role)) {
-      // THE THIRD STATE, named rather than folded in. WL-006's wake fires on a gate that EXITED;
-      // a role that never launched one is a different thing and was previously indistinguishable.
-      // It is NOT auto-woken, and that is a decision, not an omission: a finished gate is PROOF
-      // that an answer is waiting, which is what justifies typing into a worker unasked. A silent
-      // role with no gate carries no such proof — it may be waiting on a human, blocked, or simply
-      // done badly — so nudging it would be a guess dressed as a measurement, which is the one
-      // move this whole sequence exists to refuse. It is reported, with which kind it is.
+      // THE THIRD STATE, named rather than folded in: WL-006's wake fires on a gate that EXITED, and
+      // a role that never launched one was previously indistinguishable from it. It is NOT
+      // auto-woken, and that is a decision: a finished gate is PROOF an answer is waiting, which is
+      // what justifies typing into a worker unasked. A silent role with no gate carries no such
+      // proof — it may be waiting on a human, blocked, or simply done badly — so nudging it would be
+      // a guess dressed as a measurement, which is the one move this whole sequence exists to
+      // refuse. It is reported, with which kind it is.
       out.stalled.push({ role, status, staleHours: (now - s.mtimeMs) / HOUR_MS,
                          gate: answered && decl ? "spent" : "none" });
     }
@@ -575,30 +550,25 @@ interface StallState {
    *  new key, so the next gate wakes normally instead of being suppressed for ever by the last one. */
   gatesWoken?: Record<string, string>;
   /** WL-008 · A WAKE THAT WAS ATTEMPTED AND REFUSED, per role, with the gate it was for.
-   *
-   *  `gatesWoken` records only DELIVERY, which is right — marking on attempt would mean "woken" for
-   *  a role never told. But delivery-only plus a guard that could never pass meant the wake was
-   *  retried every 15 seconds for 36 minutes and NOTHING ever said so: the state file looked
-   *  untouched, which reads identically to "no gate ever finished". The refusals were real events
-   *  and they were the only evidence, so they are now kept. */
+   *  `gatesWoken` records only DELIVERY, which is right — marking on attempt would mean "woken" for a
+   *  role never told. But delivery-only plus a guard that could never pass meant the wake retried
+   *  every 15 seconds for 36 minutes with the state file untouched, which reads identically to "no
+   *  gate ever finished". The refusals were real events and the only evidence, so they are kept. */
   gatesPending?: Record<string, { key: string; since: string; attempts: number; note: string }>;
   /** CL-001 · what each role's CURRENT session has been seen to carry.
    *
-   *  `session` is the id from board.json at the moment we started watching this session; a different
-   *  one means a `/clear` happened and everything starts over — which is the whole point, and is
-   *  what makes the guard's negative case observable rather than argued.
-   *
-   *  `ids` is the BASELINE (what the status file already named when the session was first seen) and
-   *  `reported` is what has since ARRIVED and been delivered. They are kept apart on purpose: only
-   *  arrivals are evidence, and only delivery may retire an arrival — an arrival marked here on
-   *  ATTEMPT would read as "the orchestrator was told" for a message nobody ever received, which is
-   *  the asserted-is-not-reached shape that has cost this project six findings. */
-  /**  `seen` is every arrival OBSERVED under this session, delivered or not. It exists because
-   *  `reported` alone could not carry the boundary: an arrival raised on a tick where the composer
-   *  was busy is in neither list, so a `/clear` arriving before it was ever delivered seeded the new
-   *  session's baseline with it — and the next reminder named a block from the session that had just
-   *  been cleared. Found by running the compiled code against a copy of the live bus, NOT by the
-   *  unit tests, which had delivered every arrival they raised. */
+   *  `session` is board.json's id at the moment we started watching this session; a different one
+   *  means a `/clear` happened and everything starts over — which is what makes the guard's negative
+   *  case observable rather than argued. `ids` is the BASELINE (what the status file already named
+   *  when the session was first seen); `reported` is what has since ARRIVED and been DELIVERED. They
+   *  are kept apart because only arrivals are evidence and only delivery may retire one — marking on
+   *  ATTEMPT would read as "the orchestrator was told" for a message nobody ever received, the
+   *  asserted-is-not-reached shape that has cost this project six findings. `seen` is every arrival
+   *  OBSERVED under this session, delivered or not: one raised on a tick where the composer was busy
+   *  is in neither other list, so a `/clear` before it was ever delivered seeded the NEW session's
+   *  baseline with it and the next reminder named a block from the session just cleared. Found by
+   *  running the compiled code against a copy of the live bus, NOT by the unit tests, which had
+   *  delivered every arrival they raised. */
   clears?: Record<string, { session: string; ids: string[]; since: string; reported: string[];
                             seen?: string[]; dropped?: string[] }>;
   updatedAt?: string;
@@ -685,14 +655,11 @@ export class HealthWatcher {
     return events;
   }
 
-  /**
-   * WL-006 · Roles whose declared gate has EXITED and which have not been woken for that gate.
-   *
-   * Returns the candidates; it does NOT record them as woken. `markWoken` is called by the caller
-   * only once a wake was actually DELIVERED, because a worker mid-turn cannot be typed into and
-   * marking it here would mean "woken" for a role that was never told — the same
-   * asserted-is-not-reached shape that has cost this project five findings.
-   */
+  /** WL-006 · Roles whose declared gate has EXITED and which have not been woken for that gate.
+   *  Returns candidates only; it does NOT record them as woken. `markWoken` is the caller's to call,
+   *  and only once a wake was actually DELIVERED — a worker mid-turn cannot be typed into, so marking
+   *  here would mean "woken" for a role never told, the same asserted-is-not-reached shape that has
+   *  cost this project five findings. */
   scanGates(report: HealthReport | null): GateEvent[] {
     if (!this.repo || !report) return [];
     const st = loadStall(this.repo);
@@ -721,12 +688,12 @@ export class HealthWatcher {
   /**
    * WL-008 · Record a wake that was ATTEMPTED and REFUSED, with the reason.
    *
-   * NOT a retry ceiling, and the field evidence argues against one. A ceiling would have stopped
-   * trying after N attempts and said nothing — the role would still be asleep and the failure would
-   * now also be invisible, which is strictly worse than the loop that at least kept a live attempt
-   * going. What was actually missing was not restraint, it was NOTICING: the wake was refused ~140
-   * times in 36 minutes and no file, message or figure changed. So retrying stays, and the refusal
-   * becomes a fact on disk with a first-attempt instant, so "pending too long" can be SEEN.
+   * NOT a retry ceiling, and the field evidence argues against one: a ceiling would stop after N
+   * attempts and say nothing, leaving the role asleep AND the failure invisible — strictly worse than
+   * a loop that at least keeps a live attempt going. What was missing was not restraint but NOTICING
+   * (refused ~140 times in 36 minutes with no file, message or figure changing), so retrying stays
+   * and the refusal becomes a fact on disk with a first-attempt instant, so "pending too long" can
+   * be SEEN.
    */
   recordWakeRefused(role: string, key: string, note: string, now = Date.now()): void {
     if (!this.repo) return;
@@ -761,12 +728,11 @@ export class HealthWatcher {
    *  transport again, which is the workaround this replaces. Not typed into a busy composer. */
   wake(ev: GateEvent, frame: { webviewId: string; busy: boolean } | null,
        done?: (ok: boolean, note: string) => void): void {
-    // WL-008 · TWO STATES, TWO SENTENCES. These wore one note — "composer busy or frame not found" —
-    // and that is the reading-rendered-as-another-reading defect this sequence keeps finding, sitting
-    // in the diagnostic itself. They are not the same event and they do not have the same fix: a busy
-    // composer is TRANSIENT and the next tick retries; no live frame means the role's tab is gone or
-    // unattributed, and retrying will not help until that changes. When the wake was silently failing
-    // in the field, this single note is what made it impossible to tell which was happening.
+    // WL-008 · TWO STATES, TWO SENTENCES. These once wore one note — "composer busy or frame not
+    // found" — the one-state-rendered-as-another defect sitting in the diagnostic itself. They do not
+    // have the same fix: a busy composer is TRANSIENT and the next tick retries, while no live frame
+    // means the role's tab is gone or unattributed and retrying will not help until that changes.
+    // That single note is what made the wake's silent field failure impossible to diagnose.
     if (!frame) { if (done) done(false, "no live frame for this role — its tab is gone or unattributed"); return; }
     if (frame.busy) { if (done) done(false, "composer busy (mid-turn) — not typed into; retrying next tick"); return; }
     const n = ev.mutants === null ? "" : ` (${ev.mutants} mutants)`;
@@ -781,15 +747,15 @@ export class HealthWatcher {
   /**
    * CL-001 · Blocks that arrived in a session that was never cleared.
    *
-   * The rule, and it is the whole mechanism: a handoff id that appears in a role's status.json while
-   * its board session_id is UNCHANGED was dispatched without a `/clear`. A changed session id is a
-   * clear, and resets everything — so the guard's negative case is not an argument, it is the same
-   * code path with one field different, which is what makes it observable in the field.
+   * THE RULE, and it is the whole mechanism: a handoff id appearing in a role's status.json while its
+   * board session_id is UNCHANGED was dispatched without a `/clear`. A changed session id IS a clear
+   * and resets everything, so the guard's negative case is not an argument — it is the same code path
+   * with one field different, which is what makes it observable in the field.
    *
-   * This does NOT record the arrival as reported; `markClearReported` does, and only on delivery.
-   * An unreported arrival is therefore raised again every tick until it is actually delivered, which
-   * is deliberate: the orchestrator's composer is busy for most of any given tick, and a reminder
-   * dropped because nobody was listening is a reminder that never happened (WL-006 / WL-008).
+   * It does NOT record the arrival as reported; `markClearReported` does, and only on delivery. An
+   * unreported arrival is therefore raised again every tick until delivered, deliberately: the
+   * orchestrator's composer is busy for most of any tick, and a reminder dropped because nobody was
+   * listening is a reminder that never happened (WL-006 / WL-008).
    */
   scanClears(report: HealthReport | null, now = Date.now()): ClearEvent[] {
     if (!this.repo || !report) return [];
@@ -805,24 +771,20 @@ export class HealthWatcher {
       if (!prev || prev.session !== snap.sessionId) {
         // A NEW SESSION — a first sighting, or a `/clear` and re-bind. Everything the status file
         // already names is the baseline and is NOT evidence: on a re-bind `last_handled` still names
-        // the block that was just finished, and counting it would report a violation on the exact
-        // dispatch that did the right thing.
+        // the block just finished, and counting it would report a violation on the exact dispatch
+        // that did the right thing.
         //
-        // AND THE BASELINE DROPS WHAT BELONGED TO THE OLD SESSION. `last_handled` survives a clear —
-        // the worker rewrites its status file, it does not start one — so seeding the new session
-        // with it would carry a finished block across the boundary and name it in a later reminder.
-        // Caught by its own test, not by reading: a reminder after one clear read "at least 3
-        // handoff ids in ONE session (CL-002, CL-001, CL-003)" when that session had carried two.
-        // Only ids we already knew under the OLD session can be dropped — on a FIRST sighting there
-        // is nothing to compare against, so everything present is the baseline and the count is a
-        // floor, which is exactly why the message says "at least".
+        // AND THE BASELINE DROPS WHAT BELONGED TO THE OLD SESSION, because `last_handled` survives a
+        // clear — the worker rewrites its status file, it does not start one — so seeding the new
+        // session with it carries a finished block across the boundary into a later reminder. Only
+        // ids already known under the OLD session can be dropped: a FIRST sighting has nothing to
+        // compare against, so everything present is the baseline and the count is a floor, which is
+        // exactly why the message says "at least".
         //
         // CL-002 · AND WHAT IS DROPPED IS REMEMBERED AS DROPPED. Subtracting the old session's ids
-        // from the baseline without recording them puts them back in play: they are still sitting in
-        // `last_handled`, they are in neither `ids` nor `reported`, so on the VERY NEXT tick they
-        // read as fresh arrivals and are counted and named against the new session. Measured, not
-        // reasoned — the §12 sequence produced `blocks: 2, ids: ["B-2", "B-1"]` where B-1 belonged
-        // to the session that had just been cleared, which is precisely the defect the line above
+        // without recording them puts them back in play — still sitting in `last_handled`, in neither
+        // `ids` nor `reported`, so on the VERY NEXT tick they read as fresh arrivals and are counted
+        // and named against the new session. Measured, not reasoned: the defect the paragraph above
         // exists to prevent, alive again one tick later through the same subtraction.
         const carried = prev
           ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || []), ...(prev.dropped || [])] : [];
@@ -842,20 +804,18 @@ export class HealthWatcher {
       if (arrived.length) {
         cl[snap.role] = { ...prev, seen: [...new Set([...(prev.seen || []), ...arrived])] };
       }
-      // CL-002 · §12 IS VIOLATED BY A SECOND BLOCK, SO ONE IS NOT A FINDING.
+      // CL-002 · §12 IS VIOLATED BY A SECOND BLOCK, SO ONE IS NOT A FINDING. The floor decides, not
+      // the arrival: a session known to hold ONE block is a worker doing exactly what it should, and
+      // the §12 dispatch produces that state BY CONSTRUCTION — status file reset in the same breath
+      // as the `/clear`, baseline dropping what belonged to the old session, first real block landing
+      // on an empty one. So the detector fired at every correctly-dispatched fresh session, seconds
+      // after the dispatch that did the right thing.
       //
-      // The floor, not the arrival, is what decides. A session known to hold ONE block is a worker
-      // doing exactly what it should, and the §12 dispatch produces that state BY CONSTRUCTION: the
-      // orchestrator resets the status file in the same breath as the `/clear`, the baseline drops
-      // what belonged to the old session, and the first real block then lands on an empty one. So
-      // the detector fired at every correctly-dispatched fresh session — at the dispatch that did
-      // the right thing, seconds after it did it.
-      //
-      // AND THE GUARD GOES HERE, AT THE PUSH, NOT IN `arrived`. Suppressing it earlier would keep it
-      // out of `seen`, and `seen` is the only thing that stops an unreported arrival being seeded
-      // into the NEXT session's baseline and named in a later reminder. Silence is the requirement;
-      // forgetting is not, and forgetting here would cost the fix above. So the arrival is recorded
-      // in full, and only the TELLING is withheld until there is something to tell.
+      // AND THE GUARD GOES HERE, AT THE PUSH, NOT IN `arrived`. Suppressing it earlier would keep the
+      // arrival out of `seen`, and `seen` is the only thing that stops an unreported arrival being
+      // seeded into the NEXT session's baseline and named in a later reminder. Silence is the
+      // requirement; forgetting is not, and forgetting here would cost the fix above. So the arrival
+      // is recorded in full, and only the TELLING is withheld until there is something to tell.
       //
       // The floor is untouched: `blocks` still counts what is KNOWN since `since`, the message still
       // says "at least", and a session first sighted already holding one block still reports 2 on the

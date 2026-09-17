@@ -102,24 +102,19 @@ export function activate(context: vscode.ExtensionContext) {
     status.show();
     context.subscriptions.push(status);
 
-    // Why the version stamp was NOT written this tick, or undefined when it was. Window state, not
-    // a property of one log line: several things call debugLog in a tick and the file is
-    // last-writer-wins, so a note attached to the tick's own call would be overwritten by the
-    // garbage-collection note a few lines later and the refusal would be invisible.
+    // These four notes are WINDOW STATE, not properties of one log line: tracker-debug.json is
+    // last-writer-wins and several things call debugLog per tick, so a note attached to its own
+    // call is overwritten later in the same tick and the refusal goes invisible.
+    // Why the version stamp was NOT written this tick, or undefined when it was.
     let stampNote: string | undefined;
-    // Same reasoning for the model policy (MP-001): a handoff whose `model:` line was REFUSED, and a
-    // spawned tab that never acknowledged its switch, are both states of this window rather than
-    // events of one log line. Attached to their own debugLog call they would be overwritten within
-    // the same tick — and an ignored frontmatter that says so nowhere is exactly the silence R1
-    // exists to prevent.
+    // MP-001 · a handoff whose `model:` line was REFUSED, and a spawned tab that never acknowledged
+    // its switch: an ignored frontmatter that says so nowhere is the silence R1 exists to prevent.
     let modelNote: Record<string, any> | undefined;
     const noteModel = (k: string, v: any) => { modelNote = { ...(modelNote || {}), [k]: v }; };
-    // And the same for CH-001's overlap warnings, for the same reason and it cost the same test
-    // cycle: `runOverlapWarning` runs mid-tick, and `computeMissing`, `serveOpenRequests` and the
-    // blank-shell note all debugLog AFTER it. A collision recorded on its own call is overwritten
-    // within the tick that found it — the third time this file has learned that.
+    // CH-001 · overlap collisions: runOverlapWarning runs mid-tick, and computeMissing,
+    // serveOpenRequests and the blank-shell note all debugLog AFTER it.
     let overlapNote: string[] | undefined;
-    // NT-001 · what the stop notifier is doing, for the panel. The handoff requires that when the
+    // NT-001 · what the stop notifier is doing, for the panel. THE HANDOFF REQUIRES that when the
     // transport is unavailable the feature is OFF AND SAYS SO rather than inventing another door.
     let quietNote: string | undefined;
     const debugLog = (obj: any) => {
@@ -152,11 +147,9 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // ── PB-001 · §11 REACH-BACK, SUPPLIED RATHER THAN REMINDED ──────────────────────────────────
-    //
-    // Rank 2 of the owner's ranking: the tool provides the thing, so nobody has to remember it. It
-    // produces NO message — which is the point, because a bus full of reminders is his own complaint
-    // moved off him and onto the agents. Run on every tick so a handoff written between ticks is
-    // still covered, and a no-op on every inbox that already carries one.
+    // Rank 2 of the owner's ranking: the tool supplies the address, so it produces NO message —
+    // deliberately, because a bus full of reminders is his own complaint moved onto the agents. Runs
+    // every tick so a handoff written between ticks is covered; a no-op on an inbox that has one.
     const runReachBack = () => {
       if (!repo) return;
       if (cfg().get<boolean>("supplyReachBack", true) !== true) return;
@@ -172,10 +165,9 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // ── PB-001 · §2 · THE ORCHESTRATOR IS DOING THE WORK ITSELF ──────────────────────────────────
-    //
     // The owner: "If an orchestrator has been working for a while and it hasn't woken up any of its
     // loom agents, then it's time to remind it." Everything that decides whether this fires lives in
-    // delegation.ts, pure and tested; this function only gathers the observation and delivers.
+    // delegation.ts, pure and tested; this only gathers the observation and delivers.
     const runDelegation = () => {
       if (!repo) return;
       if (cfg().get<boolean>("delegationReminders", true) !== true) return;
@@ -208,16 +200,14 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // ── DU-001 · §19 · TWO LIVE BLOCKS ON ONE FILE ──────────────────────────────────────────────
-    //
     // The owner: "It is better for us to make the files modular so there is never more than one
     // worker on any file", and "this should also be part of the session add-on, so the orchestrators
-    // know their duties." Everything that DECIDES lives in duties.ts, pure and tested; this function
-    // only gathers the observation and delivers it.
-    //
-    // WHY IT READS WORKTREES RATHER THAN HANDOFFS. `overlap.ts` already enforces §19 from the
-    // handoffs' `files:` front-matter and has never refused anything on this bus — 3 of 25 blocks
-    // declare `files:` at all. This reads what the worktrees actually contain, so it does not depend
-    // on a declaration nobody writes. It does not touch overlap.ts, which another live handoff owns.
+    // know their duties." Everything that DECIDES lives in duties.ts, pure and tested; this only
+    // gathers the observation and delivers it.
+    // WORKTREES, NOT HANDOFFS: overlap.ts enforces §19 from the handoffs' `files:` front-matter,
+    // which only 3 of 25 blocks declare at all, so it has never refused anything on this bus. This
+    // reads what the worktrees actually contain, so it does not depend on a declaration nobody
+    // writes. It does not touch overlap.ts, which another live handoff owns.
     const runDuties = () => {
       if (!repo) return;
       if (cfg().get<boolean>("overlapReminders", true) !== true) return;
@@ -251,19 +241,14 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     // ── NT-001 · TELL HIM WHEN A PROJECT GOES QUIET ─────────────────────────────────────────────
-    //
     // The owner: "Any time activity stops completely in any of the windows I want to know which
     // project it is, and when it stopped … if I am away from my desk I should be able to come back
-    // and check what's done." Everything that DECIDES lives in quiet.ts, pure and tested; everything
-    // that SENDS lives in push.ts. This function only gathers the observation and delivers it.
-    //
-    // WHICH TABLE THIS MESSAGE BELONGS TO (0.43.0 reporting contract): NEITHER. `withContract` splits
-    // messages into ORCHESTRATOR_KINDS and WORKER_KINDS, and both are things typed into a COMPOSER by
-    // injectTo. This one goes to a phone. It is not injected, it reaches no session, and it must not
-    // carry the reporting contract — appending "the decision the owner must make" to a push
-    // notification would be nonsense. It is a third kind: extension -> human, out of band.
-    //
-    // OFF BY DEFAULT and opt-in. Nothing below can send anything while the setting is false, and the
+    // and check what's done." quiet.ts DECIDES and push.ts SENDS, both pure and tested; this only
+    // gathers the observation and delivers it.
+    // NEITHER REPORTING TABLE (0.43.0 contract): `withContract`'s ORCHESTRATOR_KINDS and WORKER_KINDS
+    // are both typed into a COMPOSER by injectTo; this goes to a phone, is not injected, reaches no
+    // session and must NOT carry the reporting contract. A third kind: extension -> human.
+    // OFF BY DEFAULT and opt-in: nothing below can send while the setting is false, and the
     // setting's own description says plainly that it leaves the machine.
     const runQuiet = () => {
       if (cfg().get<boolean>("quietPushEnabled", false) !== true) return;
@@ -287,18 +272,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (r.finding) {
           // NT-001-R2 · HIS WORDS: "when a project is truly done it usually ends with a summary from
           // the orchestrator, and I want that summary to come along with the notification."
-          //
-          // READ HERE, AT DETECTION, and NOT at send time like the open-window gate — the two are
-          // evaluated differently on purpose. Openness is a fact about HIM that can change while
-          // preflight runs (he can close a window in those seconds), so it must be read as late as
-          // possible. The last message is a fact about a project that this branch has just concluded
-          // is QUIET: nothing is appending to that transcript, so re-reading it seconds later would
-          // return the same bytes. Reading it here also means it costs nothing on the overwhelming
-          // majority of ticks, which produce no finding at all.
-          //
-          // It resolves the orchestrator for THIS finding's repo, not for the window's — runQuiet is
-          // cross-project by design, and a stop in another project must carry ITS orchestrator's
-          // words, not this window's.
+          // READ AT DETECTION, deliberately NOT at send time like the open-window gate: this branch
+          // has just concluded the project is QUIET, so nothing is appending to that transcript and a
+          // read seconds later returns the same bytes — and here it costs nothing on the ticks that
+          // produce no finding. It resolves the orchestrator for THIS finding's repo, not the
+          // window's: runQuiet is cross-project, and a stop elsewhere carries ITS orchestrator's words.
           const m = quietMessage(r.finding, orchestratorSaid(sig.repo));
           findings.push({ repo: sig.repo, title: m.title, body: m.body,
                           key: pushKey(sig.repo, r.finding.stoppedAt) });
@@ -403,22 +381,17 @@ export function activate(context: vscode.ExtensionContext) {
           `Loom: ${ev.role} has been "${ev.status}" for ${ev.staleHours.toFixed(1)}h with no status update — possibly stuck.`);
         if (orch) healthWatcher.alert(ev, orch.role, () => { /* logged to stall-debug.json */ });
       }
-      // WL-006 · WAKE THE ROLE WHOSE GATE HAS FINISHED. Its turn ended while the gate ran, so nothing
-      // else will ever tell it; measured three times, most recently 18 minutes during which the
-      // outbox still named the previous handoff. The role is woken, not the orchestrator: the
-      // orchestrator did not launch the gate, and ringing it would put a person back in the
-      // transport, which is the workaround this replaces.
-      //
-      // MARKED ONLY ON DELIVERY. A worker mid-turn cannot be typed into (dispatch.ts: the line would
-      // queue as an ordinary message and never run), so a busy composer leaves the event unmarked and
-      // the next tick tries again. Marking on attempt would mean "woken" for a role never told.
-      //
+      // WL-006 · WAKE THE ROLE WHOSE GATE HAS FINISHED — its turn ended while the gate ran, so
+      // nothing else will ever tell it (measured three times, most recently 18 minutes). The ROLE is
+      // woken, not the orchestrator, which did not launch the gate: ringing it would put a person
+      // back in the transport, the workaround this replaces.
+      // MARKED ONLY ON DELIVERY: a worker mid-turn cannot be typed into (dispatch.ts — the line would
+      // queue as an ordinary message and never run), so a busy composer leaves the event unmarked for
+      // the next tick; marking on attempt would mean "woken" for a role never told.
       // WL-008 · THE FRAME, FOR A WORKER *OR* THE ORCHESTRATOR. `tracker.view()` is the tracked
-      // AGENTS; the orchestrator's own frame lives in `ownerView()`. So an orchestrator that
-      // declared a gate raised an event that could never find a frame and would have sat refused
-      // for ever — the same silent failure as the busy latch, one role over, and invisible for the
-      // same reason. It is resolved through the TAG, which is how every other message to the
-      // orchestrator is addressed.
+      // AGENTS; the orchestrator's own frame lives in `ownerView()`, so an orchestrator that declared
+      // a gate raised an event that could never find a frame. It is resolved through the TAG, which
+      // is how every other message to the orchestrator is addressed.
       const frameFor = (role: string, forRepo: string): { webviewId: string; busy: boolean } | null => {
         const a = tracker.view().find((v) => v.role === role && v.repo === forRepo
                                              && v.liveness === "live");
@@ -444,10 +417,9 @@ export function activate(context: vscode.ExtensionContext) {
       // CL-001 · A BLOCK DISPATCHED INTO A SESSION THAT WAS NEVER CLEARED. Playbook §12 has said to
       // clear and re-bind between every handoff since 2026-09-08 and, measured across every bus on
       // 2026-09-16, 18 of the 24 readable roles were carrying more than one block anyway — one of
-      // them 22. A rule in prose is advice; this is the tool noticing. It is a REMINDER to the
-      // orchestrator and nothing else: no gate, no score, nothing withheld, and it is marked only
-      // once it was actually DELIVERED, so a busy composer means "tell it next tick", never
-      // "consider it told".
+      // them 22. A REMINDER to the orchestrator and nothing else: no gate, no score, nothing
+      // withheld, marked only once actually DELIVERED, so a busy composer means "tell it next
+      // tick", never "consider it told".
       if (cfg().get<boolean>("clearReminders", true) === true) {
         for (const ev of healthWatcher.scanClears(report)) {
           if (!orch) { debugLog({ clearReminder: { role: ev.role, blocks: ev.blocks, ok: false,
@@ -472,14 +444,12 @@ export function activate(context: vscode.ExtensionContext) {
                             orch.role);
       }
     };
-    // CH-001 R2, the half the tracker cannot refuse. The spawn path REFUSES an overlapping handoff
-    // (requests.ts), because there the tab does not exist yet and withholding it costs nothing. A
+    // CH-001 R2, the half the tracker cannot refuse: the spawn path REFUSES an overlapping handoff
+    // (requests.ts) because there the tab does not exist yet and withholding costs nothing, but a
     // role that is ALREADY BOUND is rung by the orchestrator through reach_po.py — off-git, no part
-    // of this extension, nothing to intercept — so the only honest move is to say so, once per
-    // colliding pair, and let the human read it. Warn only; the handoff's own words.
-    //
-    // Deliberately NOT gated behind a setting: it writes nothing, types nothing and opens nothing,
-    // and a warning a project can switch off is one nobody sees the day it matters.
+    // of this extension, nothing to intercept — so this only WARNS, once per colliding pair, in the
+    // handoff's own words. Deliberately NOT gated behind a setting: it writes nothing, types nothing
+    // and opens nothing, and a warning a project can switch off is one nobody sees the day it matters.
     const overlapWarned = new Set<string>();
     const runOverlapWarning = () => {
       if (!repo) return;
@@ -492,21 +462,19 @@ export function activate(context: vscode.ExtensionContext) {
         catch { continue; }                                        // a half-written bus is not a warning
         if (!ov && !ex) continue;
         // One warning per colliding PAIR, not per direction and not per tick: two working roles each
-        // see the other, and the tick runs every 15 seconds.
-        //
-        // KEYED BY KIND AS WELL AS BY PAIR, and that is not a detail. An inbox is rewritten while a
-        // pair is live — that is how every block on this bus starts — so a pair that was WAVED
-        // THROUGH at 14:02 can genuinely collide at 14:40. Sharing one key between the note and the
-        // refusal would let the cheap note swallow the expensive warning for the rest of the window,
-        // which is the exact failure §1(3) was raised about, introduced by the fix for it.
+        // see the other, and the tick runs every 15 seconds. KEYED BY KIND AS WELL AS BY PAIR: an
+        // inbox is rewritten while a pair is live — that is how every block on this bus STARTS, so
+        // this is a certainty and not a race — which is why a pair WAVED THROUGH at 14:02 can
+        // genuinely collide at 14:40, and one shared key would let the cheap note swallow the
+        // expensive warning for the rest of the window — the exact failure §1(3) was raised about.
         const other = ov ? ov.other : ex!.other;
         const key = [role, other].sort().join("|") + (ov ? "|refused" : "|waived");
         if (overlapWarned.has(key)) continue;
         overlapWarned.add(key);
-        // The exemption's half (OV-001-R1 §1(3)). It is reported HERE, beside the refusal, because
-        // this is where a refusal is reported: a judgement that suppresses a warning must not be
-        // quieter than the warning it suppressed. It is a note, not an alarm — these two roles are
-        // running, correctly, and the line only says which file nobody is guarding while they do.
+        // The exemption's half (OV-001-R1 §1(3)), reported HERE beside the refusal: a judgement that
+        // suppresses a warning must not be quieter than the warning it suppressed. A note, not an
+        // alarm — these two roles are running correctly; the line only says which file nobody is
+        // guarding while they do.
         const line = ov ? `${overlapReason(ov)}, which is working — one handoff is one merge (§19)`
                         : `${exemptionReason(ex!)} (§19 waived)`;
         vscode.window.setStatusBarMessage(`Loom: ${role}'s handoff ${line}`, 15000);
@@ -582,14 +550,12 @@ export function activate(context: vscode.ExtensionContext) {
       if (notes.length) { noteModel("frontmatterIgnored", notes); debugLog({ modelFrontmatterIgnored: notes }); }
       // AND THAT IS THE WHOLE POLICY — it ends with the workers (MP-002, owner 2026-09-16: "The
       // extension changing orchestrators model version. Must stop. It only applies to
-      // non-orchestrators."). Two blocks used to follow here and both typed `/model` into the
-      // orchestrator's own frame: the PROMOTION to the premium tier (2026-09-13), and the SELF-SHIFT
-      // through `<repo>/orchestrator-model.json` (MS-001 R3, 2026-09-14). Both owner directions are
-      // reversed; both blocks are gone, along with their settings and every function they called.
-      //
-      // Nothing replaces them, deliberately — an orchestrator's tier is now set by the person or by
-      // the session itself, and the extension has no opinion. `models.enforce()` refuses an
-      // orchestrator frame outright, so re-adding a caller here would not resurrect the behaviour.
+      // non-orchestrators."). The two blocks that used to follow both typed `/model` into the
+      // orchestrator's own frame — the PROMOTION to the premium tier (2026-09-13) and the SELF-SHIFT
+      // through `<repo>/orchestrator-model.json` (MS-001 R3, 2026-09-14) — and are gone with their
+      // settings and every function they called; both owner directions are reversed. Nothing replaces
+      // them, deliberately: an orchestrator's tier is set by the person or by the session itself, and
+      // `models.enforce()` refuses an orchestrator frame outright.
     };
     const DEFAULT_RESUME =
       "[loom-resume] Your usage limit has reset. Pick up where you left off: re-read your inbox and " +
@@ -703,13 +669,12 @@ export function activate(context: vscode.ExtensionContext) {
       const mine = tracker.ownerView().filter((o) => o.repo === repo);
       // The tagged frame if it is still here, else adopt only a STRONG candidate and only when it is
       // the only one: a weak candidate (attributed but not self-identified) is a person's click, not
-      // something to start typing `/clear` into on our own.
-      // THE BOARD OUTRANKS THE TAG. Measured 2026-09-09: livegita's tag was pointed by hand at a
-      // diagnostic session (5426095b) twice in one evening, because that was the only candidate the
-      // sidebar offered; the finish notifier then typed a developer's loop-back into it. The board
-      // entry for `po` had carried the real frame (f13a5e27) the whole time. So when the board names
-      // exactly one frame for this project, that is the orchestrator — a stale or misclicked tag is
-      // re-pointed at it, not honoured.
+      // a frame to start injecting into on our own.
+      // THE BOARD OUTRANKS THE TAG (measured 2026-09-09: livegita's tag was pointed by hand at a
+      // diagnostic session 5426095b twice in one evening, the only candidate the sidebar offered, and
+      // the finish notifier typed a developer's loop-back into it while the board entry for `po` had
+      // carried the real frame f13a5e27 the whole time). When the board names exactly one frame for
+      // this project, that is the orchestrator — a stale or misclicked tag is re-pointed at it.
       const declared = mine.filter((o) => o.declared);
       const strong = mine.filter((o) => o.strong);
       const known = (declared.length === 1 ? declared[0] : undefined) ||
@@ -898,18 +863,6 @@ export function activate(context: vscode.ExtensionContext) {
         (wakePending ? " — waking the orchestrator when it is back" : ""), 12000);
       debugLog({ restartReopened: todo.map((m) => `${m.role}<-${m.sessionId.slice(0, 8)}`) });
     };
-    // An orchestrator can write files and ring sessions, but only the extension can open a tab. This
-    // serves `<repo>/open-requests.json` so a PO can bring its own roles back instead of asking the
-    // user to click (see requests.ts for the boundaries).
-    /**
-     * Type `/model <desired>` into a freshly opened frame and wait, bounded, for the session to
-     * acknowledge it — then return so the caller can bind. Returns what happened, for the debug log.
-     *
-     * Why acknowledge rather than fire-and-forget: the footer chip LAGS a switch by a whole turn
-     * (models.ts, measured 2026-09-13), so the chip cannot confirm anything here; the panel's
-     * "Set model to <name>" line can, and it appears at once. Why bounded: a tab that never answers
-     * must not hold the whole spawn loop — every other role in the request is waiting behind it.
-     */
     /** What the tab's footer says right now, or null when the frame cannot be read. */
     const frameModel = async (wid: string) => {
       try {
@@ -927,6 +880,14 @@ export function activate(context: vscode.ExtensionContext) {
       try { cur = JSON.parse(fs.readFileSync(f, "utf8")) || {}; } catch { /* first write */ }
       try { fs.writeFileSync(f, JSON.stringify({ ...cur, model: pm }, null, 2)); } catch { /* never fatal */ }
     };
+    /**
+     * Type `/model <desired>` into a freshly opened frame and wait, bounded, for the session to
+     * acknowledge it — then return what happened, for the debug log, so the caller can bind.
+     * Acknowledge rather than fire-and-forget: the footer chip LAGS a switch by a whole turn
+     * (models.ts, measured 2026-09-13), so only the panel's "Set model to <name>" line, which
+     * appears at once, can confirm. Bounded: a tab that never answers must not hold the spawn loop,
+     * with every other role in the request waiting behind it.
+     */
     const premodel = async (role: string, wid: string): Promise<PreModel> => {
       const base: PreModel = { role, webviewId: wid, want: null, typed: 0, acknowledged: null,
                                chip: null, onPremium: false, ok: true, note: "" };
@@ -984,6 +945,9 @@ export function activate(context: vscode.ExtensionContext) {
                                : `${lastNote} — bound anyway, the next idle tick will switch it` };
     };
 
+    // An orchestrator can write files and ring sessions, but only the extension can open a tab. This
+    // serves `<repo>/open-requests.json` so a PO can bring its own roles back instead of asking the
+    // user to click (see requests.ts for the boundaries).
     let serving = false;
     const serveOpenRequests = async () => {
       if (serving || !repo) return;
@@ -1016,12 +980,11 @@ export function activate(context: vscode.ExtensionContext) {
             if (!wid) { plan.refused.push({ role, reason: "opened a new tab but could not tell which frame it is — bind it by hand" }); continue; }
             // R3 (MP-001): put the tab on the right tier BEFORE binding it. `/loom <role>` runs the
             // inbox check, and from that moment the composer is busy — a `/model` typed after it
-            // would queue as an ordinary message and never execute (dispatch.ts). Only when the
-            // handoff asks for something other than the configured default, because a fresh tab
-            // already comes up on that. The bind is NOT conditional on the switch: on no
-            // acknowledgement within the bound we bind anyway and leave the tier to the next idle
-            // tick, which is R2's job — a role that is bound but on the wrong model gets corrected,
-            // a role that is never bound just sits there.
+            // would queue as an ordinary message and never execute (dispatch.ts). premodel() decides
+            // from what the FRAME reads, not from the setting (R2b). The bind is NOT conditional on
+            // the switch: on no acknowledgement within the bound we bind anyway and leave the tier to
+            // the next idle tick, which is R2's job — a role that is bound but on the wrong model
+            // gets corrected, a role that is never bound just sits there.
             const pm = await premodel(role, wid);
             noteModel("spawn", pm); debugLog({ spawnModel: pm }); recordSpawnModel(pm);
             if (!pm.ok) {
@@ -1102,24 +1065,18 @@ export function activate(context: vscode.ExtensionContext) {
         "~/.claude/loom/<repo>/open-requests.json {\"roles\":[...],\"requestedAt\":\"<iso>\"} and the tab is " +
         "opened for you within seconds, with its webviewId written back into the file (playbook §15). " +
         // PB-001 §4 · THE ONE POINTER, AND IT RIDES A MESSAGE THAT WAS ALREADY GOING OUT.
-        //
-        // The owner's standing rules live in 22 sections of a file an orchestrator only obeys if it
-        // happens to have read it, and he has been the one reminding them it exists. But the fix for
-        // that is NOT to attach the playbook, a digest of it, or a rules list to every message: his
-        // two most recent complaints are "500 lines of garbage" and "just bullet points only", so a
-        // version of this feature that makes every message longer is the thing he objected to,
-        // shipped under a new name. Every other rule in this product reaches a session at the MOMENT
-        // IT APPLIES, on the message that is already about that rule — §12 on the clear reminder,
-        // §21 on the reporting contract, §8/§19 on the delegation reminder.
-        //
-        // What is worth its bytes exactly once is that the file EXISTS and where. This is the one
-        // moment an orchestrator begins a thread with no memory of the last one and re-reads
-        // everything anyway, and it is the only orchestrator-facing message the tool sends that is
-        // about starting rather than about a specific event. The `/loom <role>` bind cannot carry
-        // it — loom_cdp.py executes any line starting with "/" verbatim, so appended text would
-        // corrupt the command — and the context RESTORE, the other candidate, no longer fires at an
-        // orchestrator at all now that §22 has removed the automatic clear. So: here, once, 96
-        // characters, naming the path and nothing else from those 533 lines.
+        // NOT the playbook, a digest of it, or a rules list on every message: his two most recent
+        // complaints are "500 lines of garbage" and "just bullet points only", so a version of this
+        // that makes every message longer is the thing he objected to under a new name. Every other
+        // rule reaches a session at the MOMENT IT APPLIES, on the message already about that rule —
+        // §12 on the clear reminder, §21 on the reporting contract, §8/§19 on the delegation
+        // reminder. Worth its bytes exactly once is that the file EXISTS and where: this is the only
+        // orchestrator-facing message the tool sends about STARTING rather than about an event, and
+        // the one moment an orchestrator re-reads everything anyway. The `/loom <role>` bind cannot
+        // carry it — loom_cdp.py executes any line starting with "/" verbatim, so appended text would
+        // corrupt the command — and the context RESTORE no longer fires at an orchestrator at all now
+        // that §22 has removed the automatic clear. So: here, once, one line naming the path and
+        // nothing else out of the playbook (22 sections / 533 lines when this was written).
         "Your standing rules are ~/.claude/loom/ORCHESTRATION-PLAYBOOK.md — read it once, now.",
         "restart-debug.json");
     };
@@ -1149,12 +1106,11 @@ export function activate(context: vscode.ExtensionContext) {
           // use, so a hidden window is a build that looks collectable while an editor is running it.
           const stamp = path.join(os.homedir(), ".claude", "loom", "running-versions.json");
           // A READ THAT CANNOT ANSWER IS NOT PERMISSION TO REWRITE — principle 16, on the WRITER's
-          // side of the file. The first version was `catch { /* first */ }`, which treats "there is
-          // no file" and "I could not read the file" as the same thing, and they are opposites.
-          // Starting from `{}` and then publishing ATOMICALLY erases every other window's entry, and
+          // side of the file. "There is no file" and "I could not read the file" are opposites:
+          // starting from `{}` and then publishing ATOMICALLY erases every other window's entry, and
           // gc reads the result as a perfectly readable file naming ONE version — so every other
-          // running build becomes collectable in tier 1, the unattended tier, for the ~15 s until
-          // the other windows re-stamp. The ways that read fails are ordinary: a torn file from any
+          // running build becomes collectable in tier 1, the unattended tier, for the ~15 s until the
+          // other windows re-stamp. The ways that read fails are ordinary: a torn file from any
           // pre-0.33.0 window still rewriting this non-atomically every 15 s, EMFILE, a transient
           // EACCES. Only ENOENT means "first".
           let all: any = {};

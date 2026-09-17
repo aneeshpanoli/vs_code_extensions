@@ -10,11 +10,11 @@
 //   * funisland has 75 worktrees, 72 belonging to no board role (4.7 GB); Gaming 13 of 8.
 //   * boards name dead sessions: Gaming 5 of 6, lowercase `gaming` 10 of 10, shwab_docker 1.
 //   * 1.4 GB of checkpoints; 19 `.bak-<epoch>` files.
-// The bytes are not the point. Orphan worktrees and dead buses feed straight back into an
-// orchestrator's context — one `git worktree list` of funisland fills a panel — and a dead
-// transcript is a WRONG-LOOKUP hazard: Lumen's orchestrator was banked, cleared and restored
-// fourteen times in one night against a stale copy of a transcript sitting in Gaming's directory
-// (see context.ts `transcriptFor`). Garbage here is not waste, it is misinformation.
+// The bytes are not the point: orphan worktrees and dead buses feed straight back into an
+// orchestrator's context (one `git worktree list` of funisland fills a panel), and a dead transcript
+// is a WRONG-LOOKUP hazard — Lumen's orchestrator was banked, cleared and restored fourteen times in
+// one night against a stale transcript copy in Gaming's directory (see context.ts `transcriptFor`).
+// Garbage here is not waste, it is misinformation.
 //
 // THE ONE RULE THIS FILE OBEYS: every action has a written way back, in `gc-debug.json`. Almost
 // every action is a MOVE into `~/.claude/loom/_archive/<date>/` or a field added to a board entry,
@@ -22,12 +22,14 @@
 //
 // ONE PATH IS NOT, and saying "nothing is ever deleted" hid it for two versions: tier 2's
 // `kind: "worktree"` calls `health.removeWorktree`, which runs `git worktree remove` — the BRANCH
-// and its commits survive (with the restore command recorded in `worktree-removals.json`), but the
-// working DIRECTORY is gone, and with it anything git was never told about. That is why that path
-// refuses on dirty trees, on detached HEADs, on gitignored files git cannot restore, on unmerged
-// branches, on near-miss role names, and on liveness judged by the WIDEST rule in this file
-// (`WORKTREE_LIVE_WINDOW_MS`): over-keeping a worktree costs a directory listing, and the mistake
-// in the other direction cannot be undone.
+// and its commits survive (restore command recorded in `worktree-removals.json`), but the working
+// DIRECTORY is gone, and with it anything git was never told about. So a worktree is only ever
+// CONSIDERED once the roster has let it past: the roster is the WIDEST rule here — it counts a role
+// at ANY age, and `planWorktrees` skips a rostered worktree before any refusal is weighed. What
+// survives that is then refused on ALL SEVEN of: dirty trees, a live session, detached HEADs,
+// gitignored files git cannot restore, unmerged branches, a merge state that could not be
+// determined, and near-miss role names. Over-keeping a worktree costs a directory listing, and the
+// mistake in the other direction cannot be undone.
 //
 // THE SECOND RULE: a plan is a guess about a moment that has passed. Every safeguard in the planner
 // is CHECKED AGAIN in the applier against the world as it is when the move happens — a session can
@@ -73,8 +75,9 @@ export interface GcConfig {
 }
 
 // Default OFF for 0.33.0 (product decision, 2026-09-13): the first pass on this machine would move
-// ~700 MB unattended, so a person runs "Show plan" then "Run tiers 1+2" once and we flip the default
-// after one clean pass. Everything is reversible either way; this is about the first time.
+// ~700 MB unattended, so a person runs "Show plan" then "Run tiers 1+2" once and WE FLIP the default
+// after one clean pass — an outstanding commitment, not a description; `enabled` is still false.
+// Everything is reversible either way.
 export const DEFAULT_GC_CONFIG: GcConfig = {
   enabled: false, intervalHours: 24, transcriptDays: 14, backupDays: 7, staleBusDays: 30,
 };
@@ -262,12 +265,14 @@ const SCAN_MAX_FILES = 4000;
 const SCAN_MAX_DEPTH = 4;
 
 /**
- * Every session id ANYTHING under the loom root still points at. Three explicit readers, then one
- * universal sweep, because the explicit list has been wrong twice already:
- *   * board entries (`roles` wrapper or flat), each project's `context-state.json`;
+ * Every session id ANYTHING under the loom root still points at. FOUR explicit readers, then one
+ * universal sweep, because the explicit list has been wrong twice already — the sweep is what makes
+ * a third omission survivable:
+ *   * board entries (`roles` wrapper or flat);
+ *   * each project's `context-state.json`;
  *   * each role's `<repo>/<role>/status.json` — a worker writes its own id there;
  *   * `<repo>/open-requests.json`'s `opened[].sessionId` — what the orchestrator just had opened;
- *   * ANY 36-character session id appearing in ANY `*.json` / `*.md` under the loom root.
+ * then the sweep: ANY 36-character session id appearing in ANY `*.json` / `*.md` under the loom root.
  * Measured 2026-09-13: eight live ids were referenced ONLY in a status.json or an open-requests
  * result. A transcript named anywhere here is live bookkeeping whatever its age — archiving it turns
  * a stale-but-findable id into an unfindable one, which is strictly worse than keeping a file.
@@ -448,10 +453,10 @@ export interface RunningVersions {
 /**
  * Which builds windows are actually running, from `running-versions.json`.
  *
- * THIS READ FAILS CLOSED. The first version returned an empty Set for an absent or torn file, and an
- * empty keep-set is indistinguishable from "no window is running anything" — so a single interrupted
- * write (ten windows rewrite this file every 15 s) would have made 0.29.0, the build nine windows
- * were on, look collectable. `readable: false` refuses the whole extension tier instead.
+ * THIS READ FAILS CLOSED. An empty keep-set is indistinguishable from "no window is running
+ * anything", so the first version's empty-Set-for-an-absent-or-torn-file would have made 0.29.0 —
+ * the build nine windows were on — look collectable after one interrupted write (ten windows rewrite
+ * this file every 15 s). `readable: false` refuses the whole extension tier instead.
  *
  * TWO KEY SHAPES, unioned. Entries used to be keyed by REPO, which is wrong twice over: two windows
  * open on one project share a slot (so the one that ticks second hides the other's build), and every
@@ -466,16 +471,14 @@ export function runningVersions(now: number, withinMs: number): RunningVersions 
   for (const v of Object.values<any>(d)) {
     if (!v || typeof v !== "object") continue;
     const at = Date.parse(String(v.at || ""));
-    // An entry that cannot say WHEN it was written is not evidence of anything. The first version
-    // kept it — "an unparseable date is not evidence that the window is gone" — but that reasoning
-    // has no end to it: there is no later moment at which such an entry ages out, so one damaged
-    // entry pins its version in the keep-set for the life of the file and that build is never
-    // collectable again. Dropping it is bounded and self-correcting in one tick: any window
-    // actually running that build re-stamps within 15 seconds, with a timestamp.
-    //
-    // This is NOT the torn-FILE case and does not weaken it. When the file itself will not parse we
-    // can see no entries at all, so we cannot tell an empty keep-set from a real one and the whole
-    // tier is refused (`readable: false`). Here the file parsed and the other entries are readable.
+    // An entry that cannot say WHEN it was written is not evidence of anything. Keeping it, as the
+    // first version did, has no end to it: nothing ever ages such an entry out, so one damaged entry
+    // pins its version in the keep-set for the life of the file and that build is never collectable
+    // again. Dropping it is bounded and self-correcting in one tick — any window actually running
+    // that build re-stamps within 15 seconds, with a timestamp.
+    // NOT the torn-FILE case, which is untouched: when the file itself will not parse we see no
+    // entries at all, cannot tell an empty keep-set from a real one, and refuse the whole tier
+    // (`readable: false`). Here the file parsed and the other entries are readable.
     if (!Number.isFinite(at) || now - at > withinMs) continue;
     if (typeof v.version === "string" && v.version) versions.add(v.version);
   }
@@ -628,16 +631,16 @@ function rosterOf(repo: string): { canon: Set<string>; names: string[] } {
  * `git worktree remove`. The branch and its commits survive and the restore line is recorded, but
  * the working directory does not, and neither does anything git was never told about.
  *
- * THE GUARD THAT ACTUALLY DECIDES IS THE ROSTER, NOT LIVENESS — worth stating plainly, because the
- * code reads as though `input.liveRoles` were the thing standing between a worktree and `rm -rf`,
- * and a GC-006 review reasonably concluded exactly that and proposed widening the 30-minute window.
- * It is not: `scanWorktrees` marks a worktree orphaned only when its name is absent from
- * `boardRoles(repo)`, and that roster is the board UNION every role owning a MAILBOX on the bus —
- * any directory holding a `status.json`, `inbox.md` or `outbox.md`, at ANY age. So a role whose
- * session wrote status six hours ago, or six months ago, is still on the roster and its worktree is
- * never a candidate; the liveness window never gets a say. Widening that window would have added a
- * strictly narrower test (a status.json is a mailbox) inside a guard that already passed — an
- * unreachable safeguard that reads as load-bearing, which is worse than none.
+ * THE GUARD THAT ACTUALLY DECIDES IS THE ROSTER, NOT LIVENESS — stated plainly because the code
+ * reads as though `input.liveRoles` stood between a worktree and `rm -rf`, and a GC-006 review
+ * concluded exactly that and proposed widening the 30-minute window. It does not: `scanWorktrees`
+ * marks a worktree orphaned only when its name is absent from `boardRoles(repo)`, and that roster is
+ * the board UNION every role owning a MAILBOX on the bus — any directory holding a `status.json`,
+ * `inbox.md` or `outbox.md`, at ANY age. A role whose session wrote status six hours ago, or six
+ * months ago, is still on the roster and its worktree is never a candidate; the liveness window never
+ * gets a say. Widening it would have added a strictly narrower test (a status.json is a mailbox)
+ * inside a guard that already passed — an unreachable safeguard that reads as load-bearing, which is
+ * worse than none.
  *
  * What that leaves collectable is the real target: a worktree named for a role with NO board entry
  * and NO mailbox anywhere on its project's bus — funisland's 72, measured 2026-09-13. Everything
@@ -797,9 +800,9 @@ export interface GcResult {
 }
 
 /**
- * What the world looks like AT APPLY TIME. A plan can be minutes old — it is shown to a person, who
- * reads it and clicks — and in that window a session can start, a tree can go dirty, and a board
- * entry can be rewritten. Every safeguard is therefore re-checked here against these.
+ * What the world looks like AT APPLY TIME. A plan can be minutes old — it is shown to a person who
+ * reads it and clicks — and in that window a session can start, a tree go dirty and a board entry be
+ * rewritten, so every safeguard is re-checked here against these.
  */
 export interface ApplyOptions {
   repoRoots?: Record<string, string>;
@@ -817,10 +820,10 @@ export interface ApplyOptions {
    *  test that moves three small files in a millisecond can never reach a 150-second throttle, and a
    *  callback no test can observe is a callback that can be silently unwired. */
   refreshEveryMs?: number;
-  /** The clock the throttle reads. Injectable for the same reason `refreshEveryMs` is: the bug this
-   *  parameter exists to make visible — the throttle advancing on a refresh that wrote nothing —
-   *  only shows up as a difference in WHEN attempts happen, and a test cannot see that without
-   *  owning the clock. Defaults to `Date.now`. */
+  /** The clock the throttle reads. Injectable for the same reason `refreshEveryMs` is: the bug it
+   *  exists to make visible — the throttle advancing on a refresh that wrote nothing — shows up only
+   *  as a difference in WHEN attempts happen, which no test can see without owning the clock.
+   *  Defaults to `Date.now`. */
   nowMs?: () => number;
 }
 
@@ -929,11 +932,11 @@ export function applyGc(plan: GcPlan, tiers: number[], opts: ApplyOptions = {}):
   ];
   const now = opts.nowMs ?? Date.now;
   const refreshEvery = opts.refreshEveryMs ?? LEASE_MS / 2;
-  // The last moment the claim was actually WRITTEN — not the last moment we thought about writing
-  // it. The first version reset this clock on every attempt, including the ones where `refreshLease`
-  // declined because the claim was still young: each decline pushed the next attempt another
-  // half-lease out from a moment at which nothing had been written, so a slow pass could drift a
-  // full lease between writes and expire under its own holder.
+  // The last moment the claim was actually WRITTEN, not the last moment we thought about writing it.
+  // The first version reset this clock on every attempt, declines included (`refreshLease` declines
+  // while the claim is young), so each decline pushed the next attempt another half-lease out from a
+  // moment at which nothing had been written: a slow pass could drift a full lease between writes and
+  // expire under its own holder.
   let lastWrite = now();
   /** Half-life, not every item: `refresh` writes a file, and tier 1 can be hundreds of items. */
   const tryRefresh = (): void => {
@@ -983,12 +986,11 @@ export function applyGc(plan: GcPlan, tiers: number[], opts: ApplyOptions = {}):
     if (reason) result.skipped.push({ item, ok: false, note: reason });
     else { result.done.push({ item, ok: true, note: item.dest ? `moved to ${item.dest}` : "applied" });
            result.bytesFreed += item.bytes; }
-    // AFTER the item as well as before it. One cross-device copy of a 700 MB transcript directory
-    // can outlast the whole five-minute lease on its own, and refreshing only at the top of the loop
-    // means the claim is renewed just BEFORE the long wait and not again until the next item has
-    // also finished. This does not protect the inside of a single long item — nothing here can; the
-    // guards for that are `finishAuto`'s conditional release and the fact that every safeguard is
-    // re-checked against the world at the moment of the move.
+    // AFTER the item as well as before it: one cross-device copy of a 700 MB transcript directory can
+    // outlast the whole five-minute lease on its own, and refreshing only at the top of the loop
+    // renews the claim just BEFORE the long wait and not again until the next item has also finished.
+    // This does not protect the inside of a single long item — nothing here can; the guards for that
+    // are `finishAuto`'s conditional release and the re-check of every safeguard at the move itself.
     tryRefresh();
   }
   logGc(result);
