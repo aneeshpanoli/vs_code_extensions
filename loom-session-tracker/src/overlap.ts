@@ -1,34 +1,21 @@
-// overlap.ts — ONE JOB: two live handoffs on one bus must not touch the same files.
+// overlap.ts — ONE JOB: two live handoffs on one bus must not touch the same files (CH-001, §19).
 //
-// WHY (CH-001, playbook §19, owner decision 2026-09-13). The fixed cost of a handoff is the same
-// whatever its size — ~40 mechanical orchestrator calls, three gate runs, a merge — so §19 sets a
-// size rule (one handoff is one merge) and a parallelism rule (one developer per file-disjoint
-// package). The parallelism rule is the one a machine can enforce: the handoff's frontmatter
-// declares `files:`, and this refuses to spawn a second handoff that intersects a first.
+// §19's parallelism rule (one developer per file-disjoint package) is the half a machine can enforce:
+// the handoff's frontmatter declares `files:`, and this refuses to spawn a second handoff that
+// intersects a first. The cost of getting it wrong is paid at MERGE time, hours later, by the
+// orchestrator rather than by whoever made the mistake.
 //
-// A rule nobody enforces drifts. Two developers on one file is not a hypothetical here: the branches
-// are isolated worktrees precisely because it happened, and the cost is paid at MERGE time, hours
-// after the mistake, by the orchestrator rather than by whoever made it.
+// NO OPINION WHERE NOTHING WAS DECLARED (principle 16; the handoff's law "Never refuse on absence of
+// a `files:` line"). An undeclared handoff is one we cannot judge, not one that touches nothing, and
+// refusing on silence would make `files:` compulsory by stealth for every bus that has not adopted it.
 //
-// THE GUARD HAS NO OPINION WHERE NOTHING WAS DECLARED, and that is deliberate (principle 16, and the
-// handoff's own law: "Never refuse on absence of a `files:` line"). Both sides need a declaration.
-// An undeclared handoff is not a handoff that touches nothing — it is one we cannot judge, and
-// refusing a spawn on a silence would make the `files:` line compulsory by stealth, breaking every
-// bus on the machine that has not adopted it yet.
-//
-// WHAT COUNTS AS THE SAME FILE. Two rules, both of which had to exist:
-//  - a `*` wildcard, translated to `.*` as the handoff specifies, so `src/*.ts` collides with
-//    `src/models.ts`;
-//  - a SEGMENT-anchored suffix match, because the same file is written from two different roots on
-//    this very bus: CH-001's own frontmatter says `src/models.ts` (relative to the extension dir)
-//    while RB-001's status.json listed `loom-session-tracker/src/models.ts` (relative to the repo
-//    root). Comparing those as strings would have called the collision this guard exists for
-//    "disjoint". Anchoring on `/` is what keeps it from also matching `other/src/mymodels.ts`.
-//
-// The suffix rule can over-match in one shape — a bare `models.ts` collides with any directory's
-// `models.ts` — and that direction is the correct one to be wrong in: an over-match costs the
-// orchestrator one re-read of two briefs, an under-match costs a merge conflict discovered an hour
-// later. It is also entirely in the writer's hands: declare a path with a directory in it.
+// SAME FILE means two things: a `*` wildcard translated to `.*` as the handoff specifies, and a
+// SEGMENT-anchored suffix match, because one file is declared from two different roots on this bus
+// (`src/models.ts` vs `loom-session-tracker/src/models.ts` — string equality called that "disjoint").
+// Anchoring on `/` keeps it from also matching `other/src/mymodels.ts`. The suffix rule over-matches
+// in one shape — a bare `models.ts` hits any directory's — and that is the correct direction to be
+// wrong in (an over-match costs a re-read; an under-match costs a merge conflict), and the writer
+// controls it by declaring a path with a directory in it.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -60,112 +47,51 @@ export function firstShared(mine: string[], theirs: string[]): string | null {
 
 // ── the mechanical-merge exemption (OV-001) ─────────────────────────────────────────────────────
 //
-// THREE FILES IN THIS REPO ARE TOUCHED BY ALMOST EVERY HANDOFF AND CONFLICT IN NONE OF THEM.
-// `package.json` churns by a one-line `version` bump; `test/mutation.py` churns by APPENDING to its
-// `MUTATIONS` table; `HANDOVER.md` churns by appending a dated section. The orchestrator has resolved
-// all three by union repeatedly, mechanically, with no judgement.
+// These three files are touched by almost every handoff here and conflict in none: `package.json`
+// churns by a one-line `version` bump, `test/mutation.py` by appending to its `MUTATIONS` table,
+// `HANDOVER.md` by appending a dated section. The orchestrator has resolved all three by union
+// repeatedly, with no judgement — that history, not a property claim, is the evidence. Over the last
+// 30 non-merge commits (435 pairs) roughly two refused pairs in three were refused over a version
+// line. Quote that RATIO with its window, never a count: the counts move a lot between windows.
+// The handover is third on OV-001-R1 §2, which the orchestrator ratified — worth knowing, because the
+// FOURTH entry was later admitted on the same argument and then reversed.
 //
-// THE MEASUREMENT, AND ITS WINDOW. Over this repo's last 30 non-merge commits, all 435 pairs: 285
-// collide, 103 with the manifest and the registry exempted, 100 with the three. So roughly TWO pairs
-// in three were refused over a version line and could have run in parallel. The digit moves: the same
-// script read 307/86/83 one block ago and 288/88 when OV-001 was written, and across ten 30-commit
-// windows (offsets 0-6, 9, 12, 15) the two-file figure ranged 86-103 and the three-file figure 79-100.
-// So the finding is robust and the number is not — quote the ratio, never the count, and SAY WHICH
-// WINDOW, because a range quoted without its offsets is how the R2 draft of this comment managed to
-// cite a figure from one window as if it came from another.
+// WHY THE BLUNT FORM. The rule everyone wants is about the KIND of change ("a manifest whose only
+// churn is a version line"), and the kind of a file is not expressible in the declaration format we
+// have; making it expressible (a `files-append:` key, say) changes what every bus on the machine
+// writes and belongs to whoever owns the handoff format. Until then §2 governs: a correct blunt rule
+// beats a clever wrong one. Not configurable, because both forms share the same misuse mode — name a
+// real source file and the guard goes quiet for the file it exists to protect — and hardcoding at
+// least makes that mistake arrive as a reviewable DIFF. The price is real but unpaid: a `package.json`
+// where two lanes rewrite dependencies IS the collision this module exists for, and there the
+// exemption is wrong and unfixable without a per-bus list — measured, though, no other bus collides
+// at all today, so the bill is zero until it arrives, and the per-bus list is the remedy then.
 //
-// THE HANDOVER BUYS ALMOST NOTHING TODAY (103 -> 100, three pairs), and it is in the list anyway,
-// because the argument for it is the argument for `test/mutation.py` and a list that holds one and
-// not the other is a list that will be re-litigated. Its throughput case is weaker than the
-// manifest's by an order of magnitude and should not be claimed otherwise.
+// THE EXEMPTION MUST NEVER BE SILENT (OV-001-R1 §1(3)): a refusal prints `overlaps X on Y`, so a
+// non-refusal caused by this must be reported too — `exemptionFor` below is that other half, rendered
+// at the same two places a refusal is.
 //
-// WHY THE BLUNT FORM AND NOT THE PRINCIPLED ONE. The principled rule everyone wants is about the KIND
-// of change — "a manifest whose only churn is a version line", "an append-only table". It is not
-// derivable from what this function is given: a declared path STRING, judged before either handoff
-// has been done. Whether a `package.json` is about to take a version bump or a dependency rewrite is
-// a fact about an edit that does not exist yet, and the file on disk shows only its current state.
+// DIRECTION OF FAILURE. This guard REFUSES, so a false positive stalls a dispatch (§3). The exemption
+// strictly shrinks both declarations before comparing, so it can only ever REMOVE a refusal: its
+// worst case is a missed collision on the three cheapest merges in the repo, never a stall.
 //
-// An adversarial pass refused the stronger version of that claim, and it was right to. The intent is
-// not unknowable — it is written in the brief's PROSE two lines away ("`0.53.0` is TAKEN by OV-001,
-// this block is `0.54.0`"), and the `files:` list is itself a trusted statement about edits that have
-// not happened, so a `files-append:` key would be the same trust at the same cost. tfg_ua already
-// annotates its paths by hand (`files: tools/cardmaker/** (NEW)`). So the honest claim is narrower
-// than "impossible": the KIND of a file is not expressible in the declaration format we have, and
-// making it expressible means changing what every bus on the machine writes. That is a bigger change
-// than this one and belongs to whoever decides the handoff format, not to the guard reading it.
-// Until then §2 governs: a correct blunt rule beats a clever wrong one.
-//
-// WHY NOT CONFIGURABLE — and the honest cost of that. Both forms have the SAME misuse mode: name a
-// real source file and the guard goes quiet for the file it exists to protect, saying nothing when it
-// does. Hardcoding does not prevent that mistake; it makes the mistake arrive as a DIFF, reviewable,
-// with this comment attached, instead of as a config edit nobody sees. The price is real and is paid
-// by other buses: a `package.json` where two lanes rewrite dependencies IS the collision this module
-// exists for, and on such a bus this exemption is wrong and unconfigurable. Measured today, no other
-// bus collides at all, so the price is currently zero — but it is a bill that can arrive, and the
-// remedy when it does is a per-bus list, not a cleverer rule.
-//
-// THE SILENCE IS FIXED (OV-001-R1 §1(3)), and it was the worst of the three findings. A refusal
-// prints `overlaps X on Y`; a non-refusal CAUSED by this exemption printed nothing anywhere, so the
-// guard made a judgement on the orchestrator's behalf and never said it had. `exemptionFor` below is
-// the other half of `overlapFor`, reported at the same two places a refusal is — the spawn result and
-// the status-bar warning — naming the file it let through. That defect class is what this product has
-// been chasing all week: a value computed and then never rendered.
-//
-// THE DIRECTION OF FAILURE. Unlike everything else on this bus, this guard REFUSES, so a false
-// positive stalls a dispatch (§3). The exemption can only ever REMOVE a refusal, never create one —
-// it strictly shrinks both declarations before they are compared — so its worst case is a missed
-// collision on three files whose merge is the cheapest in the repo, and it cannot stall anything.
-//
-// A WILDCARD IS NEVER EXEMPTED AWAY. The test below is literal on the declared path: `*` is not
-// expanded, so a handoff declaring `test/*` or `*` keeps that declaration in full and still collides
-// with every real file the other side names. Only a declaration that IS one of these three files is
-// dropped. Expanding the wildcard here would have been the dangerous reading — `*` matches
-// `package.json`, so a sloppy `files: *` would have exempted ITSELF and refused nothing at all.
+// A WILDCARD IS NEVER EXEMPTED AWAY. The test is literal on the declared path, so `test/*` or `*`
+// keeps its full claim. Expanding the wildcard would be the dangerous reading: `*` matches
+// `package.json`, so a sloppy `files: *` would exempt ITSELF and refuse nothing at all.
 
-// THREE FILES, NOT TWO (OV-001-R1 §2). The principle that exempts the first two reaches the handover
-// as well, and the orchestrator agreed it did. `HANDOVER.md` collides in 3 of this repo's last 435
-// commit pairs, and it churns the way `test/mutation.py` does: an APPEND — a new dated section at the
-// end. A handover merge here is as mechanical as a version bump, and nobody has ever had to think
-// about one. On this bus only the orchestrator writes it, and no bus on this machine declares it as
-// product.
+// `README.md` WAS A FOURTH AND WAS TAKEN BACK (OV-001-R2 §1). This extension is ONE build serving
+// every bus, so the list judges every README every bus declares — and on hackomics the README IS the
+// product (`~/.claude/loom/hackomics/developer1/inbox.md` declares
+// `files: public/index.html, public/styles.css, README.md`). Meet that case before proposing a docs
+// exemption again; it bought under 1% of parallelism at its historical best and none today.
+// `HANDOVER.md` survives the same test only because no bus declares it as product — a guard that goes
+// quiet is judged by what the QUIETEST bus loses, never by what the busiest gains.
 //
-// ── `README.md` WAS THE FOURTH AND IS NOT (OV-001-R2 §1, the orchestrator reversing its own call) ──
+// AND IT STOPS AT THREE: the next candidate is a judgement about one bus's habits, i.e. a per-bus list.
 //
-// R1 added `README.md` on the same append-shaped argument, and recorded, unhedged, the measured
-// counter-example that made it wrong: `~/.claude/loom/hackomics/developer1/inbox.md` declares
-// `files: public/index.html, public/styles.css, README.md`. ON THAT BUS THE README IS THE PRODUCT —
-// landing-page copy, edited in earnest by whoever owns the page, not a feature list that grows a
-// line. R1 shipped it anyway, under orders, with the counter-example in this comment. The
-// orchestrator read the report and took the instruction back. This is the record it asked for, so
-// that the next person to propose a docs exemption MEETS the hackomics case instead of re-deriving it.
-//
-// WHY THE REVERSAL IS RIGHT WITHOUT NEEDING A PER-BUS LIST TO SETTLE IT. This extension is ONE build
-// serving every bus on the machine, so the list is not a judgement about this repo's README — it is a
-// judgement about every README every bus declares. Measured over ten 30-commit windows, stated with
-// their offsets because a refutation pass re-measured only offsets 0-5 and read a disagreement that
-// was not there: `README.md` on top of the other three bought ZERO pairs of 435 in every one of the
-// six MOST RECENT windows (offsets 0-5), and 2, 2, 3, 3 in the four older ones (6, 9, 12, 15). So at
-// its historical best it bought under 1% of parallelism, at present it buys none at all, and it spent
-// that on dispatching two roles unguarded onto another bus's actual product. A plainly bad trade at
-// any price, and the price was approximately zero. The counter-example did not need to be weighed
-// against a throughput case; there was barely a throughput case to weigh.
-//
-// WHAT THE REVERSAL COSTS, so it is on the record and not just asserted: in the current window, 100
-// pairs refuse with the three exempt and 100 with four — the reversal costs NOTHING today. The worst
-// window measured is offset 12, 79 vs 76: three pairs, under 1%. The exemption's whole value is the
-// manifest and the registry (285 -> 103); the docs were always rounding error.
-//
-// AND THE SHAPE OF THE ERROR IS THE LESSON, not the file. A guard that goes quiet is judged by what
-// the QUIETEST bus loses, never by what the busiest bus gains. `HANDOVER.md` survives that test
-// because no bus declares it as product; `README.md` failed it on the first bus anyone checked.
-//
-// AND IT STOPS AT THREE. The next candidate is a judgement about a specific bus's habits rather than
-// about the kind of change, which is a per-bus list and a different block.
-//
-// Segment-anchored and literal, so a `docs/HANDOVER.md` or a `node_modules/x/package.json` in any
-// directory is exempt too, and a glob that would have claimed one (`docs/**` against
-// `docs/HANDOVER.md`) now goes quiet. That is the same over-match `package.json` already has, in the
-// direction that can only drop refusals — and one more reason the list stops here.
+// Segment-anchored and literal, so `docs/HANDOVER.md` or `node_modules/x/package.json` is exempt too,
+// and a glob that would have claimed one (`docs/**`) goes quiet — the same over-match `package.json`
+// already has, in the direction that can only drop refusals.
 const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md"];
 
 /** Is this declared path one of the three files whose merge is a mechanical union (see above)?
@@ -184,13 +110,11 @@ export function sharedFile(mine: string[], theirs: string[]): string | null {
 }
 
 /** The file this exemption LET THROUGH, when it is the only reason there is no refusal — otherwise
- *  null. Pure, and the exact complement of `sharedFile`: a real shared file means the pair refuses
- *  anyway and nothing was suppressed, so there is nothing to report.
+ *  null. The exact complement of `sharedFile`: a real shared file means the pair refuses anyway.
  *
- *  The name reported is the EXEMPT side of the first suppressed pair, which is not always the side
- *  being judged: `mine: ["*"]` against `theirs: ["package.json"]` is suppressed by the OTHER side's
- *  manifest, and `*` is what was claimed, not what was let through. Naming the exempt file is what
- *  makes the note actionable — it is the file two roles are about to edit unguarded. */
+ *  Reports the EXEMPT side of the first suppressed pair, which is not always the side being judged
+ *  (`mine: ["*"]` against `theirs: ["package.json"]` is suppressed by the other side's manifest).
+ *  The exempt file is the actionable one: it is what two roles are about to edit unguarded. */
 export function exemptedShare(mine: string[], theirs: string[]): string | null {
   if (sharedFile(mine, theirs)) return null;         // it refuses on its own merits; nothing was let through
   for (const m of mine) for (const t of theirs) {
@@ -229,10 +153,9 @@ export interface Overlap {
 /**
  * The overlap that should refuse `role`, or null.
  *
- * Judged against every OTHER role of this bus that is currently `working`, plus `alsoLive` — roles
- * that are not working yet but are being opened in this same breath, which is the case §19 cares
- * about most: one `open-requests.json` naming two roles whose briefs collide would otherwise spawn
- * both and the disjointness rule would never have been consulted at all.
+ * Judged against every OTHER `working` role of this bus, plus `alsoLive` — roles being opened in the
+ * same breath. That case matters most: one `open-requests.json` naming two roles whose briefs collide
+ * would otherwise spawn both without the disjointness rule ever being consulted.
  */
 export function overlapFor(repo: string | null, role: string, alsoLive: string[] = []): Overlap | null {
   if (!repo || !role) return null;
@@ -264,14 +187,12 @@ export interface Exemption {
 }
 
 /**
- * What `overlapFor` decided NOT to refuse, and why — or null when it refused, or when the pair is
- * genuinely disjoint and no judgement was made at all.
+ * What `overlapFor` decided NOT to refuse — or null when it refused, or when the pair is genuinely
+ * disjoint and no judgement was made at all.
  *
- * A REFUSAL WINS. If any other role refuses `role`, this returns null: the dispatch is not happening,
- * so a note about a file that would have been waved through is noise on top of a blocked spawn. This
- * is deliberately the same others-set, in the same sorted order, as `overlapFor` — the two answer one
- * question between them, and a note that disagreed with the decision it annotates would be worse than
- * silence.
+ * A REFUSAL WINS: a note about a waved-through file is noise on top of a blocked spawn. Deliberately
+ * the same others-set in the same sorted order as `overlapFor`, so the note cannot disagree with the
+ * decision it annotates.
  */
 export function exemptionFor(repo: string | null, role: string, alsoLive: string[] = []): Exemption | null {
   if (!repo || !role) return null;

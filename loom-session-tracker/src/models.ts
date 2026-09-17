@@ -1,49 +1,34 @@
 // models.ts — ONE JOB: every session on the tier its work actually needs.
 //
-// WHY: every session draws on ONE shared usage pool, and the top tier costs ~2x the Opus tier per
-// token ($10/$50 vs $5/$25 per MTok). Workers doing mechanical handoff work do not need it; the
+// WHY: every session draws on ONE shared usage pool, and the premium tier costs ~2x the Opus tier
+// per token ($10/$50 vs $5/$25 per MTok). Workers doing mechanical handoff work do not need it; the
 // orchestrator, which reasons over the whole board, may.
 //
-// Two rules, and they stack. The FLOOR is the tier boundary: the premium tier is the orchestrator's
-// alone, and no handoff, setting or worker may cross it. Above that floor the ORCHESTRATOR picks
-// per handoff (MP-001, owner 2026-09-13) between Opus 5 and Sonnet 5 by writing `model:` into the
-// handoff's frontmatter; this file reads that choice, enforces it in BOTH directions, escalates a
-// worker that loops back twice, and appends a ledger line so the rubric can be judged in a month.
+// TWO RULES, AND THEY STACK. The FLOOR: the premium tier is the orchestrator's alone, and no
+// handoff, setting or worker may cross it. Above it the ORCHESTRATOR picks per handoff (MP-001,
+// owner 2026-09-13) between Opus 5 and Sonnet 5 by writing `model:` into the handoff's frontmatter;
+// this file enforces that choice in BOTH directions, escalates a worker that loops back twice, and
+// appends a ledger line so the rubric can be judged in a month.
 //
-// HOW A SESSION'S MODEL IS READ (measured live, 2026-09-08): the composer footer renders as
-//   ... | Remote Control | Opus 5 | Medium | Bypass permissions
-// i.e. model, then effort, then the permission chip. Matching that whole run — anchored on the
-// permission chip and taking the LAST match — means a conversation that merely *mentions* a model
-// name cannot be mistaken for the footer.
+// A SESSION'S MODEL IS READ off the footer run `model [· effort] · permission-chip` (measured live
+// 2026-09-08), anchored on the permission chip and taking the LAST match, so a conversation that
+// merely mentions a model name cannot be mistaken for the footer. THE CHIP LAGS THE SWITCH
+// (measured 2026-09-13): it can still read the old model a minute after "Set model to <name>", and
+// only flips at the session's next turn — so an acknowledged switch with no later turn is left
+// alone until the chip catches up. Correction is `/model <id>` injected into the session, the same
+// way `/loom <role>` binds one; a role stays pending until SEEN on a cheaper model, retried on a
+// growing backoff, because a switch can report success and not take effect.
 //
-// HOW IT IS CORRECTED: inject `/model <id>` into the offending session, the same way `/loom <role>`
-// binds one. A role stays pending until it is SEEN on a cheaper model; attempts repeat on a growing
-// backoff, so a switch that fails or silently does not take effect is retried rather than forgotten.
+// THE ORCHESTRATOR IS NEVER SWITCHED — BY ANY PATH, IN EITHER DIRECTION (owner, 2026-09-16). This
+// REVERSES two earlier directions this file used to cite; they are gone rather than disabled, and
+// nothing here is rationale for bringing either back. A `<repo>/orchestrator-model.json` left on
+// any bus is inert by code: no function in this file reads that path.
 //
-// THE CHIP LAGS THE SWITCH (measured 2026-09-13 05:49–05:53 on ReciEats/developer2): `/model
-// claude-opus-5` printed "Set model to Opus 5 for this session only" at once, but the footer chip
-// still read "Fable 5.1" sixty seconds later, so the policy typed the command AGAIN; the chip only
-// flipped to "Opus 5" when the session's next turn began. The panel is therefore read for that
-// acknowledgement: a `You: /model <id>` echo followed by "Set model to <name>" with no later turn is
-// a switch that took, and the role is left alone until the chip catches up.
-//
-// THE ORCHESTRATOR IS NEVER SWITCHED — BY ANY PATH, IN EITHER DIRECTION (owner, 2026-09-16:
-// "The extension changing orchestrators model version. Must stop. It only applies to
-// non-orchestrators.").
-//
-// This REVERSES two earlier directions of his that this file used to cite, and they are gone rather
-// than disabled: the 2026-09-13 promotion of the tagged orchestrator to the premium tier ("only the
-// orchestrator is supposed to be on Fable 5.1"), and MS-001 R3 (2026-09-14), the self-shift through
-// `<repo>/orchestrator-model.json`. Neither is a live rule any more, and nothing here should be read
-// as rationale for bringing either back. A `<repo>/orchestrator-model.json` left on any bus is inert
-// by code: no function in this file reads that path.
-//
-// WHAT THE POLICY STILL IS, and all of it is about WORKERS: a worker runs the tier its handoff asks
-// for, in both directions; a worker on the orchestrator's own tier is a violation and is switched
-// down (the premium FLOOR); a handoff asking for a premium id is refused with a note. The
-// orchestrator appears in this file only as an exemption — three of them, in `check()` — and as the
-// refusal in `enforce()`, which is the single chokepoint every `/model` injection passes through.
-// A handoff with no `model:` line is not a silent default either: it is noted once (MS-001 R1).
+// EVERYTHING ELSE IS ABOUT WORKERS: a worker runs the tier its handoff asks for, in both
+// directions; a worker on the orchestrator's own tier is switched down (the premium FLOOR); a
+// handoff asking for a premium id is refused with a note; a handoff with no `model:` line is noted
+// once (MS-001 R1). The orchestrator appears here only as three exemptions in `check()` and the
+// refusal in `enforce()`, the single chokepoint every `/model` injection passes through.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -115,11 +100,11 @@ export function isPremium(model: string | null | undefined, premium: string[] = 
 
 // ── the chip ↔ id table (MP-001) ────────────────────────────────────────────────────────────────
 // Two vocabularies meet here and neither is convertible by rule: the footer chip a panel RENDERS
-// ("Sonnet 5") and the id `/model` TAKES (`claude-sonnet-5`). Everything downstream compares a chip
-// to a desired id, so the mapping is stated ONCE, here, rather than re-derived at each call site by
-// lowercasing and hyphenating — which would silently produce `claude-fable-5.1` for "Fable 5.1" and
-// switch nothing. `isPremium` above still answers for CHIPS (that is what `premiumModels` holds);
-// `idIsPremium` is its counterpart for ids, and it is the one that guards a handoff's request.
+// ("Sonnet 5") and the id `/model` TAKES (`claude-sonnet-5`) — lowercasing and hyphenating would
+// silently produce `claude-fable-5.1` for "Fable 5.1" and switch nothing. So the mapping is stated
+// ONCE, here. `isPremium` answers for CHIPS (that is what `premiumModels`, a real VS Code setting,
+// holds); `idIsPremium` is its counterpart for ids, and it is the one that guards a handoff's
+// request.
 export const MODEL_TABLE: ReadonlyArray<{ id: string; chip: string; premium: boolean }> = [
   { id: "claude-fable-5-1",  chip: "Fable 5.1",  premium: true },
   { id: "claude-fable-5",    chip: "Fable 5",    premium: true },
@@ -162,14 +147,14 @@ export const DEFAULT_WORKER_MODELS = ["claude-opus-5", "claude-sonnet-5"];
 // Workers do not all need the Opus tier. The ORCHESTRATOR judges difficulty as it writes a handoff
 // and records the choice in that handoff's frontmatter (`model: claude-sonnet-5`); the tracker
 // enforces it; the ledger judges the rubric a month later. This is a rule about WORKERS: the
-// orchestrator's own tier is nobody's business here, and is never switched by any path (see the
-// header). A `model:` line is a worker's tier, and there is no longer any other kind.
+// orchestrator's own tier is never switched by any path (see the header). A `model:` line is a
+// worker's tier, and there is no longer any other kind.
 //
 // A frontmatter the tracker cannot read changes NOTHING: no file, no block, no `model:` line, a
-// malformed block, a premium id, an unknown id — every one of those falls back to the configured
-// `workerModel`, and the two that are a REQUEST rather than an absence say so in tracker-debug.json.
-// This is principle 16 pointed the other way: a read that cannot answer must not be read as licence.
-// Since MS-001 R1 the plain ABSENCE of a `model:` line is said too, once per handoff (`noteDefaulted`).
+// malformed block, a premium id, an unknown id — every one falls back to the configured
+// `workerModel`. This is principle 16 pointed the other way: a read that cannot answer must not be
+// read as licence. The two that are a REQUEST rather than an absence say so in tracker-debug.json,
+// and since MS-001 R1 the plain ABSENCE is said too, once per handoff (`noteDefaulted`).
 
 /** The `---` block at the very top of a handoff, as key → value. A `---` further down a document is
  *  a horizontal rule, not frontmatter, so the block must OPEN the file. */
@@ -188,44 +173,29 @@ export function frontmatter(text: string | null | undefined): Record<string, str
 }
 
 /**
- * The `files:` line of that same block, as the path patterns a handoff DECLARES it will touch
- * (CH-001, playbook §19: "one handoff is one merge", and two live handoffs on one bus must not
- * touch the same files).
- *
- * `frontmatter()` itself cannot carry this: it is typed `Record<string, string>` and every caller
- * relies on that, so the list is parsed beside it rather than folded into its return type — the
- * `files:` half of the same block, one function along.
+ * The `files:` line of that same block: the path patterns a handoff DECLARES it will touch (CH-001,
+ * playbook §19 "one handoff is one merge" — two live handoffs on one bus must not touch the same
+ * files). Parsed beside `frontmatter()` and not inside it, whose `Record<string, string>` return
+ * type every caller relies on.
  *
  * Tolerant on purpose, because a human and an orchestrator both write this line: comma- OR
- * space-separated (§19's own example uses commas, MP-001's inbox used spaces), quotes and stray
- * whitespace dropped, `./` and trailing slashes normalised, duplicates collapsed, order kept.
+ * space-separated, quotes and stray whitespace dropped, `./` and trailing slashes normalised,
+ * duplicates collapsed, order kept.
  *
- * AN ABSENT LINE IS AN EMPTY LIST AND NOT A CLAIM ABOUT ANYTHING. Principle 16 pointed the same way
- * as MP-001's `model:`: a handoff that declares nothing is not a handoff that declares it touches
- * nothing, so the overlap guard must have no opinion there rather than read the silence as licence
- * to refuse. Every refusal below needs a `files:` line on BOTH sides.
+ * AN ABSENT LINE IS AN EMPTY LIST AND NOT A CLAIM ABOUT ANYTHING (principle 16, as for MP-001's
+ * `model:`): silence is not licence to refuse, and every refusal below needs a `files:` line on
+ * BOTH sides.
  *
- * BOTH YAML SPELLINGS ARE READ (OV-001). CH-001 shipped the one-line form and stated the bound
- * honestly: a multi-line list parsed as an empty value and declared nothing. That was the safe
- * direction, and it was also — measured on the real bus with the compiled build — the reason this
- * guard had NEVER REFUSED ANYTHING HERE. This bus writes every handoff's `files:` as an indented
- * list, so `handoffFiles()` returned `[]` for all three roles and `overlapFor()` was always null.
- * The one-worker-per-file rule was being kept by hand, by the orchestrator, with nothing checking it.
+ * BOTH YAML SPELLINGS ARE READ (OV-001) — `files: src/a.ts, src/b.ts` and the indented `- item`
+ * list under a bare `files:`. CH-001 shipped only the one-line form, and because this bus writes
+ * the list form the guard had — measured on the real bus with the compiled build — NEVER REFUSED
+ * ANYTHING HERE. The one-line form is unchanged by construction: the list is only looked for when
+ * the key's own value is EMPTY; pleodo, hackomics and tfg_ua depend on that and it must not move.
+ * Both spellings converge on ONE splitting loop below, so no second set of quoting, comma, glob or
+ * duplicate rules can drift.
  *
- *     files: src/a.ts, src/b.ts        <- the one-line form. Three other buses write this.
- *     files:                           <- the list form. This bus writes this.
- *       - src/a.ts
- *       - src/b.ts
- *
- * THE ONE-LINE FORM'S BEHAVIOUR IS UNCHANGED, deliberately and by construction: the list is only
- * looked for when the `files:` key's own value is EMPTY, so a `files:` that carries paths is read
- * exactly as it was and indented lines under it are ignored as they always were. pleodo, hackomics
- * and tfg_ua depend on that and must not move. Both spellings then converge on ONE splitting loop
- * below, so there is no second set of rules for quoting, commas, globs or duplicates to drift.
- *
- * Doubt still declares NOTHING. Collection stops at the first line under `files:` that is not a
- * `- item`, so a malformed or half-written block yields the entries it could read and no guess about
- * the rest — and where it can read none, an empty list, which the guard has no opinion about.
+ * Doubt still declares NOTHING: collection stops at the first line under `files:` that is not a
+ * `- item`, so a malformed block yields what it could read and no guess about the rest.
  */
 export function declaredFiles(text: string | null | undefined): string[] {
   let raw = frontmatter(text)["files"];
@@ -241,80 +211,54 @@ export function declaredFiles(text: string | null | undefined): string[] {
 
 // ── the SPACED annotation (OV-001-R2 §3) ────────────────────────────────────────────────────────
 //
-// R1 fixed `(NEW)` and pinned `(new file)` as a known limit, because the splitting loop runs BEFORE
-// `normalizeDeclaredPath` and a spaced annotation arrives as `(new` and `file)` — two fragments,
-// neither wholly bracketed, both read as paths. Two handoffs annotating that way REFUSED EACH OTHER
-// on `(new`, which is the expensive direction (§3): a stalled dispatch over a parenthetical.
+// The splitting loop runs BEFORE `normalizeDeclaredPath`, so `(new file)` arrives as `(new` and
+// `file)` — two fragments, neither wholly bracketed, both read as paths. Two handoffs annotating
+// that way REFUSED EACH OTHER on `(new`, the expensive direction (§3). R1 pinned it as a limit.
 //
-// THE FIX IS A PRE-PASS, NOT A NEW SPLITTER, and that is the whole of why it is safe. One regex
-// removes annotation RUNS from the raw line before the existing loop splits it; the loop, the
-// normaliser, quoting, globs and duplicate collapsing are all untouched. The predicate inside the
-// brackets EXTENDS `normalizeDeclaredPath`'s — no slash, no dot, no nested bracket, and additionally
-// no comma and no `*` — so a spaced annotation and a space-free one are dropped for closely related
-// reasons and there is no second splitting rule to drift.
+// THE FIX IS A PRE-PASS, NOT A NEW SPLITTER, and that is the whole of why it is safe: one regex
+// removes annotation RUNS from the raw line before the existing loop, leaving the loop, the
+// normaliser, quoting, globs and duplicate collapsing untouched. The predicate inside the brackets
+// EXTENDS `normalizeDeclaredPath`'s — no slash, no dot, no nested bracket — plus two exclusions a
+// refutation pass found, because the brackets bound where a run starts and ends but not how LONG it
+// is, and every token in between disappears with it:
+//  - NO COMMA: `Makefile`, `LICENSE`, `Dockerfile` are dot- and slash-free, so `(new Makefile file)`
+//    swallowed a genuinely declared file and left an ABSENCE — no refusal, and no waiver note
+//    either, because nothing was exempted. Excluding the comma, plus `listUnderKey` joining its
+//    items with one, confines a run to a single declared item.
+//  - NO `*`: overlap.ts states a `*` is NEVER exempted away, and `(new * file)` erased one. This
+//    function runs first, so a claim deleted here cannot be refused by anything downstream.
 //
-// THE TWO EXTRA EXCLUSIONS ARE NOT TIDINESS; A REFUTATION PASS FOUND BOTH. The bracket boundaries
-// bound where a run STARTS and ENDS but not how LONG it is, so a run can span many tokens — and every
-// token in between disappears with it. Two shapes made that dangerous rather than merely surprising:
-//  - A REAL PATH WITH NO DOT IN IT. `Makefile`, `LICENSE` and `Dockerfile` are dot-free and
-//    slash-free, so `files: (new` + `Makefile` + `file)` swallowed a genuinely declared file and left
-//    an ABSENCE — the failure mode with nothing printed anywhere: no refusal, and no waiver note
-//    either, because nothing was exempted. Excluding the COMMA, plus `listUnderKey` joining its items
-//    with one, is what confines a run to a single declared item.
-//  - A WILDCARD. `overlap.ts` states that a `*` is NEVER exempted away, and `files: (new` + `*` +
-//    `file)` erased one. Excluding `*` from the inner text keeps that invariant true HERE too, which
-//    matters because this function runs first: a claim on every file that has been deleted before the
-//    guard sees it cannot be refused by anything downstream.
+// IT ONLY FIRES ON A WHOLE-TOKEN RUN — the `(` must start a token and the `)` must END one — which
+// is what keeps this a narrowing and not a rewrite: `src/a.ts (new file)` drops the run and the
+// path survives, while `src/a (b).ts` and `src/a.ts(NEW)` are untouched and still refuse. The
+// replacement keeps the captured delimiter and adds a space: belt-and-braces against a future edit
+// to the boundary, not a fix for a reachable case, so no mutant is written for it: no test could
+// kill one.
 //
-// IT ONLY FIRES ON A WHOLE-TOKEN RUN, which is what keeps this a narrowing and not a rewrite: the `(`
-// must start the token (line start, or after a comma or space) and the `)` must END it (line end, or
-// before a comma or space). So:
-//   `src/a.ts (new file)`  -> the run is its own token(s); dropped. The path survives.
-//   `src/a (b).ts`         -> `(b)` is followed by `.`, NOT a token end; NOTHING is stripped, and the
-//                             behaviour is bit-for-bit what it was: `src/a` and `(b).ts` both refuse.
-//   `src/a.ts(NEW)`        -> the `(` does not start a token; untouched, still one refusing path.
-// A real path with a space-separated bracketed fragment therefore cannot be swallowed BEYOND the
-// annotation itself — the fragment that is not annotation-shaped stays, and it still refuses.
+// STILL READ AS PATHS, AND STILL ABLE TO REFUSE — enumerated in full because the first draft named
+// ONE shape and a refutation pass immediately found four more: an annotation containing a `/` or
+// a `.` (`(see docs/spec.md)`), a comma or a `*`, one NESTED or UNBALANCED (`((new))`, a lone `(new`), or
+// one in square/curly brackets (`[NEW]`, `{NEW}` — not attested in any `files:` line on this
+// machine, and every spelling admitted here is a filename someone can no longer declare). The first
+// two are the principled ones: the inner text is the ONLY thing distinguishing `(NEW)` from a
+// bracketed REAL PATH `(src/shared.ts)`, and dropping one of those loses a guard in SILENCE, so the
+// expensive direction is chosen knowingly.
 //
-// The replacement KEEPS the captured delimiter and adds a space, so the token structure around the
-// removed run is untouched. Be honest about that detail rather than claim a save: because the `)` can
-// only end a token, no reachable input glues two paths even if the delimiter were dropped — the space
-// is belt-and-braces against a future edit to the boundary, not a fix for a case anyone found. No
-// mutant is written for it, because no test could kill one.
+// The residual ambiguity, stated rather than hidden: a dot-free REAL path inside a bracket run on a
+// single comma-free line — `files: (new Makefile file)` — is still swallowed; it is now the only
+// such shape (the list form is confined item-by-item), the old code turned that line into three junk
+// paths, so nothing regressed, and the writer's remedy is a comma.
 //
-// THE SHAPES LEFT REFUSING — all of them, enumerated, because the first draft of this comment named
-// one and a refutation pass immediately found four more. An annotation is LEFT ALONE, and therefore
-// still read as paths and still able to refuse, when it:
-//  - contains a `/` or a `.` — `(see docs/spec.md)`, `(rewrite v2.0)`;
-//  - contains a comma or a `*` — `(new, big)` spanning items, `(rewrite everything *)`;
-//  - is NESTED or UNBALANCED — `((new))`, `(new (file))`, a lone `(new` with no closing bracket;
-//  - uses square or curly brackets — `[NEW]`, `{NEW}`. R1 left those out deliberately ("not attested
-//    in any `files:` line on this machine") and R2 does not add them: every spelling admitted here is
-//    a real filename someone can no longer declare, and this list is already at the edge of that.
-// THE FIRST TWO ARE THE PRINCIPLED ONES and the reason is R1's finding: the inner text is the ONLY
-// thing distinguishing `(NEW)` from `(src/shared.ts)`, a bracketed REAL PATH, and dropping one of
-// those loses a guard in SILENCE. Given `docs/spec.md)` there is no way to tell the tail of a prose
-// annotation from a path someone bracketed. So the expensive direction is chosen knowingly: it
-// REFUSES, the orchestrator re-reads two briefs, and nobody edits an unguarded file.
-//
-// The residual ambiguity that cannot be closed, stated rather than hidden: a dot-free REAL path
-// written INSIDE a bracket run on a single comma-free line — `files: (new Makefile file)` — is still
-// swallowed, because a bare dot-free word is exactly what an annotation is made of. It is now the
-// only such shape (the list form is confined item-by-item), and the old code turned that same line
-// into three junk paths, so nothing regressed. A writer's remedy is a comma.
-//
-// A NARROWING CAN ONLY REMOVE REFUSALS, and this one is checked against that claim directly: every
-// token the pre-pass removes was, by construction, a token `normalizeDeclaredPath` would keep only
-// because it had been split in half. Fewer paths on either side of `firstShared` can never produce a
-// collision that was not already there. The §19 size ledger moves with it, deliberately and
-// consistently with R1's call: `filesDeclared` counts what `handoffFiles` returns, so a block
-// annotating one path `(new file)` now ledgers 1 rather than 3 — "is this a file at all" belongs in
-// the count.
+// A NARROWING CAN ONLY REMOVE REFUSALS: every token removed was one `normalizeDeclaredPath` would
+// have kept only because it had been split in half. Fewer paths on either side of `firstShared` can
+// never produce a collision that was not already there. The §19 size ledger moves with it deliberately
+// — `filesDeclared` counts what `handoffFiles` returns, so one path annotated `(new file)` ledgers
+// 1 rather than 3: "is this a file at all" belongs in the count.
 const SPACED_ANNOTATION = /(^|[,\s])\([^()/.,*]*\)(?=[,\s]|$)/g;
 
 /** The raw `files:` line with whole-token `( ... )` annotations replaced by a space — see above. The
- *  bracket must open a token and close one, and the inside must be annotation-shaped (no `/`, no `.`,
- *  no nested bracket), so this can only ever remove tokens, never re-spell a path. */
+ *  bracket must open and close a token and the inside must be annotation-shaped (no `/`, no `.`, no
+ *  nested bracket), so this can only ever remove tokens, never re-spell a path. */
 function stripSpacedAnnotations(raw: string): string {
   return raw.replace(SPACED_ANNOTATION, "$1 ");
 }
@@ -322,11 +266,9 @@ function stripSpacedAnnotations(raw: string): string {
 /**
  * The `- item` lines directly under `key:` in the SAME frontmatter block, joined into the one-line
  * spelling so `declaredFiles` has a single splitting loop for both forms. `""` when the key is
- * absent, carries its own value, or has no list under it.
- *
- * Only the frontmatter block is searched — the regex is `frontmatter()`'s own, so a `---` further
- * down a document stays a horizontal rule — and collection STOPS at the first line that is not an
- * `- item`, which is what keeps the next key (`version:`, `---`) from being swallowed.
+ * absent, carries its own value, or has no list under it. Only the frontmatter block is searched
+ * (the regex is `frontmatter()`'s own), and collection STOPS at the first line that is not an
+ * `- item`, which keeps the next key (`version:`, `---`) from being swallowed.
  */
 function listUnderKey(text: string | null | undefined, key: string): string {
   const m = /^\uFEFF?[ \t]*---[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*---[ \t]*(?:\r?\n|$)/.exec(String(text || ""));
@@ -344,66 +286,48 @@ function listUnderKey(text: string | null | undefined, key: string): string {
     const v = it[1].replace(/\s+#.*$/, "").trim();
     if (v) items.push(v);
   }
-  // JOINED WITH A COMMA, NOT A SPACE (OV-001-R2, found by the refutation pass). Both are the one-line
-  // spelling as far as the splitting loop is concerned — it splits on `[,\s]+` — but the annotation
-  // pre-pass cannot cross a comma, and with a SPACE join it could: `- (new` / `- Makefile` / `- file)`
-  // arrived as one line, the run `(new Makefile file)` matched, and the real `Makefile` item vanished
-  // with it. One list item's brackets must never reach another item's, so the join is the delimiter
-  // that stops them.
+  // JOINED WITH A COMMA, NOT A SPACE (OV-001-R2, found by the refutation pass). The splitting loop
+  // splits on `[,\s]+` so both are the one-line spelling to it, but the annotation pre-pass cannot
+  // cross a comma and with a SPACE join it could: `- (new` / `- Makefile` / `- file)` matched as one
+  // run and the real `Makefile` item vanished. One list item's brackets must never reach another's.
   return items.join(",");
 }
 
 // ── what is not a path at all (OV-001-R1 §1(2)) ─────────────────────────────────────────────────
 //
-// TWO LIVE tfg_ua DECLARATIONS WERE BEING READ AS FILENAMES, and both produced the expensive failure
-// (§3): a REFUSAL on a word. `files: none` is how a standby role on that bus says it touches nothing,
-// and it parsed as a path named `none`, so its two standby roles refused each other. `files:
-// tools/cardmaker/** (NEW), docs/social/card-design.md (NEW)` annotates its paths by hand, and the
-// annotation parsed as a third path, so any second annotated handoff on that bus was refused on a
-// parenthetical shared with the first.
+// TWO LIVE tfg_ua DECLARATIONS WERE BEING READ AS FILENAMES, both producing the expensive failure
+// (§3), a REFUSAL on a word: `files: none` — how a standby role on that bus says it touches nothing
+// — parsed as a path named `none` and its two standby roles refused each other; and a
+// hand-annotated `tools/cardmaker/** (NEW), docs/social/card-design.md (NEW)` parsed its annotation
+// as a third path, so any second annotated handoff on that bus was refused on a parenthetical.
 //
-// WHY THIS IS ALLOWED WHERE A FORMAT CHANGE IS NOT (OV-001 decision (a) forbids changing what a valid
-// single-line list MEANS). Neither of these changes the reading of any path: they narrow what counts
-// as a path in the first place, and a declaration with fewer paths in it can only ever REMOVE
-// refusals, never create one. That is the safe direction for a guard that refuses.
+// ALLOWED WHERE A FORMAT CHANGE IS NOT (OV-001 decision (a) forbids changing what a valid
+// single-line list MEANS) because neither changes the reading of any path: they narrow what counts
+// as a path at all, and fewer paths can only ever REMOVE refusals — the safe direction for a guard.
 //
-// THE SPELLING CHOSEN, and its cost. A token is dropped only when the WHOLE declaration is one:
+// A token is dropped only when the WHOLE declaration is one:
 //  - a SENTINEL — `none`, `n/a` or `-`, case-insensitively, and nothing else. Not `nil`, `todo`,
-//    `tbd` or `null`: those are not written on any bus measured today, and every word added here is
-//    a filename someone can no longer declare.
-//  - a PARENTHESISED annotation — `(NEW)`, `(rewrite)`: `(` to `)` around the entire token, AND a
-//    plain word inside it. Deliberately NOT brackets generally: `[...]` and `{...}` are not attested
-//    in any `files:` line on this machine, and inventing a rule for a spelling nobody writes only
-//    costs real paths.
+//    `tbd` or `null`: not written on any bus measured today, and every word added here is a
+//    filename someone can no longer declare.
+//  - a PARENTHESISED annotation — `(NEW)`, `(rewrite)`: `(` to `)` around the entire token AND a
+//    plain word inside it. Deliberately not brackets generally: `[...]` and `{...}` are not
+//    attested in any `files:` line on this machine.
 //
-// WHY THE INSIDE OF THE BRACKET IS TESTED TOO, which the first draft of this did not do. `^\(.*\)$`
-// also eats `(src/shared.ts)` — a REAL path someone bracketed — and that is the one narrowing case
-// that loses a guard SILENTLY: the declaration becomes an absence, so nothing refuses and the
-// exemption note does not fire either, because nothing was exempted. Two roles then edit the file
-// with no refusal and no note anywhere. A refutation pass found it. So the inner text must be a plain
-// word: no `/`, no `.`, no nested bracket. `(NEW)` is dropped; `(src/shared.ts)`, `(draft.md)` and
-// `(a)(b)` are kept and refuse as paths. Keeping is the safe direction — it can only refuse MORE.
+// THE INSIDE OF THE BRACKET IS TESTED TOO because `^\(.*\)$` also eats `(src/shared.ts)`, a REAL
+// path someone bracketed — the one narrowing case that loses a guard SILENTLY: no refusal and no
+// exemption note, because nothing was exempted (a refutation pass found it). So `(NEW)` is dropped
+// while `(src/shared.ts)`, `(draft.md)` and `(a)(b)` are kept and refuse as paths. The SPACED form
+// is handled one function up by `stripSpacedAnnotations`, using this predicate.
 //
-// THE SPACED ANNOTATION IS NOW FIXED (OV-001-R2 §3), one function up. R1 found that a `(new file)`
-// arrives here as `(new` and `file)` because the splitting loop runs first, pinned it as a limit, and
-// raised it rather than changing the loop — which R1 was not authorised to do. R2 authorised it, and
-// `stripSpacedAnnotations` removes whole-token annotation RUNS from the raw line before the split,
-// using THIS function's predicate for what is inside the brackets. The shape still refusing — an
-// annotation containing a `/` or a `.`, which cannot be told from a bracketed real path — is named
-// there.
+// THE COST: a file genuinely NAMED `none`, `n/a` or `(NEW)` can no longer be declared and the guard
+// would go quiet on it; nothing named that exists in any repo here, and the remedy is a path with a
+// directory in it. NORMALISATION RUNS FIRST, so `./none` and `none/` are sentinels too, and a path
+// that merely CONTAINS one is untouched (`src/none-handler.ts`, `docs/(draft)-spec.md` refuse).
 //
-// THE COST. A file genuinely NAMED `none`, `n/a` or `(NEW)` can no longer be declared, and the guard
-// would go quiet on it. Nothing named that exists in any repo here, and the writer's remedy is a path
-// with a directory in it. NORMALISATION RUNS FIRST, so `./none` and `none/` are sentinels too. A path
-// that merely CONTAINS one of these is untouched — `src/none-handler.ts` and `docs/(draft)-spec.md`
-// still refuse — because the test is on the whole token, which is the only reason this narrowing is
-// as small as it claims to be.
-//
-// AND IT SHRINKS THE §19 SIZE LEDGER, deliberately, unlike the exemption. `filesDeclared` counts what
-// `handoffFiles` returns, so a block declaring `files: none` now ledgers 0 files and one annotating
-// two paths ledgers 2 rather than 3. That is the OPPOSITE call from overlap.ts's exemption, which is
-// kept out of this function precisely so it cannot move that number — and the two are consistent:
-// "is this a file at all" belongs in the count, "is this file's merge mechanical" does not.
+// AND IT SHRINKS THE §19 SIZE LEDGER, deliberately — a block declaring `files: none` now ledgers 0
+// files. The OPPOSITE call from overlap.ts's exemption,
+// which is kept out of this function precisely so it cannot move that number: "is this a file at
+// all" belongs in the count, "is this file's merge mechanical" does not.
 const PATH_SENTINELS = new Set(["none", "n/a", "-"]);
 
 /** One declared path, in the one spelling the collision test compares. A sentinel or a bracketed
@@ -457,9 +381,8 @@ function readStatus(repo: string, role: string): any | null {
 }
 
 /** A number, or null. `null`, `undefined` and `""` are ABSENCES and must come back null — `Number()`
- *  maps all three to 0, which in a ledger line is not a missing value but a measured one, and a 0 %
- *  context or 0 tests would be read as fact. (Found while adding `contextPctAtFinish`, which is null
- *  far more often than it is a number; the same hole was open under `testsBefore`.) */
+ *  maps all three to 0, which in a ledger line is a measured value, not a missing one, and a 0 %
+ *  context or 0 tests would be read as fact. (The same hole was open under `testsBefore`.) */
 function numOrNull(v: any): number | null {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
@@ -467,10 +390,8 @@ function numOrNull(v: any): number | null {
 }
 
 /** Wall-clock minutes between two timestamps, or null when either will not parse (CH-001 R3).
- *  NEVER a guess: the ledger's own test fixtures use "T1"/"T9" as stamps, and the honest answer to
- *  "how long did that take" for an unparseable pair is "unknown", not zero. A NEGATIVE result is
- *  returned as measured rather than nulled — a clock that went backwards is a fact about the bus,
- *  and silently rounding it to null would hide it. */
+ *  NEVER a guess: the ledger's own test fixtures use "T1"/"T9" as stamps. A NEGATIVE result is
+ *  returned as measured — a clock that went backwards is a fact about the bus, not one to hide. */
 function wallMinutes(started: any, finished: any): number | null {
   const a = Date.parse(String(started || "")), b = Date.parse(String(finished || ""));
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
@@ -481,17 +402,16 @@ function wallMinutes(started: any, finished: any): number | null {
  * Rewrite ONLY the `model:` line of a role's inbox frontmatter, and only while the file still
  * carries `expectId`. tmp+rename, so a half-written inbox is never what a `/loom` bind reads.
  *
- * THE ID RE-CHECK IS A SECOND LAYER, AND IT IS THE ONE THAT DECIDES THE RACE. `escalate` already
- * keys its counting by handoff id, so an inbox replaced BEFORE the decision is refused there — the
- * new id simply has no loop-backs yet. What only this re-check can refuse is an inbox replaced
- * BETWEEN the decision and the write, which is a real window: playbook §12 step 2 has the
- * orchestrator overwrite `inbox.md` with the next brief as its very first move after banking, and
- * a tick can land inside it. Raising the tier of a brief the orchestrator deliberately judged,
- * because of the PREVIOUS brief's loop-backs, is worse than never escalating at all.
+ * THE ID RE-CHECK IS THE LAYER THAT DECIDES THE RACE. `escalate`'s id keying already refuses an
+ * inbox replaced BEFORE the decision — the new id simply has no loop-backs yet; only this re-check
+ * refuses one replaced BETWEEN the decision and the write, a real window because playbook §12
+ * step 2 has the orchestrator overwrite `inbox.md` with the next brief as its first move after
+ * banking, and a tick can land inside it. Raising the tier of a brief the orchestrator deliberately
+ * judged, because of the PREVIOUS brief's loop-backs, is worse than never escalating at all.
  *
- * Exported for exactly that reason: the guard is unreachable through `escalate` (the id keying gets
- * there first), so a test driving escalate can only ever pass for the wrong reason, and a mutant on
- * this line survived one. It is pinned directly instead — principle 17.
+ * Exported for exactly that reason: the guard is unreachable through `escalate`, so a test driving
+ * escalate can only pass for the wrong reason and a mutant on this line survived one. It is pinned
+ * directly instead — principle 17.
  */
 export function rewriteHandoffModel(repo: string, role: string, expectId: string, to: string): boolean {
   try {
@@ -547,12 +467,11 @@ export function desiredModel(repo: string | null, role: string, fallback = "clau
 }
 
 // ── retry bookkeeping ───────────────────────────────────────────────────────────────────────
-// An earlier version marked a role "corrected" the moment a violation was raised — before the
-// /model injection had even reported back. A failed switch (session closed, CDP hiccup) was then
-// never retried, across restarts too, leaving the worker on the expensive tier in silence.
-// Now a role is only forgotten when it is ACTUALLY seen on a non-premium model; until then the
-// attempt is retried on a growing backoff. That also covers a switch that reports success but does
-// not take effect.
+// An earlier version marked a role "corrected" the moment a violation was raised, before the
+// injection had reported back. A failed switch (session closed, CDP hiccup) was then never retried,
+// across restarts too, leaving the worker on the expensive tier in silence. Now a role is only
+// forgotten when it is ACTUALLY seen on a non-premium model; until then the attempt is retried on a
+// growing backoff. That also covers a switch that reports success but does not take effect.
 export const BACKOFF_MS = [60_000, 120_000, 300_000, 900_000];
 export function backoffFor(attempts: number): number {
   return BACKOFF_MS[Math.min(Math.max(attempts, 1), BACKOFF_MS.length) - 1];
@@ -561,8 +480,8 @@ export function backoffFor(attempts: number): number {
 interface PolicyRecord { model: string;
   /** The id this role is being switched TO. A record whose target has changed is a DIFFERENT
    *  correction, so the attempt count and the backoff restart — otherwise a role that had backed
-   *  off to the 15-minute step on an old target would sit unswitched for a quarter of an hour
-   *  after its handoff asked for a new one. */
+   *  off to the 15-minute step on an old target would sit unswitched for a quarter of an hour after
+   *  its handoff asked for a new one. */
   target?: string;
   attempts: number; nextAttempt: number; lastError?: string; lastAttemptAt?: string; }
 /** Per-handoff escalation counting (R4). Keyed by HANDOFF ID, because that is what is being judged
@@ -572,13 +491,13 @@ interface EscalationRecord { role: string; blocked: number; lastSeen?: string; e
 interface LedgerRecord { id: string; role: string; model: string; chosenBy: string; started: string;
                         /** WL-005: the tracker's OWN clock at the tick that first saw this handoff.
                          *  `started` used to be the worker's `status.updated_at`, which at that
-                         *  moment still belongs to the PREVIOUS block — see `ledgerTick`. */
+                         *  moment belongs to the PREVIOUS block — see `ledgerTick`. */
                         openedAt?: string;
                         /** The worker's stamp when we opened, kept for diagnosis, never for arithmetic. */
                         workerStampAtOpen?: string | null;
   loopBacks: number; testsBefore: number | null;
-  /** §19's SIZE rule, measured (CH-001). How many paths the handoff declared — the closest proxy for
-   *  "split at file boundaries" that exists before the work is done. 0 means it declared none. */
+  /** §19's SIZE rule, measured (CH-001): how many paths the handoff declared — the closest proxy
+   *  for "split at file boundaries" before the work is done. 0 means it declared none. */
   filesDeclared?: number;
   /** How many DISTINCT `status.json` `updated_at` values this block was seen with — the closest
    *  thing to a turn count the tracker can observe from outside a session. null while no
@@ -618,9 +537,9 @@ function loadState(repo: string): PolicyState {
  *  every `ledger` entry whose `.id` FIELD is one (that map is keyed by ROLE, not id — a role can
  *  hold a real handoff and an ack in sequence, so the key itself says nothing). FX-001 R1: an
  *  earlier build let acks open both before `handoffId()` was fixed to refuse them at the source;
- *  this purges whatever those runs already wrote, on the next save. The durable
- *  `model-ledger.jsonl` is append-only and deliberately left alone — only an in-progress ledger
- *  line, never yet appended, can be lost here. */
+ *  this purges what those runs wrote, on the next save. The durable `model-ledger.jsonl` is
+ *  append-only and left alone — only an in-progress ledger line, never yet appended, can be lost
+ *  here. */
 function purgeAcks(st: PolicyState): void {
   if (st.escalations) for (const id of Object.keys(st.escalations)) if (isAckId(id)) delete st.escalations[id];
   if (st.ledger) for (const role of Object.keys(st.ledger)) if (isAckId(st.ledger[role]?.id)) delete st.ledger[role];
@@ -655,8 +574,7 @@ export interface ModelViolation { repo: string; role: string; model: string; att
   /** The exact frame the tracker resolved for this role. `/model` is addressed to THIS, never to the
    *  role name alone: measured 2026-09-10, four buses each carry a `developer1`, and a by-name
    *  injection content-resolved into tfg_ua's ORCHESTRATOR — 16 `/model claude-opus-5` messages
-   *  landed in the PO's composer, which replied "that is a CLI command, and I cannot switch models
-   *  from inside the session". Addressing the frame removes the guesswork entirely. */
+   *  landed in the PO's composer. */
   webviewId?: string | null; }
 
 export class ModelPolicy {
@@ -664,14 +582,10 @@ export class ModelPolicy {
 
   /**
    * Workers whose footer chip is not the model their HANDOFF asks for. Since MP-001 this runs in
-   * BOTH directions — a worker on Opus whose handoff says Sonnet is switched down, and a worker on
-   * Sonnet whose handoff says Opus (or says nothing, and so gets the configured default) is
-   * switched up. The premium floor is unchanged and is checked independently of the desired tier:
-   * a worker on the orchestrator's tier is always a violation, whatever `desired` returns.
-   *
-   * The orchestrator is exempt by design — it is the one session allowed the expensive tier.
-   * Between attempts a role is held off by `backoffFor(attempts)`, so a stuck session is retried
-   * periodically instead of every tick — and never silently abandoned.
+   * BOTH directions — switched down, and switched up. The premium floor is checked independently of
+   * the desired tier: a worker on the orchestrator's tier is always a violation, whatever `desired`
+   * returns. The orchestrator is exempt by design. Between attempts a role is held off by
+   * `backoffFor(attempts)`, so a stuck session is retried periodically and never silently abandoned.
    *
    * `desired` is injected rather than read here so the decision stays assertable without a bus on
    * disk; `extension.ts` passes `(role) => desiredModel(repo, role, workerModel, workerModels)`.
@@ -696,9 +610,9 @@ export class ModelPolicy {
       if (wid && orchestratorFrame && wid === orchestratorFrame) continue;
       const want = desired(role);
       const wantChip = chipFor(want.model);
-      // A target whose chip we cannot name is not enforceable: we could never tell whether the
-      // switch took, so the role would be typed into for ever. Leave it alone and say nothing —
-      // `desiredModel` only ever returns allow-listed ids, so this is a settings error, not a tick.
+      // A target whose chip we cannot name is not enforceable: we could never tell whether the switch
+      // took, so the role would be typed into for ever. `desiredModel` only ever returns allow-listed
+      // ids, so this is a settings error, not a tick.
       if (!wantChip) { delete st.pending[role]; continue; }
       const onPremium = isPremium(info.model, premium);
       if (!onPremium && wantChip.toLowerCase() === String(info.model).toLowerCase()) {
@@ -766,15 +680,13 @@ export class ModelPolicy {
   }
 
   // ── R4 · escalation ───────────────────────────────────────────────────────────────────────────
-  // A worker on Sonnet that has looped back TWICE on one handoff is not being stubborn, it is on
-  // the wrong tier: the orchestrator's difficulty judgement was wrong for this block. Rather than
-  // wait for a human to notice, the tracker rewrites that handoff's `model:` line to Opus and lets
-  // R2's next idle tick perform the switch — one mechanism, not a second injection path.
-  //
-  // "Looped back" is `status.json.status === "blocked"`, which is what the /loom skill instructs a
-  // worker to write when it raises one (SKILL.md: `idle` (or `blocked` if you raised a loop-back)),
-  // and what developer1 in fact wrote for GC-006's loop-back. A report is counted ONCE: the same
-  // `blocked` status is re-read every tick, so a new report is only a new `updated_at`.
+  // A worker on Sonnet that has looped back TWICE on one handoff is not being stubborn, it is on the
+  // wrong tier: the orchestrator's difficulty judgement was wrong for this block. The tracker
+  // rewrites that handoff's `model:` line to Opus and lets R2's next idle tick perform the switch —
+  // one mechanism, not a second injection path. "Looped back" is `status.json.status === "blocked"`,
+  // which is what the /loom skill instructs a worker to write when it raises one. A report is
+  // counted ONCE: the same `blocked` status is re-read every tick, so a new report is only a new
+  // `updated_at`.
 
   /** Count a fresh loop-back and, on the second for one handoff, raise its tier. Returns what it
    *  did, or null when it did nothing. Never throws — a tick must survive a half-written bus. */
@@ -814,20 +726,18 @@ export class ModelPolicy {
   }
 
   // ── R5 · the ledger ───────────────────────────────────────────────────────────────────────────
-  // One append-only line per (role, handoff id), so that in a month the rubric can be judged on
-  // what actually happened rather than on how it felt: did the Sonnet blocks loop back more, take
-  // longer, land fewer tests? A line is closed when the handoff id CHANGES (the orchestrator wrote
-  // the next brief over it) or when the role reports idle having handled that id. A line that
-  // cannot be completed is written with nulls rather than skipped — a missing line is invisible,
-  // and the gap it leaves would bias exactly the comparison this exists to make.
+  // One append-only line per (role, handoff id), so that in a month the rubric can be judged on what
+  // actually happened: did the Sonnet blocks loop back more, take longer, land fewer tests? A line
+  // is closed when the handoff id CHANGES or when the role reports idle having handled that id. A
+  // line that cannot be completed is written with nulls rather than skipped — a missing line is
+  // invisible, and the gap would bias exactly the comparison this exists to make.
 
   /**
    * Advance the ledger for one role. Call every tick; it writes only at a transition.
    *
-   * `contextPct` is the role's frame's own "% context used", which is CDP data and therefore cannot
-   * be read from here — `extension.ts` passes what the tick measured, or null. It is recorded at the
-   * instant the line CLOSES, because §19 judges size by where a handoff finished ("under 30 % was
-   * too small; the bank threshold was too big"). Its one honest bound is stated at `appendLedger`.
+   * `contextPct` is CDP data and cannot be read from here — `extension.ts` passes what the tick
+   * measured, or null. It is recorded at the instant the line CLOSES, because §19 judges size by
+   * where a handoff finished. Its one honest bound is stated at `appendLedger`.
    */
   ledgerTick(role: string, workerModel = "claude-opus-5", allow: string[] = DEFAULT_WORKER_MODELS,
              now = new Date(), contextPct: number | null = null): void {
@@ -842,33 +752,22 @@ export class ModelPolicy {
       if (!cur.closed) this.appendLedger(cur, status, now, st, contextPct);
       delete led[role]; cur = undefined as any; dirty = true;
     }
-    // A CLOSED line is kept, not deleted, until its handoff is replaced. The inbox still holds the
-    // id the role just finished and status.json still says idle, so deleting the record here would
-    // have the next tick re-open that same block and close it again — one line per tick for as long
-    // as the worker sat idle. (Measured by R5's own test before this guard existed.)
+    // A CLOSED line is kept, not deleted, until its handoff is replaced: the inbox still holds the id
+    // the role just finished and status.json still says idle, so deleting it here would have the next
+    // tick re-open and re-close that same block, one line per idle tick. (Measured by R5's own test
+    // before this guard existed.)
     if (cur && cur.closed) return;
     if (!cur && id) {
       const want = desiredModel(this.repo, role, workerModel, allow);
       const seen = String(status.updated_at || "");
-      // WL-005 · `started` USED TO BE `status.updated_at`, AND THAT IS THE WHOLE DEFECT.
-      //
-      // At the moment a block opens, the worker's status.json still carries the stamp of the LAST
-      // thing it wrote — which belongs to the block BEFORE this one. So every duration measured the
-      // gap from some earlier block's activity to this one's end. MEASURED on this bus 2026-09-15,
-      // every record in model-ledger.jsonl:
-      //
-      //   CH-001-ack  started 2026-09-13T23:14:58Z   finished 2026-09-13T23:14:58Z   wall 0
-      //   WL-001      started 2026-09-13T23:14:58Z   finished 2026-09-15T16:10:15Z   wall 2455.3
-      //               ^^^ the SAME instant as the previous block's, two days earlier
-      //
-      // Not one record's `started` was its own: each was either the previous block's `started` or
-      // its `finished`. And because `finished` came from the worker's clock while `started` came
-      // from a different record's write, the pair could invert — ReciEats rendered -39.3 minutes.
-      // A negative duration was the visible half of this; 2455 was the invisible half.
-      //
-      // The honest stamp is the one THIS process observed: the tick that first saw the handoff. It
-      // is late by at most one tick and never belongs to another block. The worker's stamp is kept
-      // beside it for diagnosis, never used for arithmetic.
+      // WL-005 · `started` USED TO BE `status.updated_at`, AND THAT IS THE WHOLE DEFECT. When a block
+      // opens, the worker's status.json still carries the stamp of the LAST thing it wrote, which
+      // belongs to the block BEFORE this one, so every duration measured from some earlier block's
+      // activity to this one's end. Measured 2026-09-15: not one record's `started` was its own (one
+      // read 2455.3 wall minutes), and because the two ends came from different clocks the pair
+      // could invert — ReciEats rendered -39.3 minutes. The honest stamp is the one THIS process
+      // observed: late by at most one tick, never another block's. The worker's stamp is kept beside
+      // it for diagnosis, never used for arithmetic.
       const openedAt = now.toISOString();
       led[role] = { id, role, model: want.model,
                     chosenBy: this.wasEscalated(id) ? "escalated" : want.chosenBy,
@@ -893,9 +792,9 @@ export class ModelPolicy {
         cur.filesDeclared = files; dirty = true;
       }
       // R3: count REPORTS, not reads. status.json is re-read every tick, so a status update is a new
-      // `updated_at` and nothing else — the same rule R4's escalation counting is built on, and the
-      // same failure if it is broken: counting reads would make this a tick counter, which measures
-      // how long the window was open rather than how many turns the block took.
+      // `updated_at` and nothing else — the same rule R4's escalation counting is built on. Counting
+      // reads would make this a tick counter, measuring how long the window was open rather than how
+      // many turns the block took.
       const seen = String(status.updated_at || "");
       if (seen && seen !== cur.seenUpdatedAt) {
         cur.statusUpdates = (cur.statusUpdates || 0) + 1;
@@ -914,35 +813,31 @@ export class ModelPolicy {
    * Write one closed block's line, and — only if that write actually landed — drop its escalation
    * record (CH-001 R4).
    *
-   * WHY THE PRUNE IS HERE AND NOT ANYWHERE EARLIER. `escalations` is working state: it exists to
-   * count loop-backs until a decision is made, and once the ledger line is on disk the DURABLE
-   * record of that decision is the line (`chosenBy: "escalated"`, `loopBacks: n`). Left behind, the
-   * record grows one entry per handoff for ever in a file that is re-read and re-written on a 15
-   * second tick. But it must not be dropped a moment before the line exists: the append can fail
-   * (a full disk, a read-only mount) and this method has always swallowed that so a ledger write
-   * cannot break a tick. Pruning unconditionally would then lose BOTH records — the only copy of
-   * "this block was escalated after two loop-backs" — so the boolean this now returns is the whole
-   * point, and the mutant for it makes the prune unconditional.
+   * THE PRUNE IS HERE AND NOWHERE EARLIER. `escalations` is working state; once the line is on disk
+   * the DURABLE record of that decision is the line (`chosenBy: "escalated"`, `loopBacks: n`), and
+   * left behind the map grows one entry per handoff for ever in a file re-written on a 15 second
+   * tick. But the append can fail (a full disk, a read-only mount) and this method has always
+   * swallowed that so a ledger write cannot break a tick, so pruning unconditionally would lose
+   * BOTH records. Hence the boolean this returns; the mutant for it makes the prune unconditional.
    *
-   * `contextPctAtFinish` has an honest bound worth knowing before anyone averages it: the panel only
-   * renders its "% context used" button above roughly 50 %, so a block that finished comfortably
-   * reads null here. That is exactly §19's "finished under 30 % context was too small" band — so
-   * null is not missing data in that case, it is the measurement: no percentage rendered means the
-   * session was nowhere near full. A NUMBER here always means at least half full.
+   * `contextPctAtFinish` has an honest bound worth knowing before anyone averages it: the panel
+   * only renders "% context used" above roughly 50 %, so a block that finished comfortably reads
+   * null — itself §19's "finished under 30 % was too small" band, not missing data. A NUMBER here
+   * always means at least half full.
    */
   private appendLedger(rec: LedgerRecord, status: any, now: Date, st: PolicyState,
                        contextPct: number | null = null): boolean {
     if (!this.repo) return false;
     // WL-005 · BOTH ENDS COME FROM ONE CLOCK. `finished` was the worker's `status.updated_at` while
     // `started` came from a different record's write, so the two were not commensurable and their
-    // difference was not a duration. This process's own clock bounds the block by its own observed
-    // start and end, which is the property that has to hold. The worker's stamp is still recorded —
-    // it is useful, it is just not an endpoint.
+    // difference was not a duration. The worker's stamp is still recorded — useful, but not an
+    // endpoint.
     const closedAt = now.toISOString();
     const workerStampAtFinish = status.updated_at ? String(status.updated_at) : null;
-    // A record opened before WL-005 carries no `openedAt`, and there is NOTHING here from which its
-    // real start could be recovered. `unmeasured` is a state, not a zero and not a guess: the line
-    // says it has no duration rather than reporting one it cannot support.
+    // A record opened before WL-005 carries no `openedAt`, and its real start cannot be recovered
+    // from anything here. `unmeasured` is a state, not a zero and not a guess (the repo-wide
+    // convention, also named in workledger.ts and health.ts): the line says it has no duration
+    // rather than reporting one it cannot support.
     const openedAt = rec.openedAt ? String(rec.openedAt) : null;
     const line = {
       id: rec.id, role: rec.role, model: rec.model || null,
@@ -973,16 +868,14 @@ export class ModelPolicy {
   /** Switch a role onto the model it is owed by injecting `/model <id>` into its composer. The id
    *  travels ON the violation (per-role since MP-001); the parameter only overrides it. */
   enforce(v: ModelViolation, targetModel: string = v.target, done?: (ok: boolean, note: string) => void): void {
-    // THE CHOKEPOINT (MP-002, owner 2026-09-16). Every `/model` the extension types goes through
-    // this one method, so the "never an orchestrator" rule is enforced HERE rather than only at the
-    // call sites that happen to exist today. `check()` already exempts the orchestrator three ways;
-    // this is the guarantee that survives a fourth caller being written next month by someone who
-    // has not read `check()`. Both tests of it are cheap and neither needs a live panel:
-    //   * by NAME — an owner-named role is never a worker, tagged or not (`isOwnerRole`);
-    //   * by FRAME — the target frame is the one this project has TAGGED as its orchestrator.
-    // Refusing is silent except to the caller: `done` is told, so `recordResult` keeps the reason,
-    // and nothing is typed. The bus is read fresh each time because a tag can be set or moved
-    // between ticks, and a stale answer here is exactly the injection this must not make.
+    // THE CHOKEPOINT (MP-002, owner 2026-09-16). Every `/model` the extension types goes through this
+    // one method, so the "never an orchestrator" rule is enforced HERE rather than only at the call
+    // sites that happen to exist today — the guarantee that survives a fourth caller written next
+    // month by someone who has not read `check()`. Two cheap tests, neither needing a live panel: by
+    // NAME (an owner-named role is never a worker, tagged or not) and by FRAME (the frame this
+    // project has TAGGED as its orchestrator). Refusing is silent except to `done`, so
+    // `recordResult` keeps the reason and nothing is typed. The bus is read fresh each time because
+    // a tag can be set or moved between ticks.
     const owner = isOwnerRole(v.role);
     const tagged = getOrchestrator(v.repo || null);
     const ownFrame = !!(v.webviewId && tagged && tagged.webviewId && v.webviewId === tagged.webviewId);
@@ -992,20 +885,19 @@ export class ModelPolicy {
       done?.(false, `refused: ${v.role} is ${why} — the model policy applies to non-orchestrators only`);
       return;
     }
-    // --repo: role names are PROJECT-SCOPED. Without it a `/model` nudge for a bare name two buses
-    // share (`developer`: Gaming + livegita) can resolve to the OTHER project's frame. See inject.ts.
-    // --webview-id addresses the EXACT frame; --repo scopes the fallback. Both, because a role name
-    // alone is ambiguous the moment two buses share it, and four of them now carry `developer1`.
+    // --webview-id addresses the EXACT frame; --repo scopes the fallback, because role names are
+    // PROJECT-SCOPED and a bare name two buses share (`developer`: Gaming + livegita; four buses now
+    // carry `developer1`) can otherwise resolve to the OTHER project's frame. See inject.ts.
     execFile("python3", [LOOM_CDP, "inject", "--role", v.role, "--message", `/model ${targetModel}`,
                          "--submit", ...(v.repo ? ["--repo", v.repo] : []),
                          ...(v.webviewId ? ["--webview-id", v.webviewId] : []),
                          ...senderArgs("model", v.repo)],
       { timeout: INJECT_TIMEOUT_MS },
       (err, stdout, stderr) => {
-        // MS-001 R2: the injector exits 0 and prints `{'ok': False, ..., 'note': 'typed text not
-        // confirmed in composer; NOT submitted'}` when the switch did NOT happen (measured against
-        // the orchestrator's own frame 2026-09-14T00:04:57Z). `ok = !err` recorded that as
-        // "switched". The verdict is read off the output, the same way injectTo reads it.
+        // MS-001 R2: the injector exits 0 and prints `'ok': False, ... 'note': 'typed text not
+        // confirmed in composer; NOT submitted'` when the switch did NOT happen (measured
+        // 2026-09-14), and `ok = !err` recorded that as "switched". The verdict is read off the
+        // output, the same way injectTo reads it.
         const verdict = injectVerdict(err, stdout, stderr);
         const ok = verdict.ok;
         try {
@@ -1023,17 +915,15 @@ export class ModelPolicy {
 /**
  * PB-001 · The most recent instant a handoff was OPENED on this bus — the dispatch watermark.
  *
- * This is the fact the delegation detector is built on, and it is deliberately read from the ledger
- * rather than recomputed: `openedAt` is the tick that FIRST SAW a new handoff id in a role's inbox,
- * which is this process's own observation of the orchestrator handing work over. See WL-005's note
- * above for why the worker's own stamp is never used for arithmetic — it belongs to the block
- * before. Records with no `openedAt` (opened before WL-005) are skipped rather than guessed at.
+ * Read from the ledger rather than recomputed: `openedAt` is the tick that FIRST SAW a new handoff
+ * id in a role's inbox, this process's own observation of the orchestrator handing work over (see
+ * WL-005 for why the worker's own stamp is never used for arithmetic). Records with no `openedAt`
+ * (opened before WL-005) are skipped rather than guessed at.
  *
- * Only OPEN records are in `model-policy.json`; a closed one is appended to `model-ledger.jsonl` and
- * dropped here when the next handoff lands over it. That is correct for this purpose: a bus whose
- * last block closed and whose next has not been written has no dispatch newer than the one still
- * recorded, and a bus that has genuinely never dispatched returns null — which the caller renders as
- * "no handoff to any role has been seen", never as "long ago".
+ * Only OPEN records are in `model-policy.json`; a closed one is appended to `model-ledger.jsonl`.
+ * That is correct here: a bus whose last block closed has no dispatch newer than the one still
+ * recorded, and a bus that has genuinely never dispatched returns null — which the caller renders
+ * as "no handoff to any role has been seen", never as "long ago".
  */
 export function lastDispatchAt(repo: string | null): string | null {
   if (!repo) return null;
