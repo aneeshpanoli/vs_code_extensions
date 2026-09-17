@@ -43,7 +43,7 @@ import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees
 import { watcherTick, loadWatchers, saveWatchers, markWatcherReminded,
          watcherReminder } from "./watchers";
 import { quietTick, gatherSignals, loadQuiet, saveQuiet, markNotified, markDropped, quietMessage,
-         gateByOpenWindow, DEFAULT_QUIET_MINUTES, FrameSeen } from "./quiet";
+         gateByOpenWindow, DEFAULT_QUIET_MINUTES, FrameSeen, orchestratorSaid } from "./quiet";
 import { sendPush, preflight, pushKey, DEFAULT_CONTAINER, DEFAULT_TIMEOUT_SEC } from "./push";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
@@ -236,7 +236,21 @@ export function activate(context: vscode.ExtensionContext) {
         const r = quietTick(sig, st.projects[sig.repo], now, mins);
         st.projects[sig.repo] = r.state;
         if (r.finding) {
-          const m = quietMessage(r.finding);
+          // NT-001-R2 · HIS WORDS: "when a project is truly done it usually ends with a summary from
+          // the orchestrator, and I want that summary to come along with the notification."
+          //
+          // READ HERE, AT DETECTION, and NOT at send time like the open-window gate — the two are
+          // evaluated differently on purpose. Openness is a fact about HIM that can change while
+          // preflight runs (he can close a window in those seconds), so it must be read as late as
+          // possible. The last message is a fact about a project that this branch has just concluded
+          // is QUIET: nothing is appending to that transcript, so re-reading it seconds later would
+          // return the same bytes. Reading it here also means it costs nothing on the overwhelming
+          // majority of ticks, which produce no finding at all.
+          //
+          // It resolves the orchestrator for THIS finding's repo, not for the window's — runQuiet is
+          // cross-project by design, and a stop in another project must carry ITS orchestrator's
+          // words, not this window's.
+          const m = quietMessage(r.finding, orchestratorSaid(sig.repo));
           findings.push({ repo: sig.repo, title: m.title, body: m.body,
                           key: pushKey(sig.repo, r.finding.stoppedAt) });
         }

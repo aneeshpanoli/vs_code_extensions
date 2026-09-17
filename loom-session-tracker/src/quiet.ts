@@ -40,7 +40,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { boardRoles, busRepos } from "./registry";
-import { readGate, gateStateOf } from "./health";
+import { readGate, gateStateOf, boardSessionId, statusSessionId, sessionAgreement } from "./health";
+import { getOrchestrator } from "./orchestrator";
+import { transcriptFor } from "./context";
+import { lastAssistantText } from "./watchers";
+import { truncateHonestly } from "./push";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
@@ -337,10 +341,82 @@ export function stoppedClock(ms: number): string {
  * body leads with the clock time, because "when it stopped" is the half he cannot reconstruct on
  * arrival. `title` is capped at 200 chars because `Notification.title` is varchar(200).
  */
-export function quietMessage(f: QuietFinding): { title: string; body: string } {
+export function quietMessage(f: QuietFinding, said?: LastWord | null): { title: string; body: string } {
   const title = `${f.repo} stopped`.slice(0, 200);
-  const body = `Quiet since ${stoppedClock(f.stoppedAt)} (${f.quietMinutes} min). Last: ${f.lastWhat}`;
+  let body = `Quiet since ${stoppedClock(f.stoppedAt)} (${f.quietMinutes} min). Last: ${f.lastWhat}`;
+  // NT-001-R2 · and when there is no readable summary this line simply does not run, which is the
+  // fallback stated as a requirement: exactly what NT-001 sends today, never nothing.
+  if (said && said.text) {
+    body += `\n\nWhat ${said.role} last said:\n${truncateHonestly(said.text)}`;
+  }
   return { title, body };
+}
+
+// ── NT-001-R2 · FINDING THE ORCHESTRATOR'S OWN WORDS ───────────────────────────────────────────
+
+/** The orchestrator's last message, with the role it belongs to so the body can attribute it. */
+export interface LastWord { role: string; text: string; }
+
+/**
+ * Everything `orchestratorSaid` needs from the outside world, injected so the DECISION is testable
+ * with no board, no transcript and no clock — the same split this file already keeps between
+ * `quietTick` (pure, tested) and `gatherSignals` (the observation).
+ */
+export interface SaidDeps {
+  orchestratorOf: (repo: string) => { role: string } | null;
+  /** The session id under the AND-of-records rule — null when the records disagree. */
+  sessionOf: (repo: string, role: string) => string | null;
+  transcriptOf: (sessionId: string) => string | null;
+  readLast: (file: string) => { text: string } | null;
+}
+
+function roleStatus(repo: string, role: string): any {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, role, "status.json"), "utf8"));
+  } catch { return null; }
+}
+
+export const REAL_SAID_DEPS: SaidDeps = {
+  orchestratorOf: (repo) => getOrchestrator(repo),
+  // PB-001's IDENTITY RULE, and this reader is unsafe without it for exactly the reason watchers.ts
+  // is: a transcript is addressed BY SESSION ID, and a stale id reads a DEAD session's last words as
+  // today's. He would be sent a summary from a session that ended hours ago, presented as the thing
+  // that just finished — worse than sending no summary at all. Identity is the AND of the board and
+  // the role's own status.json; a disagreement is a transition in flight, which is UNKNOWN, and
+  // unknown here means no summary and the untouched NT-001 fallback.
+  sessionOf: (repo, role) => {
+    const boardSid = boardSessionId(repo, role);
+    const statusSid = statusSessionId(roleStatus(repo, role));
+    return sessionAgreement(boardSid, statusSid).agree ? (boardSid || statusSid) : null;
+  },
+  transcriptOf: (sid) => transcriptFor(sid),
+  readLast: (f) => lastAssistantText(f),
+};
+
+/**
+ * What the tagged orchestrator last told him, or null.
+ *
+ * EVERY FAILURE IS A NULL AND NEVER AN EXCEPTION, and the ordering of the guards is the feature. The
+ * handoff's requirement is that this may add to the notification and may never subtract from it, so
+ * each of the four ways it can come up empty — no tagged orchestrator (a solo project has none),
+ * identity in transition, no transcript on disk, no qualifying record in the tail — returns null and
+ * the caller sends precisely what NT-001 sends today. Nothing here can make the existing message
+ * worse, and nothing here can throw into a tick.
+ */
+export function orchestratorSaid(repo: string, deps: SaidDeps = REAL_SAID_DEPS): LastWord | null {
+  try {
+    const tag = deps.orchestratorOf(repo);
+    if (!tag || !tag.role) return null;
+    const sid = deps.sessionOf(repo, tag.role);
+    if (!sid) return null;
+    const file = deps.transcriptOf(sid);
+    if (!file) return null;
+    const said = deps.readLast(file);
+    if (!said || !said.text || !said.text.trim()) return null;
+    return { role: tag.role, text: said.text.trim() };
+  } catch {
+    return null;                 // a notifier must never break a tick
+  }
 }
 
 // ── state, gathering, and delivery ──────────────────────────────────────────────────────────────

@@ -371,3 +371,357 @@ suite("quiet R1: withholding latches NOTHING — an unreadable tick loses no not
   ok(next.finding, "so the very next tick finds the same stop again and can report it");
   eq(next.finding.stoppedAt, r.finding.stoppedAt, "as the SAME stop, with the same instant");
 });
+
+
+// ══ NT-001-R2 · THE ORCHESTRATOR'S CLOSING SUMMARY RIDES ALONG ═══════════════════════════════════
+//
+// His words: "when a project is truly done it usually ends with a summary from the orchestrator, and
+// I want that summary to come along with the notification." He is away from his desk, so what the
+// phone says is all he gets.
+//
+// THE THREE CLAIMS ASSERTED HARDEST, because they are the three that decide whether he can trust it:
+//   1. WHICH message — the orchestrator's last spoken TEXT, never a tool call, a tool result, a
+//      thinking block, a subagent, or a line this extension typed into it.
+//   2. A CUT IS NEVER SILENT — a summary that stops dead mid-sentence reads as a crashed agent, so
+//      every truncation carries a marker saying so, and the marker is inside the byte budget.
+//   3. IT MAY ADD, AND MAY NEVER SUBTRACT — every failure path falls back to the EXACT body NT-001
+//      sends today, and nothing here can throw into a tick.
+const { assistantText, lastAssistantText, SUMMARY_TAIL_BYTES } = load("watchers.js");
+const { truncateHonestly, SUMMARY_BUDGET_BYTES, FCM_PAYLOAD_BYTES } = load("push.js");
+const { orchestratorSaid } = load("quiet.js");
+
+const fs2 = require("fs");
+const os2 = require("os");
+const path2 = require("path");
+
+/** A transcript record, in the shape the CLI actually writes. */
+const rec = (type, content, over = {}) => ({
+  type, isSidechain: false, timestamp: "2026-09-17T12:00:00.000Z",
+  message: { content }, ...over,
+});
+const textBlock = (t) => ({ type: "text", text: t });
+
+
+// ── 1 · WHICH MESSAGE ───────────────────────────────────────────────────────────────────────────
+
+suite("R2: the orchestrator's own spoken text is what is read", () => {
+  const r = assistantText(rec("assistant", [textBlock("All three lanes are green. 981/981.")]));
+  ok(r, "an assistant text record qualifies");
+  eq(r.text, "All three lanes are green. 981/981.");
+  eq(r.at, "2026-09-17T12:00:00.000Z", "and it carries the record's own instant");
+});
+
+suite("R2: a TOOL CALL is not something it said", () => {
+  // He asked what the orchestrator TOLD him. A tool_use block is not speech, and it is the most
+  // common trailing block there is — a run that ends on a Bash call would otherwise report the call.
+  eq(assistantText(rec("assistant", [{ type: "tool_use", name: "Bash", input: { command: "ls" } }])), null);
+});
+
+suite("R2: a TOOL RESULT is not something it said", () => {
+  eq(assistantText(rec("assistant", [{ type: "tool_result", content: "981 passed" }])), null);
+});
+
+suite("R2: THINKING is not something it said", () => {
+  // The part it deliberately did not tell him. Sending it would put private reasoning on his phone.
+  eq(assistantText(rec("assistant", [{ type: "thinking", thinking: "maybe the latch is wrong" }])), null);
+});
+
+suite("R2: from a mixed turn, ONLY the spoken text is taken", () => {
+  const r = assistantText(rec("assistant", [
+    { type: "thinking", thinking: "private" },
+    { type: "tool_use", name: "Bash", input: { command: "./test.sh" } },
+    textBlock("Committed as 46ef86b."),
+  ]));
+  eq(r.text, "Committed as 46ef86b.", "the thinking and the tool call are both absent");
+});
+
+suite("R2: a SUBAGENT's message is not the orchestrator speaking", () => {
+  // §4 tells every role to fan out. A subagent reporting to its parent is not the orchestrator
+  // reporting to him, and it is the LAST thing in the file whenever a turn ends on a fan-out.
+  eq(assistantText(rec("assistant", [textBlock("subagent done")], { isSidechain: true })), null);
+});
+
+suite("R2: a USER record is never read as the orchestrator speaking", () => {
+  eq(assistantText(rec("user", [textBlock("check your inbox")])), null);
+});
+
+
+// ── the injected-message rule, which is the one he would notice ─────────────────────────────────
+
+suite("R2: A LINE THIS EXTENSION TYPED IN IS NEVER QUOTED BACK AT HIM", () => {
+  // "A stop summary that quotes our own [loom-ledger] line back at him would be absurd." The FIRST
+  // defence is structural — injectTo types into a COMPOSER, so an injected message is a `user`
+  // record and the rule above already excludes it. This covers the case structure cannot: the
+  // session repeating our line as its own words, which an orchestrator that was just sent one may
+  // well do.
+  eq(assistantText(rec("assistant", [textBlock("[loom-ledger] Only 10% of agent output ships.")])), null);
+  eq(assistantText(rec("assistant", [textBlock("[loom-watch] This session armed a Monitor.")])), null);
+});
+
+suite("R2: the injected-line rule is keyed on the SHAPE, not on the nine markers that exist today", () => {
+  // A tenth marker added next month must be covered without anyone remembering to come back here.
+  eq(assistantText(rec("assistant", [textBlock("[loom-somethingnew] a marker invented later")])), null);
+});
+
+suite("R2: a summary that MENTIONS a reminder in passing is still his summary", () => {
+  // The rule must not be a substring search. Only a LEADING marker is ours; an orchestrator writing
+  // about the reminder it received is speaking, and he asked to hear it.
+  const r = assistantText(rec("assistant",
+    [textBlock("I stopped the Monitor after the [loom-watch] reminder, and banked at 30%.")]));
+  ok(r, "not rejected");
+  ok(/banked at 30%/.test(r.text), "and it arrives whole");
+});
+
+suite("R2: empty, blank and shapeless records are nothing to say", () => {
+  eq(assistantText(rec("assistant", [textBlock("   ")])), null, "whitespace is not a summary");
+  eq(assistantText(rec("assistant", [])), null);
+  eq(assistantText(rec("assistant", null)), null);
+  eq(assistantText(null), null);
+  eq(assistantText({ type: "assistant" }), null);
+});
+
+suite("R2: the legacy plain-string content shape is read too", () => {
+  const r = assistantText(rec("assistant", "an older record's content"));
+  ok(r, "not dropped as unreadable");
+  eq(r.text, "an older record's content");
+});
+
+
+// ── 2 · READING IT OFF DISK, FROM THE TAIL ──────────────────────────────────────────────────────
+
+const TXDIR = path2.join(os2.homedir(), ".claude", "r2-transcripts");
+function transcript(name, lines) {
+  fs2.mkdirSync(TXDIR, { recursive: true });
+  const f = path2.join(TXDIR, name);
+  fs2.writeFileSync(f, lines.map((l) => (typeof l === "string" ? l : JSON.stringify(l))).join("\n") + "\n");
+  return f;
+}
+
+suite("R2: the LAST thing it said is what is read, not the first", () => {
+  const f = transcript("order.jsonl", [
+    rec("assistant", [textBlock("starting the block")]),
+    rec("assistant", [textBlock("halfway through")]),
+    rec("assistant", [textBlock("DONE - 981/981, committed as 46ef86b.")]),
+  ]);
+  eq(lastAssistantText(f).text, "DONE - 981/981, committed as 46ef86b.");
+});
+
+suite("R2: trailing TOOL CALLS after the last message do not hide it", () => {
+  // The common real shape: the orchestrator speaks, then runs a few more tools. Measured, the last
+  // assistant text sits a median of 3.9 KB back from EOF for exactly this reason.
+  const f = transcript("trailing.jsonl", [
+    rec("assistant", [textBlock("All green - banking now.")]),
+    rec("assistant", [{ type: "tool_use", name: "Bash", input: { command: "git commit" } }]),
+    rec("user", [{ type: "tool_result", content: "[main 46ef86b]" }]),
+    rec("assistant", [{ type: "tool_use", name: "Bash", input: { command: "git push" } }]),
+  ]);
+  eq(lastAssistantText(f).text, "All green - banking now.");
+});
+
+suite("R2: reading is BOUNDED - the tail is what is read, not the file", () => {
+  // The cost claim. A message older than the tail is not found, and that is the designed outcome:
+  // the notification falls back rather than the read growing without limit on a 171 MB transcript.
+  const filler = JSON.stringify(rec("user", [{ type: "tool_result", content: "x".repeat(4000) }]));
+  const f = transcript("big.jsonl", [
+    rec("assistant", [textBlock("said long ago, beyond the tail")]),
+    ...Array.from({ length: 12 }, () => filler),
+  ]);
+  eq(lastAssistantText(f, 2048), null, "a 2 KB tail cannot reach it - and says so with null");
+  ok(lastAssistantText(f, 1 << 20), "a tail that reaches it finds it");
+  eq(SUMMARY_TAIL_BYTES, 256 * 1024, "the shipped tail is 256 KB - ~14x the measured 17.6 KB worst case");
+});
+
+suite("R2: a record split by the tail boundary is dropped, never half-parsed", () => {
+  const f = transcript("split.jsonl", [
+    rec("assistant", [textBlock("earlier")]),
+    rec("assistant", [textBlock("the real last word")]),
+  ]);
+  const size = fs2.statSync(f).size;
+  // A tail that lands in the middle of the FIRST record: the fragment is not JSON, and must not
+  // throw or be guessed at.
+  const r = lastAssistantText(f, size - 20);
+  eq(r.text, "the real last word", "the intact record is still read");
+});
+
+suite("R2: an unreadable transcript is a null, never an exception", () => {
+  eq(lastAssistantText(path2.join(TXDIR, "does-not-exist.jsonl")), null);
+  eq(lastAssistantText(transcript("empty.jsonl", [])), null, "an empty file has nothing to say");
+  eq(lastAssistantText(transcript("junk.jsonl", ["{not json", "also not json"])), null);
+});
+
+suite("R2: a corrupt line next to a good one does not lose the good one", () => {
+  const f = transcript("mixed.jsonl", [
+    rec("assistant", [textBlock("the summary")]),
+    "{ truncated assistant garbage",
+  ]);
+  eq(lastAssistantText(f).text, "the summary");
+});
+
+
+// ── 3 · THE SIZE BUDGET, AND HONEST TRUNCATION ──────────────────────────────────────────────────
+
+suite("R2: a summary inside the budget is untouched", () => {
+  const s = "Everything is green. 981/981 both modes, committed as 46ef86b.";
+  eq(truncateHonestly(s), s, "no marker, no cut, nothing added");
+});
+
+suite("R2: A CUT IS NEVER SILENT - this is the claim, and it is the whole requirement", () => {
+  // "A summary silently ending mid-sentence reads as a crashed agent." He is away from his desk and
+  // cannot check; a message that stops dead is indistinguishable from an orchestrator that died.
+  const long = "The migration is complete. ".repeat(400);          // ~10.8 KB
+  const out = truncateHonestly(long);
+  ok(out.length < long.length, "it was cut");
+  ok(/\[cut - \d+ of \d+ characters\]$/.test(out), "and the body SAYS it was cut, with real numbers");
+});
+
+suite("R2: the cut marker is INSIDE the budget, not added to it", () => {
+  // Otherwise the function that exists to enforce the bound is the thing that breaks it.
+  const long = "x".repeat(9000);
+  eq(Buffer.byteLength(truncateHonestly(long), "utf8") <= SUMMARY_BUDGET_BYTES, true);
+  const tight = truncateHonestly(long, 300);
+  eq(Buffer.byteLength(tight, "utf8") <= 300, true, "at any budget, including a small one");
+  ok(/\[cut - /.test(tight), "and it is still honest at a small budget");
+});
+
+suite("R2: the budget is measured in BYTES, so a multi-byte summary cannot overrun", () => {
+  // A real summary quotes paths, box-drawing comment rules and the occasional emoji. `slice` cuts by
+  // UTF-16 code unit, so a character count would let a 3-byte-per-char message overrun by 3x.
+  const wide = "\u2192 ".repeat(3000);
+  const out = truncateHonestly(wide);
+  eq(Buffer.byteLength(out, "utf8") <= SUMMARY_BUDGET_BYTES, true,
+     "bytes, not characters: " + Buffer.byteLength(out, "utf8"));
+});
+
+suite("R2: the whole payload stays well inside the FCM bound", () => {
+  // The arithmetic in push.ts, asserted rather than trusted: title + key + body-prefix + summary +
+  // an envelope this module cannot see must leave real headroom, because overrunning is a REJECTED
+  // send - a notification he never learns was missed.
+  const worst = SUMMARY_BUDGET_BYTES + 200 /* title */ + 200 /* dedup_key */ + 250 /* body prefix */;
+  eq(worst < FCM_PAYLOAD_BYTES, true, "worst case " + worst + " is inside " + FCM_PAYLOAD_BYTES);
+  ok(FCM_PAYLOAD_BYTES - worst > 1000, "with >1 KB spare for the envelope estimate to be wrong about");
+});
+
+
+// ── 4 · THE MESSAGE HE READS ────────────────────────────────────────────────────────────────────
+
+const r2finding = { repo: "vs_code_extensions", stoppedAt: NOW, quietMinutes: 22.4,
+                    lastWhat: "developer1 - NT-001-R2 - shipped" };
+
+suite("R2: WITH NO SUMMARY, the body is EXACTLY what NT-001 sends today", () => {
+  // The fallback, asserted literally. "The notification's existing job does not depend on this
+  // feature working" - so this is pinned character for character, not merely checked for a substring.
+  const before = "Quiet since " + stoppedClock(NOW) + " (22.4 min). Last: developer1 - NT-001-R2 - shipped";
+  eq(quietMessage(r2finding).body, before, "no summary");
+  eq(quietMessage(r2finding, null).body, before, "an explicit null");
+  eq(quietMessage(r2finding, { role: "product-owner", text: "" }).body, before, "an empty summary");
+});
+
+suite("R2: with a summary, his words arrive AND are attributed to the role that said them", () => {
+  const m = quietMessage(r2finding, { role: "product-owner", text: "Both lanes green. 981/981." });
+  ok(/Quiet since \d\d:\d\d/.test(m.body), "the existing message is still there, first");
+  ok(/Both lanes green\. 981\/981\./.test(m.body), "and his summary came along");
+  ok(/product-owner/.test(m.body), "attributed to the role, so he knows whose account this is");
+});
+
+suite("R2: the message does not claim the summary is a VERDICT, or that it is a closing one", () => {
+  // Limit #4 carried forward: this is the orchestrator's own account of itself, exactly as
+  // `lastWhat` is. And measured - over 155 transcripts there is NO structural marker separating a
+  // "done" closer from a mid-work message - so calling it a closing summary would overclaim twice.
+  const m = quietMessage(r2finding, { role: "product-owner", text: "all green" });
+  ok(/last said/.test(m.body), "it says what it is: the last thing that role said");
+  eq(/closing summary|verified|confirmed|proof/i.test(m.body), false,
+     "and never dresses a self-report as an independent check");
+});
+
+suite("R2: a long summary is cut inside the MESSAGE, not only inside the helper", () => {
+  const m = quietMessage(r2finding, { role: "po", text: "The migration is complete. ".repeat(400) });
+  ok(/\[cut - \d+ of \d+ characters\]/.test(m.body), "the body itself carries the honest marker");
+  ok(Buffer.byteLength(m.body, "utf8") < FCM_PAYLOAD_BYTES, "and the body fits the transport");
+});
+
+suite("R2: the title is untouched by the summary", () => {
+  eq(quietMessage(r2finding, { role: "po", text: "x".repeat(5000) }).title, "vs_code_extensions stopped");
+});
+
+
+// ── 5 · FINDING IT: EVERY FAILURE IS A FALLBACK, NEVER A THROW ──────────────────────────────────
+
+const r2deps = (over = {}) => ({
+  orchestratorOf: () => ({ role: "product-owner" }),
+  sessionOf: () => "sid-1",
+  transcriptOf: () => "/tmp/t.jsonl",
+  readLast: () => ({ text: "Both lanes green." }),
+  ...over,
+});
+
+suite("R2: the happy path returns the orchestrator's words and its role", () => {
+  const w = orchestratorSaid("r", r2deps());
+  eq(w.role, "product-owner");
+  eq(w.text, "Both lanes green.");
+});
+
+suite("R2: a SOLO PROJECT with no tagged orchestrator falls back silently", () => {
+  eq(orchestratorSaid("r", r2deps({ orchestratorOf: () => null })), null);
+});
+
+suite("R2: IDENTITY IN TRANSITION sends no summary - a stale id would quote a DEAD session", () => {
+  // PB-001's rule, and this reader is unsafe without it. A transcript is addressed BY SESSION ID, so
+  // a stale id reads a session that ended hours ago and presents its last words as the thing that
+  // just finished. That is worse than sending no summary, which is why disagreement lands here.
+  eq(orchestratorSaid("r", r2deps({ sessionOf: () => null })), null);
+});
+
+suite("R2: no transcript, or nothing readable in it, falls back", () => {
+  eq(orchestratorSaid("r", r2deps({ transcriptOf: () => null })), null);
+  eq(orchestratorSaid("r", r2deps({ readLast: () => null })), null);
+  eq(orchestratorSaid("r", r2deps({ readLast: () => ({ text: "   " }) })), null, "blank is nothing to say");
+});
+
+suite("R2: A THROWING READER CANNOT BREAK A TICK", () => {
+  // A notifier must never break a tick - the rule saveQuiet and runQuiet already keep. This feature
+  // reads a board, a status file and a transcript, each of which can vanish mid-read.
+  const boom = () => { throw new Error("gone"); };
+  eq(orchestratorSaid("r", r2deps({ orchestratorOf: boom })), null);
+  eq(orchestratorSaid("r", r2deps({ sessionOf: boom })), null);
+  eq(orchestratorSaid("r", r2deps({ transcriptOf: boom })), null);
+  eq(orchestratorSaid("r", r2deps({ readLast: boom })), null);
+});
+
+
+// ── two tests added because their mutants SURVIVED the first grading ────────────────────────────
+//
+// Both guards below were already correct; what was missing was a test that made them LOAD-BEARING.
+// Each original test passed for an incidental reason rather than the stated one, which is the exact
+// shape of a green test that stops you asking the question.
+
+suite("R2: a block is excluded for WHAT IT IS, not for happening to lack a `text` field", () => {
+  // WHY THIS EXISTS: the mutant "thinking and tool calls leak into the notification" SURVIVED. The
+  // thinking-block test above passed not because of the `b.type !== "text"` check but because a
+  // thinking block carries `thinking` and no `text`, so the later `typeof b.text === "string"` guard
+  // caught it anyway. The type check was doing nothing that was tested, and a block shape that
+  // carried BOTH would have walked straight through. Keyed on the fact, not on an incidental
+  // property — private reasoning reaching his phone is not a defect to discover in production.
+  const r = assistantText(rec("assistant", [
+    { type: "thinking", thinking: "private", text: "private reasoning that must not reach his phone" },
+    { type: "tool_use", name: "Bash", text: "git push --force", input: {} },
+    textBlock("Both lanes green."),
+  ]));
+  eq(r.text, "Both lanes green.", "only the spoken block survives: " + JSON.stringify(r.text));
+});
+
+suite("R2: a summary UNDER the budget in CHARACTERS but OVER it in BYTES is still cut", () => {
+  // WHY THIS EXISTS: the mutant "the budget counts CHARACTERS, not bytes" SURVIVED. The multi-byte
+  // test above used 6000 characters, which is over the budget counted either way — so it never
+  // separated the two, and the early-return guard was untested. THIS is the case that separates
+  // them, and it is the one that would actually ship: a 1500-character summary is unremarkable, and
+  // at three bytes a character it is 4500 bytes and overruns a payload that is REJECTED rather than
+  // truncated.
+  const s = "→".repeat(1500);
+  eq(s.length < SUMMARY_BUDGET_BYTES, true, "a character count would wave this through untouched");
+  eq(Buffer.byteLength(s, "utf8") > SUMMARY_BUDGET_BYTES, true, "but it is " +
+     Buffer.byteLength(s, "utf8") + " bytes");
+  const out = truncateHonestly(s);
+  eq(Buffer.byteLength(out, "utf8") <= SUMMARY_BUDGET_BYTES, true,
+     "cut to " + Buffer.byteLength(out, "utf8") + " bytes");
+  ok(/\[cut - \d+ of \d+ characters\]$/.test(out), "and the cut is marked");
+});

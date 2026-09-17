@@ -250,6 +250,157 @@ export function scanAppended(fileP: string, fromOffset: number): ScanResult {
   return { armings, offset: consumed };
 }
 
+// ── NT-001-R2 · WHAT THE ORCHESTRATOR ACTUALLY SAID ────────────────────────────────────────────
+//
+// The owner: "when a project is truly done it usually ends with a summary from the orchestrator, and
+// I want that summary to come along with the notification." He is away from his desk, so the phone is
+// how he finds out. The stop notification already carries the project, the time and one line — but
+// that line is a role's OWN `status.json` sentence, written about itself. What it TOLD him exists in
+// exactly one place: its transcript. So this reads it, and it lives here because this file already
+// owns transcript reading under the identity rule that makes it safe.
+//
+// WHY THIS IS THE SAME MACHINERY AND NOT A NEW READER. `scanAppended` above does a bounded POSITIONAL
+// read — stat for the size, `openSync`/`readSync` at an offset, never a whole-file read, never
+// throwing. This is that same read pointed at the other end of the file: instead of resuming at a
+// stored offset and going forward, it seeks to `size - TAIL` and walks the records BACKWARDS to the
+// first one that qualifies. Nothing else about the access pattern changes.
+//
+// WHAT IT COSTS, and the handoff required this be answered rather than waved at. One `statSync` plus
+// one bounded read of at most `SUMMARY_TAIL_BYTES`, on a tick that has ALREADY decided a project is
+// quiet — so it runs at most once per stop, not once per tick, and never on the 15-minutes-of-silence
+// path that produces nothing. The measurement in the cost note above timed a 256 KB tail read on this
+// bus's 2.32 MB orchestrator transcript at UNDER 0.1 ms; the whole-file read it replaces was 0.5 ms
+// there and would be unbounded on the 171 MB transcript that also exists on this machine. The tail is
+// the reason the cost does not depend on the size of the file.
+//
+// WHY 256 KB AND NOT LESS. Measured 2026-09-17 over 155 orchestrator transcripts active in the last
+// three days: the distance from EOF back to the start of the last assistant-text record is p50 3.9 KB,
+// p90 5.6 KB, max 17.6 KB, and a 64 KB tail captured it in 155 of 155. 256 KB is ~14x the measured
+// worst case, and the headroom is deliberate — that distance is set by whatever records happen to
+// follow the message, and ONE `tool_result` carrying a large file read can be hundreds of KB on its
+// own. A tail that falls short does not corrupt anything; it returns null and the notification falls
+// back to what it sends today. Paying 0.1 ms once per stop to make that fallback rare is the trade.
+export const SUMMARY_TAIL_BYTES = 256 * 1024;
+
+/** One message a session produced, as text. `at` is the record's own ISO instant, or null. */
+export interface LastSaid {
+  text: string;
+  at: string | null;
+}
+
+/**
+ * A line the EXTENSION typed into this session, recognised by SHAPE rather than by a list of names.
+ *
+ * This is a second line of defence and it is worth saying plainly that the FIRST one is structural.
+ * The extension's only path into a running session is `inject.injectTo`, which shells out to
+ * `loom_cdp.py` and TYPES INTO THE COMPOSER; it never writes a `.jsonl`, and every `.jsonl` reference
+ * in `src/` is a read, a rename or a delete (context.ts, rebind.ts, reopen.ts, gc.ts, deleter.ts).
+ * So an injected message is authored by the USER side of the conversation by construction, and
+ * `rec.type !== "assistant"` already excludes all twelve injection call sites. Measured over the same
+ * 155 transcripts: 24 `user` text blocks begin with a `[loom-` marker and ZERO `assistant` ones do.
+ *
+ * What this regex adds is the case the structural rule genuinely cannot reach — the session QUOTING
+ * our line back as its own words, which is not exotic: an orchestrator that has just been sent
+ * `[loom-watch] …` may well answer by repeating it. Keyed on the shape `[loom-<word>]` and NOT on the
+ * nine markers that exist today (`[loom-notify|gate|clears|stall|delegate|watch|ledger|context|
+ * restart]`), because a tenth added next month must be covered without anyone remembering to come
+ * back here. Only a LEADING marker counts: a summary that mentions a reminder in passing, halfway
+ * through a real sentence, is still the orchestrator's own words and he should get it.
+ */
+const INJECTED_MARK = /^\s*\[loom-[a-z-]+\]/;
+
+/**
+ * Is THIS record the orchestrator speaking, and what did it say?
+ *
+ * PURE, like `classifyCall` above and for the same reason: every rule about WHICH message qualifies
+ * is decided from one record, so each claim is testable against a literal JSONL line with no file,
+ * clock or composer involved. Returns null for everything that is not the session's own words.
+ *
+ * THE FOUR THINGS IT IS NOT, each excluded structurally rather than by inspection:
+ *   · not a TOOL CALL and not a TOOL RESULT — only blocks whose `type` is exactly `text` are read,
+ *     so `tool_use` and `tool_result` are skipped by the same test that skips everything else.
+ *   · not THINKING — `thinking` blocks fail that test too. He asked for what it told him, and
+ *     thinking is precisely the part it did not.
+ *   · not a SUBAGENT's message — `isSidechain` records are a subagent talking to its parent, not the
+ *     orchestrator talking to him. Dropped here exactly as false positive (2) drops them above.
+ *   · not something WE injected — see `INJECTED_MARK`.
+ */
+export function assistantText(rec: any): LastSaid | null {
+  if (!rec || typeof rec !== "object") return null;
+  if (rec.type !== "assistant") return null;
+  if (rec.isSidechain) return null;
+  const content = rec.message && rec.message.content;
+  let text = "";
+  if (typeof content === "string") {
+    // The legacy plain-string shape. Not seen in any of the 155 transcripts measured, and handled
+    // anyway because the cost is one branch and the failure mode of omitting it is silent: an older
+    // record would read as "nothing to say" rather than as an error.
+    text = content;
+  } else if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const b of content) {
+      if (!b || typeof b !== "object") continue;
+      if (b.type !== "text") continue;
+      if (typeof b.text === "string" && b.text.trim()) parts.push(b.text.trim());
+    }
+    text = parts.join("\n");
+  } else {
+    return null;
+  }
+  text = text.trim();
+  if (!text) return null;
+  if (INJECTED_MARK.test(text)) return null;
+  return { text, at: typeof rec.timestamp === "string" ? rec.timestamp : null };
+}
+
+/**
+ * The last thing this session SAID, read from the tail of its transcript.
+ *
+ * NEVER THROWS, and every failure lands on `null` — missing file, unreadable file, a tail holding no
+ * qualifying record, a truncated write in flight. `null` means "no readable summary", which the
+ * caller turns into exactly the notification it sends today. That is the whole contract: this feature
+ * may fail to add something, and may never subtract anything.
+ */
+export function lastAssistantText(fileP: string, maxTailBytes = SUMMARY_TAIL_BYTES): LastSaid | null {
+  let size = 0;
+  try { size = fs.statSync(fileP).size; } catch { return null; }
+  if (size <= 0) return null;
+
+  const start = size > maxTailBytes ? size - maxTailBytes : 0;
+  let buf: Buffer;
+  let fd = -1;
+  try {
+    fd = fs.openSync(fileP, "r");
+    const len = size - start;
+    buf = Buffer.allocUnsafe(len);
+    fs.readSync(fd, buf, 0, len, start);
+  } catch {
+    return null;
+  } finally {
+    if (fd >= 0) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+
+  const lines = buf.toString("utf8").split("\n");
+  // A tail that began mid-file began mid-RECORD in all but a vanishing case, and that leading
+  // fragment is not valid JSON. Dropped rather than parsed — the mirror of `scanAppended` refusing
+  // to consume its trailing partial line.
+  if (start > 0) lines.shift();
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    // Cheap pre-filter, and safe: a qualifying record contains `"type":"assistant"`, so the plain
+    // ASCII substring is present in any JSON encoding of it. This is what keeps a multi-hundred-KB
+    // `tool_result` line from being parsed on the way past.
+    if (line.indexOf("assistant") === -1) continue;
+    let rec: any;
+    try { rec = JSON.parse(line); } catch { continue; }
+    const said = assistantText(rec);
+    if (said) return said;
+  }
+  return null;
+}
+
 /** What one tick observes. Assembled by the caller from records the extension already keeps. */
 export interface WatcherInput {
   repo: string;

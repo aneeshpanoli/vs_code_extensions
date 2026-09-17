@@ -172,3 +172,74 @@ export async function sendPush(cfg: PushConfig, title: string, body: string, key
 export function pushKey(repo: string, stoppedAt: number): string {
   return `loom_stop_${repo}_${stoppedAt}`.slice(0, 200);   // dedup_key is varchar(200)
 }
+
+// ── NT-001-R2 · THE SIZE BUDGET, AND WHY TRUNCATION IS NOT ALLOWED TO BE SILENT ────────────────
+//
+// The body now carries the orchestrator's last message, which is unbounded input from outside this
+// module. The bound is real: an FCM data payload is capped at roughly 4 KB ACROSS ALL FIELDS, and
+// exceeding it is not a truncation, it is a rejected send — the phone gets nothing. So the budget is
+// enforced here, in the module that owns the transport's limits, next to the two it already enforces
+// (`dedup_key` varchar(200), `title` varchar(200)).
+//
+// THE ARITHMETIC, stated so the next person can re-derive it rather than trust it:
+//     4096   the FCM data payload bound
+//   -  200   title            (quiet.ts already slices to this; it is varchar(200) besides)
+//   -  200   dedup_key        (pushKey slices to this)
+//   -  250   the body's existing prefix, worst case — the clock, the minutes, and `lastWhat`,
+//            which gatherStatus caps at 160 chars plus a role name and a block id
+//   -  ~200  JSON field names, the `payload` dict, and the envelope the backend adds
+//   = ~3250  available for the summary
+// SUMMARY_BUDGET_BYTES is set at 2000, well inside that rather than at it. The ~200 for the envelope
+// is an ESTIMATE — it is composed inside the backend and firebase-admin, which this module
+// deliberately does not reach into — and the gap between 2000 and 3250 is what makes that estimate
+// safe to be wrong about. Overrunning costs a notification he never learns was missed, which is the
+// same silent-failure shape `preflight` exists to prevent, so the margin is bought on purpose.
+//
+// WHAT 2000 BUYS, measured 2026-09-17 over the last assistant message of 155 orchestrator
+// transcripts active in the previous three days: those messages run p25 988 B, p50 1654 B, p75
+// 2137 B, p90 2524 B, max 3622 B. So a 2000 B budget carries roughly seven in ten of his real
+// closing messages COMPLETE, and honestly marks the rest. Cutting to two sentences instead (p90
+// 488 B) would have fitted everything and answered a different question than the one he asked.
+export const FCM_PAYLOAD_BYTES = 4096;
+export const SUMMARY_BUDGET_BYTES = 2000;
+
+/**
+ * Cut to the budget and SAY SO — the handoff's word for this is "honestly", and it is the whole
+ * requirement.
+ *
+ * "A summary silently ending mid-sentence reads as a crashed agent." That is the failure this
+ * prevents: he is away from his desk, the message is all he has, and a sentence that stops dead is
+ * indistinguishable from an orchestrator that died mid-thought. So a cut message always ends with a
+ * marker naming how much was kept and how much there was.
+ *
+ * THE MARKER IS INSIDE THE BUDGET, not added to it — otherwise the function that exists to enforce
+ * the bound would be the thing that breaks it. Its own length depends on the numbers it quotes, so it
+ * is built and measured FIRST and the text is cut to whatever remains.
+ *
+ * Bytes, not characters, because the bound is bytes and a summary quoting a path, a box-drawing
+ * comment or an emoji is multi-byte. `slice` cuts by UTF-16 code unit, so the result is re-measured
+ * and shaved until it actually fits.
+ */
+export function truncateHonestly(text: string, budget = SUMMARY_BUDGET_BYTES): string {
+  if (Buffer.byteLength(text, "utf8") <= budget) return text;
+  const total = text.length;
+  // ASCII on purpose: the marker is the one part of the body whose byte cost must be exact, and a
+  // pure-ASCII string has one byte per character. It also renders identically wherever his client
+  // puts it — a Room row, a collapsed notification, an expanded one.
+  const mark = (shown: number) => ` ... [cut - ${shown} of ${total} characters]`;
+  // Reserve against `mark(total)`: the real marker quotes `cut.length`, which is smaller, so it can
+  // never be longer than what was reserved for it.
+  const room = budget - Buffer.byteLength(mark(total), "utf8");
+  // Pathological — a budget too small to hold even the marker. Say nothing rather than say something
+  // misleading: a fragment with no marker is exactly the crashed-agent reading this avoids.
+  if (room <= 0) return "";
+  let cut = text.slice(0, room);
+  while (cut.length > 0 && Buffer.byteLength(cut, "utf8") > room) cut = cut.slice(0, -1);
+  // Back off to a word boundary so the visible half does not end mid-word. Only when the boundary is
+  // reasonably near the end — a message with no space in its last 40% is not prose, and chopping it
+  // back to the last space it happens to contain would throw away most of what fits.
+  const sp = cut.lastIndexOf(" ");
+  if (sp > room * 0.6) cut = cut.slice(0, sp);
+  cut = cut.replace(/\s+$/, "");
+  return cut + mark(cut.length);
+}

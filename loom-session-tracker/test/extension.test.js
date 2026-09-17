@@ -1658,3 +1658,111 @@ suite("quiet wiring: the notifier stays OFF BY DEFAULT — the setting alone arm
     finally { off(); }
   } finally { push.preflight = realPre; push.sendPush = realSend; }
 });
+
+
+// ── NT-001-R2 · THE ORCHESTRATOR'S SUMMARY ACTUALLY REACHES THE SENDER ────────────────────────
+//
+// The DECISION is pure and pinned in quiet.test.js. THIS exists for the reason the R1 wiring tests
+// exist, and the handoff named it outright: "a summary the sender never attaches would leave every
+// unit test green." `orchestratorSaid` can be perfect and `quietMessage` can compose perfectly, and
+// if `runQuiet` drops the second argument he still gets the old two lines and nobody finds out. So
+// these drive `activate()` and assert on THE BODY THAT REACHED `sendPush`.
+//
+// NOTHING REACHES HIS PHONE: `withQuiet` replaces `push.sendPush` and `push.preflight` for the
+// duration, so the real runner is never constructed and no container is contacted.
+
+/** A stopped project whose ONE role is the tagged orchestrator, with a transcript it can be read
+ *  from. One role, because a second role's fresh status.json would make the project look active. */
+function stoppedWithOrchestrator(said, opts = {}) {
+  const sid = opts.sid || "r2-sid-" + Math.random().toString(36).slice(2, 8);
+  const repo = makeRepo({ po: { session_id: sid, branch: "main", status: "idle" } });
+  setStatus(repo, "po", { status: "idle", session_id: opts.statusSid || sid,
+                          last_handled: "NT-001-R2", last_line: "shipped 0.51.0" });
+  setOrchestrator(repo, "po");
+  if (said !== null) {
+    const dir = path.join(PROJ, "-r2-" + repo);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"),
+      JSON.stringify({ type: "assistant", isSidechain: false, timestamp: "2026-09-17T12:00:00.000Z",
+                       message: { content: [{ type: "text", text: said }] } }) + "\n" +
+      // A trailing tool call, because that is the real shape: the orchestrator speaks and then runs
+      // a few more tools before the turn ends.
+      JSON.stringify({ type: "assistant", isSidechain: false,
+                       message: { content: [{ type: "tool_use", name: "Bash", input: { command: "git push" } }] } }) + "\n");
+  }
+  const then = (Date.now() - 25 * 60_000) / 1000;
+  fs.utimesSync(busPath(repo, "po", "status.json"), then, then);
+  return repo;
+}
+
+suite("R2 wiring: THE ORCHESTRATOR'S OWN WORDS REACH THE NOTIFICATION BODY", async () => {
+  // This is the block. His words: "I want that summary to come along with the notification." If this
+  // assertion can be deleted without failing anything, the feature is an unfalsifiable claim.
+  const repo = stoppedWithOrchestrator("All three lanes are green. 981/981 both modes, committed as 46ef86b.");
+  await withQuiet({ pages: 1, roots: [repo] }, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      const mine = sent.filter((s) => s.title.startsWith(repo));
+      eq(mine.length, 1, "one notification");
+      match(mine[0].body, /Quiet since \d\d:\d\d/, "it still says WHEN it stopped");
+      match(mine[0].body, /981\/981 both modes, committed as 46ef86b\./,
+            "AND it carries what the orchestrator actually said: " + JSON.stringify(mine[0].body));
+      match(mine[0].body, /What po last said/, "attributed to the role, as its own account");
+    } finally { off(); }
+  });
+});
+
+suite("R2 wiring: a project with NO readable summary still gets EXACTLY today's notification", async () => {
+  // "Fall back to exactly what NT-001 sends today and never send nothing." The existing job does not
+  // depend on this feature working, and this is where that is proven end to end rather than in a
+  // unit test of the composer.
+  const repo = stoppedWithOrchestrator(null);           // tagged, but no transcript on disk
+  await withQuiet({ pages: 1, roots: [repo] }, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      const mine = sent.filter((s) => s.title.startsWith(repo));
+      eq(mine.length, 1, "the notification is still sent — never nothing");
+      match(mine[0].body, /Quiet since \d\d:\d\d.*Last: po/, "with its original body intact");
+      eq(/last said/.test(mine[0].body), false, "and no empty summary section stapled on");
+    } finally { off(); }
+  });
+});
+
+suite("R2 wiring: A STALE SESSION ID SENDS NO SUMMARY — it would quote a DEAD session at him", async () => {
+  // PB-001's identity rule, end to end. The board and the role's own status.json name DIFFERENT
+  // sessions, which means a transition is in flight. A transcript is addressed by session id, so
+  // trusting the board here would read a session that ended hours ago and present its last words as
+  // the thing that just finished — worse than sending no summary at all.
+  const repo = stoppedWithOrchestrator("words from a session that has since been cleared",
+                                       { sid: "r2-board-sid", statusSid: "r2-different-sid" });
+  await withQuiet({ pages: 1, roots: [repo] }, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      const mine = sent.filter((s) => s.title.startsWith(repo));
+      eq(mine.length, 1, "the notification still goes — the fallback, not silence");
+      eq(/since been cleared/.test(mine[0].body), false, "but the dead session's words are NOT in it");
+      eq(/last said/.test(mine[0].body), false, "no summary section at all");
+    } finally { off(); }
+  });
+});
+
+suite("R2 wiring: the body that reaches the sender is inside the transport's bound", async () => {
+  // An over-long body is not truncated by FCM, it is a REJECTED send — a notification he never
+  // learns was missed. So the bound is asserted on the real composed body, not on the helper.
+  const repo = stoppedWithOrchestrator("The migration is complete and every lane is green. ".repeat(300));
+  await withQuiet({ pages: 1, roots: [repo] }, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      const mine = sent.filter((s) => s.title.startsWith(repo));
+      eq(mine.length, 1);
+      const bytes = Buffer.byteLength(mine[0].body, "utf8");
+      ok(bytes < 4096, "the composed body is " + bytes + " bytes, inside the ~4 KB payload bound");
+      match(mine[0].body, /\[cut - \d+ of \d+ characters\]/,
+            "and the cut is MARKED — a body ending mid-sentence reads as a crashed agent");
+    } finally { off(); }
+  });
+});

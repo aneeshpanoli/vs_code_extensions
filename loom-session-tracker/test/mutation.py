@@ -340,6 +340,93 @@ MUTATIONS = [
   "src/limits.ts",
   "const c = RESETS_AT_RE.exec(tail);",
   'const c = RESETS_AT_RE.exec("");'),
+ # ── NT-001-R2 · the orchestrator's closing summary rides along ─────────────────────────────────
+ # He asked for "that summary to come along with the notification", and he is away from his desk when
+ # he reads it. The first TWO of these are the WIRING, deliberately: `orchestratorSaid` can be
+ # perfect and `quietMessage` can compose perfectly, and if `runQuiet` never attaches the result he
+ # gets the old two lines and no test notices. A feature whose delivery has no mutant is decoration.
+ ("THE WHOLE BLOCK REMOVED — the summary is composed and never attached to the notification",
+  "src/extension.ts",
+  "          const m = quietMessage(r.finding, orchestratorSaid(sig.repo));",
+  "          const m = quietMessage(r.finding);"),
+
+ ("a STALE session id is trusted — the phone quotes a session that died hours ago as today's news",
+  "src/quiet.ts",
+  "    return sessionAgreement(boardSid, statusSid).agree ? (boardSid || statusSid) : null;",
+  "    return boardSid || statusSid;"),
+
+ ("the summary REPLACES the notification instead of riding along — when and what-last are lost",
+  "src/quiet.ts",
+  "    body += `\\n\\nWhat ${said.role} last said:\\n${truncateHonestly(said.text)}`;",
+  "    body = `What ${said.role} last said:\\n${truncateHonestly(said.text)}`;"),
+
+ # ── which message it is. Each of these puts something on his phone that he did not ask for.
+ ("THINKING and tool calls leak into the notification — private reasoning sent to his phone",
+  "src/watchers.ts",
+  "      if (b.type !== \"text\") continue;",
+  "      if (b.type === \"tool_use\") continue;"),
+
+ ("a SUBAGENT's last line is reported as the orchestrator's summary",
+  "src/watchers.ts",
+  "  if (rec.isSidechain) return null;\n  const content = rec.message && rec.message.content;\n  let text = \"\";",
+  "  const content = rec.message && rec.message.content;\n  let text = \"\";"),
+
+ # Anchored on the SUMMARY reader's copy of the line, not the arming detector's identical one.
+ ("a USER record counts as the session speaking — his own typing read back to him as a summary",
+  "src/watchers.ts",
+  "  if (rec.type !== \"assistant\") return null;\n  if (rec.isSidechain) return null;\n  const content",
+  "  if (rec.type !== \"assistant\" && rec.type !== \"user\") return null;\n  if (rec.isSidechain) return null;\n  const content"),
+
+ ("OUR OWN INJECTED LINE IS QUOTED BACK AT HIM — the [loom-ledger] absurdity, restored",
+  "src/watchers.ts",
+  "  if (INJECTED_MARK.test(text)) return null;\n  return { text,",
+  "  return { text,"),
+
+ ("the injected-line guard is keyed on the MARKER NAMES, so a marker added later leaks through",
+  "src/watchers.ts",
+  "const INJECTED_MARK = /^\\s*\\[loom-[a-z-]+\\]/;",
+  "const INJECTED_MARK = /^\\s*\\[loom-(ledger|watch)\\]/;"),
+
+ # ── reading it: the last word, from a bounded tail
+ ("the FIRST message is reported instead of the last — he is told how the block STARTED",
+  "src/watchers.ts",
+  "  for (let i = lines.length - 1; i >= 0; i--) {\n    const line = lines[i];",
+  "  for (let i = 0; i < lines.length; i++) {\n    const line = lines[i];"),
+
+ ("the tail bound is gone — every stop whole-file-reads a transcript that reaches 171 MB here",
+  "src/watchers.ts",
+  "  const start = size > maxTailBytes ? size - maxTailBytes : 0;",
+  "  const start = 0;"),
+
+ # ── the size budget, and the honesty of a cut
+ ("A CUT BECOMES SILENT — a summary ending mid-sentence reads to him as a crashed agent",
+  "src/push.ts",
+  "  return cut + mark(cut.length);",
+  "  return cut;"),
+
+ ("the budget counts CHARACTERS, not bytes — a 1500-char summary ships at 4500 bytes and is REJECTED",
+  "src/push.ts",
+  "  if (Buffer.byteLength(text, \"utf8\") <= budget) return text;",
+  "  if (text.length <= budget) return text;"),
+
+ # A SECOND, INDEPENDENT way the same overrun happens, and the reason one mutant was not enough: the
+ # early-return guard above decides whether to cut AT ALL, this loop decides HOW FAR. `slice` cuts by
+ # UTF-16 code unit, so without the re-measure a cut multi-byte summary still overruns.
+ ("the byte-shaving loop is gone — a CUT multi-byte summary still overruns the payload",
+  "src/push.ts",
+  "  while (cut.length > 0 && Buffer.byteLength(cut, \"utf8\") > room) cut = cut.slice(0, -1);\n",
+  ""),
+
+ ("the cut marker is added ON TOP of the budget — the enforcer becomes the thing that overruns it",
+  "src/push.ts",
+  "  const room = budget - Buffer.byteLength(mark(total), \"utf8\");",
+  "  const room = budget;"),
+
+ ("a BLANK summary staples an empty section onto the body instead of falling back",
+  "src/quiet.ts",
+  "    if (!said || !said.text || !said.text.trim()) return null;",
+  "    if (!said) return null;"),
+
  # ── garbage collection (0.33.0). Each safeguard below is a way a collector could destroy something
  # the machine still needs; a mutant that survives means that particular loss could happen unnoticed.
  ("a transcript a bus still references is collected anyway (the wrong-lookup hazard, restored)",
@@ -2000,9 +2087,12 @@ MUTATIONS = [
  # (6) ONLY THE SESSION'S OWN ACTS. A human typing into an orchestrator tab is a `user` record;
  # reporting it tells the session it did something a person did. Killed by "watchers: A WATCHER THE
  # HUMAN TYPED IS NOT REPORTED TO THE SESSION".
+ # RE-ANCHORED 2026-09-17 (NT-001-R2): `assistantText` now carries the identical line, so the bare
+ # spelling matched TWICE and this mutant reported STALE — it graded nothing, silently. The preceding
+ # comment is unique to `classifyCall` and re-anchors it to the arming detector it belongs to.
  ("a record that is not the assistant's own act is counted as an arming",
   "src/watchers.ts",
-  '  if (rec.type !== "assistant") return null;',
+  '  // (6) Only the SESSION\'s own acts. A human typing into the tab is a `user` record.\n  if (rec.type !== "assistant") return null;',
   "  if (false) return null;"),
 
  # (4) THE ONE THAT WOULD HAVE SUNK THE DETECTOR. 787 background loops in orchestrator dirs are
