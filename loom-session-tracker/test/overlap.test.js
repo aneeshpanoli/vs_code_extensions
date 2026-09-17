@@ -17,7 +17,7 @@ const { suite, ok, eq, load, makeRepo, busPath, writeJson } = require("./harness
 const fs = require("fs");
 const path = require("path");
 
-const { declaredFiles, handoffFiles } = load("models.js");
+const { declaredFiles, handoffFiles, normalizeDeclaredPath } = load("models.js");
 const { pathsCollide, firstShared, sharedFile, isMechanicalMerge, exemptedShare,
         overlapFor, overlapReason, exemptionFor, exemptionReason } = load("overlap.js");
 
@@ -35,7 +35,11 @@ const working = (repo, role, id) => writeJson(busPath(repo, role, "status.json")
 
 // ── the exemption, as a predicate ───────────────────────────────────────────────────────────────
 
-suite("OV-001: isMechanicalMerge names exactly two files, from either root", () => {
+// The suite below asserts the manifest and the registry only; the third file (`HANDOVER.md`) and the
+// one that was removed again (`README.md`) are the OV-001-R1/R2 suites further down. The name used to
+// say "exactly two" while the list held four — a name broader than its body is how a green test stops
+// anyone asking the question.
+suite("OV-001: isMechanicalMerge exempts the manifest and the registry, from either root", () => {
   ok(isMechanicalMerge("package.json"), "the manifest, whose churn here is a one-line version bump");
   ok(isMechanicalMerge("test/mutation.py"), "the registry, whose churn here is an APPEND to MUTATIONS");
   // The same two-roots problem the collision test has: a handoff writes `package.json` relative to the
@@ -60,7 +64,7 @@ suite("OV-001: a WILDCARD is never exempted away — `*` would otherwise exempt 
   // This is the dangerous reading, and the reason the test is literal rather than run through
   // pathsCollide: `*` matches `package.json`, so expanding the declaration here would let a sloppy
   // `files: *` — a claim on EVERY file — exempt itself and refuse nothing at all.
-  eq(isMechanicalMerge("*"), false, "a claim on everything is not a claim on two mergeable files");
+  eq(isMechanicalMerge("*"), false, "a claim on everything is not a claim on three mergeable files");
   eq(isMechanicalMerge("test/*"), false, "a claim on the whole test directory keeps its whole claim");
   eq(isMechanicalMerge("package.*"), false, "and a glob over the manifest's name is not the manifest");
   eq(sharedFile(["test/*"], ["test/handoff-model.test.js"]), "test/*",
@@ -299,16 +303,135 @@ suite("OV-001-R1: the OTHER direction — a real path that merely CONTAINS one o
      "and NOT the words nobody writes — a sentinel we invented would be a path we stole");
 });
 
-suite("OV-001-R1: a SPACED annotation is NOT handled — the limit, pinned rather than claimed", () => {
-  // `declaredFiles` splits on whitespace BEFORE it normalises, so `(new file)` arrives as two
-  // fragments and neither is a wholly-bracketed word. The live tfg_ua declaration is space-free, so
-  // the failure firing today is fixed; this one would still refuse on a fragment. Fixing it means
-  // changing the splitting loop, which is more than this block was authorised to do (§24) — so it is
-  // pinned here as a known limit and raised with the orchestrator, exactly as `test/` was.
-  eq(declaredFiles("---\nid: T-20\nfiles: src/a.ts (new file)\n---\n"), ["src/a.ts", "(new", "file)"],
-     "a SPACED annotation is still read as two paths");
-  eq(firstShared(["a.ts", "(new", "file)"], ["b.ts", "(new", "file)"]), "(new",
-     "so two handoffs annotating that way still refuse each other on a fragment — found, not fixed");
+suite("OV-001-R2: a SPACED annotation is dropped — the limit R1 pinned, now fixed", () => {
+  // R1 could only pin this: the splitting loop runs before the normaliser, so `(new file)` arrived as
+  // `(new` and `file)`, and two handoffs annotating that way REFUSED EACH OTHER on `(new` — the
+  // expensive direction. R2 authorised changing the loop; the fix is a pre-pass that strips
+  // whole-token annotation runs using the same inner predicate the space-free case uses.
+  eq(declaredFiles("---\nid: T-20\nfiles: src/a.ts (new file)\n---\n"), ["src/a.ts"],
+     "the annotation is gone and the path is all that is declared");
+  eq(declaredFiles("---\nid: T-21\nfiles: src/a.ts (new file), src/b.ts (rewrite in place)\n---\n"),
+     ["src/a.ts", "src/b.ts"], "two annotated paths in one line, each annotation several words long");
+  eq(firstShared(declaredFiles("---\nid: T-22\nfiles: a.ts (new file)\n---\n"),
+                 declaredFiles("---\nid: T-23\nfiles: b.ts (new file)\n---\n")), null,
+     "so two handoffs annotating that way are no longer refused on a fragment");
+  eq(declaredFiles("---\nid: T-24\nfiles:\n  - src/a.ts (new file)\n  - src/b.ts\n---\n"),
+     ["src/a.ts", "src/b.ts"], "and the list form goes through the same one loop, so it is fixed too");
+  // The §19 size ledger moves with it, which is R1's call applied consistently: a file is a file, an
+  // annotation never was one.
+  eq(declaredFiles("---\nid: T-25\nfiles: src/a.ts (new file)\n---\n").length, 1,
+     "an annotated path ledgers ONE file, not three");
+});
+
+suite("OV-001-R2: the shapes the pre-pass must NOT fire on — each keeps R1's behaviour bit for bit", () => {
+  // THIS SUITE'S NAME USED TO CLAIM THE UNIVERSAL PROPERTY ("can only REMOVE tokens — a real path is
+  // never re-spelled") and its body was a list of non-firing cases, every one of which passes against
+  // a build with the pre-pass REVERTED. The refutation pass demonstrated exactly that and it was
+  // right: a name broader than its body is how a green test stops anyone asking the question. The
+  // universal claim is proved by the differential suite below; this one pins the shapes.
+  eq(declaredFiles("---\nid: T-26\nfiles: src/a (b).ts\n---\n"), ["src/a", "(b).ts"],
+     "a REAL path with a space-separated bracketed fragment is not swallowed beyond the annotation — "
+     + "`(b)` is followed by `.`, so nothing is stripped and both fragments still refuse");
+  eq(firstShared(declaredFiles("---\nid: T-26b\nfiles: src/a (b).ts\n---\n"),
+                 declaredFiles("---\nid: T-26c\nfiles: src/a (b).ts\n---\n")), "src/a",
+     "and two roles declaring it ARE refused — which is the guard surviving, not just a string kept");
+  eq(declaredFiles("---\nid: T-27\nfiles: src/a.ts(NEW)\n---\n"), ["src/a.ts(NEW)"],
+     "a bracket that does not OPEN a token is untouched — still one path, still refusing");
+  eq(declaredFiles("---\nid: T-28\nfiles: src/a.ts, (src/shared.ts)\n---\n"), ["src/a.ts", "(src/shared.ts)"],
+     "a bracketed real PATH is still a path: the pre-pass uses the same no-slash-no-dot predicate");
+  eq(declaredFiles("---\nid: T-29\nfiles: (a)(b), (draft.md)\n---\n"), ["(a)(b)", "(draft.md)"],
+     "a nested bracket and an inner dot still keep their tokens, spaced or not");
+  // THE SHAPE LEFT REFUSING, named rather than papered over (the handoff's §3). An annotation with a
+  // `/` or a `.` in it cannot be told from a bracketed real path once the line is split, and dropping
+  // a bracketed real path is the one narrowing that loses a guard in SILENCE. So this REFUSES, on
+  // purpose, and the writer's remedy is a comma or an annotation without a dot.
+  eq(declaredFiles("---\nid: T-30\nfiles: src/a.ts (see docs/spec.md)\n---\n"),
+     ["src/a.ts", "(see", "docs/spec.md)"],
+     "an annotation containing a slash or a dot is LEFT REFUSING — the expensive direction, chosen");
+  eq(declaredFiles("---\nid: T-31\nfiles: src/a.ts (rewrite v2.0)\n---\n"), ["src/a.ts", "(rewrite", "v2.0)"],
+     "including a version number in the annotation, for the same reason");
+  // AND THE REST OF THE LIST, which the first draft of this block did not enumerate: the refutation
+  // pass found four more shapes still refusing while the comment named only one. Each is here so the
+  // comment cannot drift from the code again.
+  eq(declaredFiles("---\nid: T-32\nfiles: src/a.ts ((new))\n---\n"), ["src/a.ts", "((new))"],
+     "a NESTED bracket run is not an annotation");
+  eq(declaredFiles("---\nid: T-33\nfiles: src/a.ts (new (file))\n---\n"), ["src/a.ts", "(new", "(file))"],
+     "nor a run with a bracket inside it");
+  eq(declaredFiles("---\nid: T-34\nfiles: src/a.ts (new\n---\n"), ["src/a.ts", "(new"],
+     "nor an UNBALANCED one — there is no closing bracket to bound the run");
+  eq(declaredFiles("---\nid: T-35\nfiles: src/a.ts [NEW], src/b.ts {NEW}\n---\n"),
+     ["src/a.ts", "[NEW]", "src/b.ts", "{NEW}"],
+     "and square or curly brackets are STILL not annotations — R1 left them out as unattested, and "
+     + "every spelling admitted here is a filename someone can no longer declare");
+});
+
+suite("OV-001-R2: a bracket run cannot cross a LIST ITEM — the swallowed `Makefile`, found by refutation", () => {
+  // THE DEFECT THE REFUTATION PASS FOUND IN THE FIRST DRAFT, and the dangerous kind: `listUnderKey`
+  // joined its items with a SPACE, so one item's `(` could reach another item's `)` and every item in
+  // between vanished. A dot-free REAL filename is exactly annotation-shaped, so this was not a corner
+  // case — `Makefile`, `LICENSE` and `Dockerfile` are all dot-free — and the result was an ABSENCE:
+  // nothing refused, and no waiver note either, because nothing was exempted. Fixed two ways at once:
+  // the join is a comma, and a comma cannot appear inside a run.
+  eq(declaredFiles("---\nid: T-40\nfiles:\n  - (new\n  - Makefile\n  - file)\n---\n"),
+     ["(new", "Makefile", "file)"],
+     "the real `Makefile` item SURVIVES a bracket run opened and closed by its neighbours");
+  ok(pathsCollide("Makefile", "Makefile"), "so two roles declaring it are still refused");
+  eq(declaredFiles("---\nid: T-41\nfiles:\n  - src/a.ts (rewrite\n  - Makefile\n  - LICENSE)\n---\n"),
+     ["src/a.ts", "(rewrite", "Makefile", "LICENSE)"],
+     "and a run opened mid-item cannot eat the two items after it");
+  eq(declaredFiles("---\nid: T-42\nfiles: src/a.ts (new, big)\n---\n"), ["src/a.ts", "(new", "big)"],
+     "a comma inside the brackets leaves the run alone — the expensive direction, and the price of "
+     + "confining a run to one item");
+  // The item-by-item case still works, which is the whole point of the fix being the JOIN and not a
+  // narrower bracket rule: an annotation inside ONE item is still an annotation.
+  eq(declaredFiles("---\nid: T-43\nfiles:\n  - src/a.ts (new file)\n  - src/b.ts (rewrite in place)\n---\n"),
+     ["src/a.ts", "src/b.ts"], "while an annotation WITHIN an item is still dropped, both of them");
+});
+
+suite("OV-001-R2: a `*` is never deleted by the pre-pass — overlap.ts's wildcard promise holds HERE too", () => {
+  // `overlap.ts` states that a wildcard is never exempted away. The first draft broke that promise one
+  // level UP, where nothing downstream can recover it: a `*` erased before the guard sees it is a claim
+  // on every file that simply is not there any more. Found by the refutation pass.
+  eq(declaredFiles("---\nid: T-50\nfiles:\n  - (new\n  - *\n  - file)\n---\n"), ["(new", "*", "file)"],
+     "the `*` item survives a bracket run around it");
+  eq(declaredFiles("---\nid: T-51\nfiles: (rewrite everything *)\n---\n"), ["(rewrite", "everything", "*)"],
+     "and a `*` inside a run keeps the whole run — a claim on everything is never quietly dropped");
+  eq(sharedFile(declaredFiles("---\nid: T-52\nfiles:\n  - (new\n  - *\n  - file)\n---\n"), ["src/models.ts"]),
+     "*", "so a block claiming everything still collides with a real source file");
+});
+
+suite("OV-001-R2: the pre-pass can only REMOVE tokens — proved differentially, not by example", () => {
+  // The universal claim, tested as a universal claim: for every generated declaration, the new
+  // `declaredFiles` must return a SUBSET of what the pre-R2 algorithm returned. A refutation pass
+  // fuzzed 300,000 inputs and found no counter-example; this is the deterministic residue of that,
+  // small enough to run on every suite and wide enough to fail if the regex is widened. It is what the
+  // suite above used to claim in its name and did not test.
+  const ATOMS = ["src/a.ts", "Makefile", "*", "test/*", "(NEW)", "(new", "file)", "(a)(b)", "((new))",
+                 "(src/shared.ts)", "(new, big)", "v2.0)", "[NEW]", "{NEW}", "none", "-", "./a", "()"];
+  // The pre-R2 algorithm, verbatim: split first, normalise second, nothing in between.
+  const before = (raw) => {
+    const out = [];
+    for (const piece of raw.split(/[,\s]+/)) {
+      const p = normalizeDeclaredPath(piece);
+      if (p && !out.includes(p)) out.push(p);
+    }
+    return out;
+  };
+  let checked = 0, shrank = 0;
+  for (const j of [" ", ",", ", "]) {
+    for (const a of ATOMS) for (const b of ATOMS) for (const c of ATOMS) {
+      const raw = [a, b, c].join(j);
+      const now = declaredFiles(`---\nid: F\nfiles: ${raw}\n---\n`);
+      const was = before(raw);
+      checked++;
+      if (now.length < was.length) shrank++;
+      const extra = now.filter((p) => !was.includes(p));
+      if (extra.length) throw new Error(`NEW TOKEN from ${JSON.stringify(raw)}: ${JSON.stringify(extra)}`);
+    }
+  }
+  eq(checked, 3 * ATOMS.length ** 3, "every triple over every join was actually compared");
+  ok(shrank > 0, `and the pre-pass really does fire — ${shrank} of ${checked} declarations shrank`);
+  ok(checked > 15000, "a differential claim on a handful of cases would not be one");
 });
 
 suite("OV-001-R1: a declaration that is ONLY sentinels is an ABSENCE, and absence never refuses", () => {
@@ -323,38 +446,60 @@ suite("OV-001-R1: a declaration that is ONLY sentinels is an ABSENCE, and absenc
   eq(exemptionFor(repo, "beta"), null, "and nothing was WAIVED either — there was no collision to waive");
 });
 
-// ── the list of four (OV-001-R1 §2) ─────────────────────────────────────────────────────────────
+// ── the list of three (OV-001-R1 §2, narrowed by OV-001-R2 §1) ──────────────────────────────────
 
-suite("OV-001-R1: the exemption names FOUR files — the two docs churn by appending, like the registry", () => {
+suite("OV-001-R1: the exemption names THREE files — the handover churns by appending, like the registry", () => {
   ok(isMechanicalMerge("HANDOVER.md"), "the handover, which grows a dated section at its end");
-  ok(isMechanicalMerge("README.md"), "the readme, which grows a line in a list");
   ok(isMechanicalMerge("loom-session-tracker/HANDOVER.md"), "from the repo root as well");
-  ok(isMechanicalMerge("./README.md"), "normalised before it is judged, like the manifest");
+  ok(isMechanicalMerge("./HANDOVER.md"), "normalised before it is judged, like the manifest");
   ok(isMechanicalMerge("package.json") && isMechanicalMerge("test/mutation.py"), "and the first two are untouched");
   // Literal and segment-anchored, exactly as the first two are. A glob over a doc is a claim on more
   // than the doc and keeps its whole claim.
   eq(isMechanicalMerge("HANDOVER.md.bak"), false, "a longer name is a different file");
-  eq(isMechanicalMerge("xREADME.md"), false, "anchored on a segment, not on characters");
+  eq(isMechanicalMerge("xHANDOVER.md"), false, "anchored on a segment, not on characters");
   eq(isMechanicalMerge("*.md"), false, "a glob over the docs is not the docs");
   eq(isMechanicalMerge("docs/*"), false, "nor is a directory glob that contains one");
   eq(sharedFile(["*.md"], ["docs/spec.md"]), "*.md", "so a glob over the docs still collides with a real doc");
   // ...but NOT with an exempt one, because the exemption shrinks the OTHER side too — the same shape
-  // the registry already had (`test/*` against `test/mutation.py`), now with a second pair of files
-  // able to make a glob block go quiet. That is the honest cost of widening the list.
-  eq(sharedFile(["*.md"], ["README.md"]), null, "a glob against a readme-only block is not a refusal");
-  eq(exemptedShare(["*.md"], ["README.md"]), "README.md", "and the guard SAYS so — that is §1(3)'s whole point");
-  // The docs stop the list. The fifth candidate is a judgement about a bus's habits, not about a kind
-  // of change, and it belongs to a per-bus list that does not exist yet.
-  eq(isMechanicalMerge("CHANGELOG.md"), false, "and the list stops at four — the next one is a per-bus judgement");
+  // the registry already had (`test/*` against `test/mutation.py`), now with a doc able to make a glob
+  // block go quiet. That is the honest cost of having a third file on the list at all.
+  eq(sharedFile(["*.md"], ["HANDOVER.md"]), null, "a glob against a handover-only block is not a refusal");
+  eq(exemptedShare(["*.md"], ["HANDOVER.md"]), "HANDOVER.md", "and the guard SAYS so — that is §1(3)'s whole point");
+  // The handover stops the list. The next candidate is a judgement about a bus's habits, not about a
+  // kind of change, and it belongs to a per-bus list that does not exist yet.
+  eq(isMechanicalMerge("CHANGELOG.md"), false, "and the list stops at three — the next one is a per-bus judgement");
   eq(isMechanicalMerge("tsconfig.json"), false, "a second manifest is not the manifest");
+});
+
+suite("OV-001-R2: `README.md` is NOT exempt — the reversal, asserted on the hackomics declaration", () => {
+  // R1 added `README.md` on the append-shaped argument and recorded the counter-example that made it
+  // wrong; R2 took the instruction back. THE COUNTER-EXAMPLE IS THE TEST: this is the hackomics
+  // declaration verbatim, and the file in it is that bus's product, not a feature list.
+  eq(isMechanicalMerge("README.md"), false, "the README is the PRODUCT on another bus this one build also serves");
+  eq(isMechanicalMerge("loom-session-tracker/README.md"), false, "at the repo root too");
+  eq(isMechanicalMerge("./README.md"), false, "and normalisation does not sneak it back in");
+  const hack = ["public/index.html", "public/styles.css", "README.md"];
+  eq(sharedFile(hack, ["public/hero.html", "README.md"]), "README.md",
+     "two hackomics roles rewriting that README in parallel are REFUSED again, which is the point");
+  eq(exemptedShare(hack, ["public/hero.html", "README.md"]), null,
+     "and there is no waiver note, because nothing was waived — the refusal is the report");
+  // The reversal is exactly one file wide. Everything R1 built around it still stands.
+  ok(isMechanicalMerge("HANDOVER.md"), "the handover stays — no bus declares it as product");
+  eq(sharedFile(["src/a.ts", "README.md", "package.json"], ["src/b.ts", "README.md", "package.json"]), "README.md",
+     "a block sharing only a README and a version bump refuses on the README, not on the manifest");
+  eq(sharedFile(["src/a.ts", "HANDOVER.md", "package.json"], ["src/b.ts", "HANDOVER.md", "package.json"]), null,
+     "and the same block with a handover instead is still dispatched");
 });
 
 suite("OV-001-R1: two blocks that share only a HANDOVER append are dispatched", () => {
   const repo = makeRepo({ alpha: {}, beta: {} }, "r1-docs");
+  // The README came OUT of these two fixtures with the R2 reversal, and that is the whole cost of the
+  // reversal in one place: a pair declaring it is now refused, so a pair that must be DISPATCHED
+  // cannot declare it.
   inbox(repo, "alpha", listHandoff("D-1", ["loom-session-tracker/src/health.ts", "loom-session-tracker/HANDOVER.md",
-                                           "loom-session-tracker/README.md", "loom-session-tracker/package.json"]));
+                                           "loom-session-tracker/package.json"]));
   inbox(repo, "beta", listHandoff("D-2", ["loom-session-tracker/src/overlap.ts", "loom-session-tracker/HANDOVER.md",
-                                          "loom-session-tracker/README.md", "loom-session-tracker/package.json"]));
+                                          "loom-session-tracker/package.json"]));
   working(repo, "alpha", "D-1");
   eq(firstShared(handoffFiles(repo, "beta"), handoffFiles(repo, "alpha")), "loom-session-tracker/HANDOVER.md",
      "without the exemption these refuse on a doc append");

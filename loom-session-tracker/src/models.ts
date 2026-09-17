@@ -232,11 +232,91 @@ export function declaredFiles(text: string | null | undefined): string[] {
   if (!raw) raw = listUnderKey(text, "files");   // empty inline value -> the `- item` form, if there is one
   if (!raw) return [];
   const out: string[] = [];
-  for (const piece of raw.split(/[,\s]+/)) {
+  for (const piece of stripSpacedAnnotations(raw).split(/[,\s]+/)) {
     const p = normalizeDeclaredPath(piece);
     if (p && !out.includes(p)) out.push(p);
   }
   return out;
+}
+
+// ── the SPACED annotation (OV-001-R2 §3) ────────────────────────────────────────────────────────
+//
+// R1 fixed `(NEW)` and pinned `(new file)` as a known limit, because the splitting loop runs BEFORE
+// `normalizeDeclaredPath` and a spaced annotation arrives as `(new` and `file)` — two fragments,
+// neither wholly bracketed, both read as paths. Two handoffs annotating that way REFUSED EACH OTHER
+// on `(new`, which is the expensive direction (§3): a stalled dispatch over a parenthetical.
+//
+// THE FIX IS A PRE-PASS, NOT A NEW SPLITTER, and that is the whole of why it is safe. One regex
+// removes annotation RUNS from the raw line before the existing loop splits it; the loop, the
+// normaliser, quoting, globs and duplicate collapsing are all untouched. The predicate inside the
+// brackets EXTENDS `normalizeDeclaredPath`'s — no slash, no dot, no nested bracket, and additionally
+// no comma and no `*` — so a spaced annotation and a space-free one are dropped for closely related
+// reasons and there is no second splitting rule to drift.
+//
+// THE TWO EXTRA EXCLUSIONS ARE NOT TIDINESS; A REFUTATION PASS FOUND BOTH. The bracket boundaries
+// bound where a run STARTS and ENDS but not how LONG it is, so a run can span many tokens — and every
+// token in between disappears with it. Two shapes made that dangerous rather than merely surprising:
+//  - A REAL PATH WITH NO DOT IN IT. `Makefile`, `LICENSE` and `Dockerfile` are dot-free and
+//    slash-free, so `files: (new` + `Makefile` + `file)` swallowed a genuinely declared file and left
+//    an ABSENCE — the failure mode with nothing printed anywhere: no refusal, and no waiver note
+//    either, because nothing was exempted. Excluding the COMMA, plus `listUnderKey` joining its items
+//    with one, is what confines a run to a single declared item.
+//  - A WILDCARD. `overlap.ts` states that a `*` is NEVER exempted away, and `files: (new` + `*` +
+//    `file)` erased one. Excluding `*` from the inner text keeps that invariant true HERE too, which
+//    matters because this function runs first: a claim on every file that has been deleted before the
+//    guard sees it cannot be refused by anything downstream.
+//
+// IT ONLY FIRES ON A WHOLE-TOKEN RUN, which is what keeps this a narrowing and not a rewrite: the `(`
+// must start the token (line start, or after a comma or space) and the `)` must END it (line end, or
+// before a comma or space). So:
+//   `src/a.ts (new file)`  -> the run is its own token(s); dropped. The path survives.
+//   `src/a (b).ts`         -> `(b)` is followed by `.`, NOT a token end; NOTHING is stripped, and the
+//                             behaviour is bit-for-bit what it was: `src/a` and `(b).ts` both refuse.
+//   `src/a.ts(NEW)`        -> the `(` does not start a token; untouched, still one refusing path.
+// A real path with a space-separated bracketed fragment therefore cannot be swallowed BEYOND the
+// annotation itself — the fragment that is not annotation-shaped stays, and it still refuses.
+//
+// The replacement KEEPS the captured delimiter and adds a space, so the token structure around the
+// removed run is untouched. Be honest about that detail rather than claim a save: because the `)` can
+// only end a token, no reachable input glues two paths even if the delimiter were dropped — the space
+// is belt-and-braces against a future edit to the boundary, not a fix for a case anyone found. No
+// mutant is written for it, because no test could kill one.
+//
+// THE SHAPES LEFT REFUSING — all of them, enumerated, because the first draft of this comment named
+// one and a refutation pass immediately found four more. An annotation is LEFT ALONE, and therefore
+// still read as paths and still able to refuse, when it:
+//  - contains a `/` or a `.` — `(see docs/spec.md)`, `(rewrite v2.0)`;
+//  - contains a comma or a `*` — `(new, big)` spanning items, `(rewrite everything *)`;
+//  - is NESTED or UNBALANCED — `((new))`, `(new (file))`, a lone `(new` with no closing bracket;
+//  - uses square or curly brackets — `[NEW]`, `{NEW}`. R1 left those out deliberately ("not attested
+//    in any `files:` line on this machine") and R2 does not add them: every spelling admitted here is
+//    a real filename someone can no longer declare, and this list is already at the edge of that.
+// THE FIRST TWO ARE THE PRINCIPLED ONES and the reason is R1's finding: the inner text is the ONLY
+// thing distinguishing `(NEW)` from `(src/shared.ts)`, a bracketed REAL PATH, and dropping one of
+// those loses a guard in SILENCE. Given `docs/spec.md)` there is no way to tell the tail of a prose
+// annotation from a path someone bracketed. So the expensive direction is chosen knowingly: it
+// REFUSES, the orchestrator re-reads two briefs, and nobody edits an unguarded file.
+//
+// The residual ambiguity that cannot be closed, stated rather than hidden: a dot-free REAL path
+// written INSIDE a bracket run on a single comma-free line — `files: (new Makefile file)` — is still
+// swallowed, because a bare dot-free word is exactly what an annotation is made of. It is now the
+// only such shape (the list form is confined item-by-item), and the old code turned that same line
+// into three junk paths, so nothing regressed. A writer's remedy is a comma.
+//
+// A NARROWING CAN ONLY REMOVE REFUSALS, and this one is checked against that claim directly: every
+// token the pre-pass removes was, by construction, a token `normalizeDeclaredPath` would keep only
+// because it had been split in half. Fewer paths on either side of `firstShared` can never produce a
+// collision that was not already there. The §19 size ledger moves with it, deliberately and
+// consistently with R1's call: `filesDeclared` counts what `handoffFiles` returns, so a block
+// annotating one path `(new file)` now ledgers 1 rather than 3 — "is this a file at all" belongs in
+// the count.
+const SPACED_ANNOTATION = /(^|[,\s])\([^()/.,*]*\)(?=[,\s]|$)/g;
+
+/** The raw `files:` line with whole-token `( ... )` annotations replaced by a space — see above. The
+ *  bracket must open a token and close one, and the inside must be annotation-shaped (no `/`, no `.`,
+ *  no nested bracket), so this can only ever remove tokens, never re-spell a path. */
+function stripSpacedAnnotations(raw: string): string {
+  return raw.replace(SPACED_ANNOTATION, "$1 ");
 }
 
 /**
@@ -264,7 +344,13 @@ function listUnderKey(text: string | null | undefined, key: string): string {
     const v = it[1].replace(/\s+#.*$/, "").trim();
     if (v) items.push(v);
   }
-  return items.join(" ");
+  // JOINED WITH A COMMA, NOT A SPACE (OV-001-R2, found by the refutation pass). Both are the one-line
+  // spelling as far as the splitting loop is concerned — it splits on `[,\s]+` — but the annotation
+  // pre-pass cannot cross a comma, and with a SPACE join it could: `- (new` / `- Makefile` / `- file)`
+  // arrived as one line, the run `(new Makefile file)` matched, and the real `Makefile` item vanished
+  // with it. One list item's brackets must never reach another item's, so the join is the delimiter
+  // that stops them.
+  return items.join(",");
 }
 
 // ── what is not a path at all (OV-001-R1 §1(2)) ─────────────────────────────────────────────────
@@ -298,12 +384,13 @@ function listUnderKey(text: string | null | undefined, key: string): string {
 // word: no `/`, no `.`, no nested bracket. `(NEW)` is dropped; `(src/shared.ts)`, `(draft.md)` and
 // `(a)(b)` are kept and refuse as paths. Keeping is the safe direction — it can only refuse MORE.
 //
-// WHAT IT DOES NOT DO, found by the same pass and left alone deliberately: `files: src/a.ts (NEW)`
-// is space-separated, and `declaredFiles` splits on whitespace BEFORE it normalises, so a SPACED
-// annotation like `(new file)` arrives here as `(new` and `file)` and is not recognised. The live
-// tfg_ua declaration this was raised for is space-free, so the failure firing today is fixed; a
-// spaced annotation would still refuse on a fragment, and fixing that means changing the splitting
-// loop, which is a bigger change than this block was authorised to make (§24). Raised, not fixed.
+// THE SPACED ANNOTATION IS NOW FIXED (OV-001-R2 §3), one function up. R1 found that a `(new file)`
+// arrives here as `(new` and `file)` because the splitting loop runs first, pinned it as a limit, and
+// raised it rather than changing the loop — which R1 was not authorised to do. R2 authorised it, and
+// `stripSpacedAnnotations` removes whole-token annotation RUNS from the raw line before the split,
+// using THIS function's predicate for what is inside the brackets. The shape still refusing — an
+// annotation containing a `/` or a `.`, which cannot be told from a bracketed real path — is named
+// there.
 //
 // THE COST. A file genuinely NAMED `none`, `n/a` or `(NEW)` can no longer be declared, and the guard
 // would go quiet on it. Nothing named that exists in any repo here, and the writer's remedy is a path
