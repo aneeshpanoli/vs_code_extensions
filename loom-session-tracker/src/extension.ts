@@ -39,7 +39,9 @@ import { readFrames } from "./cdp";
 import { isOwnerRole } from "./naming";
 import { eligibleTargets, resolveOrchestrator } from "./dispatch";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree,
-         isWorkingLike } from "./health";
+         isWorkingLike, boardSessionId, statusSessionId, sessionAgreement } from "./health";
+import { watcherTick, loadWatchers, saveWatchers, markWatcherReminded,
+         watcherReminder } from "./watchers";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
 import { injectTo, setSenderWindow } from "./inject";
@@ -190,6 +192,46 @@ export function activate(context: vscode.ExtensionContext) {
                                  idle: f.idle, busy: f.busyWorkers, ok, note } });
       });
       saveDelegation(repo, r.state);
+    };
+
+    // ── WC-001 · §17 — THIS SESSION ARMED A WATCHER ─────────────────────────────────────────────
+    //
+    // Rank 3, and the rank was the deliverable: the block that produced this was asked whether §17
+    // was enforceable AT ALL, with "no, reclassify it" accepted in advance. It is — a session writes
+    // its own tool calls to disk and this extension already parses those records. All the judgement
+    // lives in watchers.ts, pure and tested; this only resolves the address and delivers.
+    const runWatchers = () => {
+      if (!repo) return;
+      if (cfg().get<boolean>("watcherReminders", true) !== true) return;
+      const tag = getOrchestrator(repo);
+      if (!tag) return;
+      // PB-001's IDENTITY RULE, and this detector is unsafe without it: the transcript is addressed
+      // by session id, so a stale id reads a DEAD session's records as today's. Identity is the AND
+      // of the board and the role's own status.json; a disagreement is a transition in flight, and
+      // `null` here makes watcherTick count nothing and re-baseline nothing.
+      const boardSid = boardSessionId(repo, tag.role);
+      const statusSid = statusSessionId(readRoleStatus(repo, tag.role));
+      const agree = sessionAgreement(boardSid, statusSid);
+      const sid = agree.agree ? (boardSid || statusSid) : null;
+      const prev = loadWatchers(repo);
+      const r = watcherTick({ repo, orchestrator: tag.role, sessionId: sid,
+                              transcript: sid ? transcriptFor(sid) : null,
+                              lastDispatch: lastDispatchAt(repo) }, prev);
+      if (!r.finding) { saveWatchers(repo, r.state); return; }
+      const own = tag.webviewId
+        ? tracker.ownerView().find((o) => o.webviewId === tag.webviewId && o.liveness === "live")
+        : null;
+      // Mid-turn is refused, exactly as the delegation reminder is: the latch is untouched and the
+      // next idle tick delivers. LATCHED ONLY ON DELIVERY — see markWatcherReminded.
+      if (own && own.busy) { saveWatchers(repo, r.state); return; }
+      const f = r.finding;
+      injectTo({ role: f.orchestrator, webviewId: tag.webviewId ? tag.webviewId : null, repo },
+               watcherReminder(f), "watch-debug.json", (ok, note) => {
+        if (ok) saveWatchers(repo, markWatcherReminded(r.state, sid, f.lastDispatch));
+        debugLog({ watchers: { orchestrator: f.orchestrator, kinds: f.kinds,
+                               armings: f.armings.length, ok, note } });
+      });
+      saveWatchers(repo, r.state);
     };
 
     const runHealth = () => {
@@ -1000,6 +1042,7 @@ export function activate(context: vscode.ExtensionContext) {
         runHealth();
         try { runReachBack(); } catch { /* a supply must never break a tick */ }
         try { runDelegation(); } catch { /* a reminder must never break a tick */ }
+        try { runWatchers(); } catch { /* a reminder must never break a tick */ }
         runContextMemory();
         try { runWorkLedger(); } catch { /* a measurement must never break a tick */ }
         try { computeMissing(); wakeOrchestrator(); deliverBriefing(); } catch { /* a reopen offer must never break a tick */ }

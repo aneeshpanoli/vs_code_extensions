@@ -150,6 +150,10 @@ export const REPLY_FOR: Record<string, string> = {
   // the same way the stall hint was wrong when it named the orchestrator itself: an instruction that
   // cannot be carried out teaches the reader to stop reading.
   "delegate-debug.json": "no reply — write a handoff into the idle role's inbox.md and dispatch it",
+  // WC-001 · the action is to STOP something, and there is nothing to answer. It must also not say
+  // "stop the watcher named here": the arming is readable but its liveness is not (watchers.ts), so
+  // an instruction to stop a specific running thing would be asserting what the tool cannot see.
+  "watch-debug.json":   "no reply — drop the watcher; the tracker's own tick is what wakes you",
   "resume":             "keep status.json current; nothing else is read",
   "model":              "none needed — your footer is re-read every tick",
   // MC-001 · the context-memory subsystem (memory.ts) sends THREE different messages down the SAME
@@ -204,6 +208,7 @@ export const ORCHESTRATOR_KINDS: ReadonlySet<string> = new Set([
   "ledger-debug.json",   // extension.ts  — the once-a-day work-ledger alert
   "brief-debug.json",    // extension.ts  — the work-ledger briefing at a dispatch point
   "delegate-debug.json", // delegation.ts — you have been working alone while a role sat idle
+  "watch-debug.json",    // watchers.ts   — §17: this session armed a watcher; the tick already wakes you
   "context-save",        // memory.ts     — write your working memory before the clear
   "context-restore",     // memory.ts     — fresh context; here is who you are and what to read
   // "context-clear" is UNREACHABLE as of CX-001 — memory.ts produces no clear step, and a clear

@@ -1902,6 +1902,82 @@ MUTATIONS = [
   " && !isTaggedOrchestrator(repo, role)) {",
   ") {"),
 
+ # ── WC-001 · §17, the watcher detector. Each of these is a false positive the measurement over
+ # 3,965 transcripts actually found; deleting the guard is what these mutants do. ────────────────
+
+ # (2) A SUBAGENT'S WATCHER. 84 of the Monitor calls on this machine are sidechain records, and §4
+ # tells every role to fan out. Counting them reports a role for doing what it was told to do.
+ # Killed by "watchers: A SUBAGENT'S WATCHER IS NEVER THE ORCHESTRATOR'S".
+ ("a subagent's Monitor is reported as the orchestrator's own watcher",
+  "src/watchers.ts",
+  "  if (rec.isSidechain) return null;",
+  "  if (false) return null;"),
+
+ # (6) ONLY THE SESSION'S OWN ACTS. A human typing into an orchestrator tab is a `user` record;
+ # reporting it tells the session it did something a person did. Killed by "watchers: A WATCHER THE
+ # HUMAN TYPED IS NOT REPORTED TO THE SESSION".
+ ("a record that is not the assistant's own act is counted as an arming",
+  "src/watchers.ts",
+  '  if (rec.type !== "assistant") return null;',
+  "  if (false) return null;"),
+
+ # (4) THE ONE THAT WOULD HAVE SUNK THE DETECTOR. 787 background loops in orchestrator dirs are
+ # `until grep … lane.log; do sleep 3; done` — waiting on a GATE, not polling the BUS. Drop the bus
+ # path and every one of them is a §17 violation. Killed by "watchers: A BOUNDED WAIT ON A BUILD
+ # LOG IS NOT A BUS POLL".
+ ("a background wait on a build log is reported as polling the bus",
+  "src/watchers.ts",
+  '      if (LOOP_SHAPE.test(cmd) && BUS_PATH.test(cmd)) return { kind: "loom-poll", at };',
+  '      if (LOOP_SHAPE.test(cmd)) return { kind: "loom-poll", at };'),
+
+ # (3) BACKGROUND IS NOT A WATCHER. 1,873 one-shot background calls in orchestrator dirs are builds
+ # and deploys. Killed by "watchers: BACKGROUND IS NOT A WATCHER — ONLY A LOOP IS".
+ ("a one-shot background build is reported as a watcher",
+  "src/watchers.ts",
+  '      if (LOOP_SHAPE.test(cmd) && BUS_PATH.test(cmd)) return { kind: "loom-poll", at };',
+  '      if (BUS_PATH.test(cmd)) return { kind: "loom-poll", at };'),
+
+ # (5) HISTORY. The transcript holds the whole life of the session. Without the baseline, the first
+ # tick reports a watcher armed last Tuesday as if it were happening now — and every restart of the
+ # extension re-reports it. Killed by "watchers: THE FIRST SIGHT OF A SESSION COUNTS NOTHING".
+ ("a watcher armed before the detector ever ran is reported as new",
+  "src/watchers.ts",
+  "    st.offset = size;",
+  "    st.offset = 0;"),
+
+ # (7) PB-001's IDENTITY RULE, which is the whole reason this detector is allowed to read a
+ # transcript at all. Without it a stale session id reads a DEAD session's records as today's —
+ # the exact defect PB-001 shipped the fix for. Killed by "watchers: IDENTITY RECORDS THAT DISAGREE
+ # COUNT NOTHING AND RE-BASELINE NOTHING".
+ ("a session transition in flight is read anyway, on whichever id happens to be there",
+  "src/watchers.ts",
+  "  if (!input.sessionId) {",
+  "  if (false) {"),
+
+ # The suppression latch — without it the line repeats for every watcher armed in the stretch, which
+ # is how a reminder becomes one people turn off. Killed by "watchers: reminded ONCE per stretch".
+ ("the watcher reminder repeats for every arming instead of once per stretch",
+  "src/watchers.ts",
+  "  if (st.remindedAt !== null && st.remindedSession === input.sessionId) {",
+  "  if (false) {"),
+
+ # A RECORD STILL BEING WRITTEN. Consuming the partial tail means the record is never classified —
+ # a watcher armed in the last line before a tick is lost forever. Killed by "watchers: only
+ # APPENDED bytes are read, and a half-written record is not consumed".
+ ("a half-written record is consumed, so the arming in it is never seen",
+  "src/watchers.ts",
+  '  const consumed = size - Buffer.byteLength(tail, "utf8");',
+  "  const consumed = size;"),
+
+ # THE CLAIM THE TOOL CANNOT MAKE. Liveness is not readable — measured: ZERO watcher-shaped calls on
+ # any board session lacked a tool_result, and a background Bash returns its shell id immediately
+ # while the loop runs on. A line asserting a running watcher is wrong a fraction of the time with no
+ # way to tell which fraction. Killed by "watchers: THE MESSAGE NEVER CLAIMS THE WATCHER IS RUNNING".
+ ("the reminder asserts a LIVE watcher, which is not readable from a transcript",
+  "src/watchers.ts",
+  "  return `[loom-watch] This session armed ${what} since the last check.${seen}${many} It may already ` +",
+  "  return `[loom-watch] This session armed ${what} and it is running now.${seen}${many} It may already ` +"),
+
 ]
 
 def sh(cmd):
@@ -1911,12 +1987,13 @@ def sh(cmd):
 # which cannot tell a mutation from work in progress: on 2026-09-09 it silently destroyed an hour of
 # uncommitted changes to registry.ts, roles.ts, tracker.ts and statusView.ts. Commit (or stash) first;
 # the whole point of the tool is to run against the code you are about to trust.
-dirty = sh("git status --porcelain -- src/").stdout.strip()
-if dirty:
-    print("REFUSING: src/ has uncommitted changes — mutants are copies of what is committed-and-built,\n"
-          "          and a run over a dirty tree would report on code that is not what you will ship.\n")
-    print(dirty)
-    sys.exit(2)
+def _refuse_if_dirty():
+    dirty = sh("git status --porcelain -- src/").stdout.strip()
+    if dirty:
+        print("REFUSING: src/ has uncommitted changes — mutants are copies of what is committed-and-built,\n"
+              "          and a run over a dirty tree would report on code that is not what you will ship.\n")
+        print(dirty)
+        sys.exit(2)
 
 # ── PARALLEL. A serial run is ~4 minutes per dozen mutants: each one recompiles and runs the whole
 # suite, and the suite is the slow part. Every mutant works in its OWN copy of src/test/config
@@ -2070,160 +2147,174 @@ def preflight_one(idx, name, rel, find, repl):
         shutil.rmtree(work, ignore_errors=True)
 
 
-print(f"pre-flight: every one of {len(MUTATIONS) + 1} mutants must ANCHOR and must COMPILE...")
-_bad_anchor, _bad_compile = [], []
-with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-    _pf = [pool.submit(preflight_one, i, *m) for i, m in enumerate(MUTATIONS)]
-    # The self-check is a mutant like any other: a no-op that stopped compiling would fail the run
-    # for a reason that has nothing to do with the harness being able to tell a no-op from a defect.
-    _pf.append(pool.submit(preflight_one, "noop", *NOOP_SELFCHECK))
-    for fut in concurrent.futures.as_completed(_pf):
-        r = fut.result()
-        if r is None:
-            continue
-        (_bad_anchor if r[0] == "anchor" else _bad_compile).append((r[1], r[2]))
+# ── THE GATE ITSELF — everything below runs ONLY as a script ────────────────────────────────────
+#
+# WC-001 · WHY THIS GUARD EXISTS. Until now every statement below sat at module level, so `import
+# mutation` — the obvious way to read the MUTATIONS table — did not read the table, it RAN THE GATE:
+# a git check that can `sys.exit(2)`, then a baseline suite run and a mutant per table entry, each
+# recompiling and running the whole suite in its own copy of the tree. Two blocks were billed for
+# that probe before anyone wrote this line. The table is a data structure and must be readable as
+# one; the gate is a program and must be asked for explicitly.
+#
+# The MUTATIONS table, and every helper above, are now importable with no side effect of any kind.
+# `python3 test/mutation.py` is unchanged.
+if __name__ == "__main__":
+    _refuse_if_dirty()
 
-if _bad_anchor or _bad_compile:
-    print(f"\nREFUSING: {len(_bad_anchor) + len(_bad_compile)} mutant(s) cannot grade anything. "
-          f"They are reported here rather than as a score at the end,\n"
-          f"          because a mutant that never ran is not evidence that a defect would be caught.\n")
-    for nm, why in sorted(_bad_anchor):
-        print(f"  STALE ANCHOR    {nm}\n                  {why}\n"
-              f"                  FIX: re-anchor `find` on the current source — the code moved under it.")
-    for nm, why in sorted(_bad_compile):
-        print(f"  DOES NOT BUILD  {nm}\n                  {why}\n"
-              f"                  FIX: rewrite `repl` — it anchors, but the text it produces is not "
-              f"valid TypeScript.")
-    sys.exit(2)
-print(f"pre-flight clean: all {len(MUTATIONS) + 1} anchor and compile.\n")
+    print(f"pre-flight: every one of {len(MUTATIONS) + 1} mutants must ANCHOR and must COMPILE...")
+    _bad_anchor, _bad_compile = [], []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+        _pf = [pool.submit(preflight_one, i, *m) for i, m in enumerate(MUTATIONS)]
+        # The self-check is a mutant like any other: a no-op that stopped compiling would fail the run
+        # for a reason that has nothing to do with the harness being able to tell a no-op from a defect.
+        _pf.append(pool.submit(preflight_one, "noop", *NOOP_SELFCHECK))
+        for fut in concurrent.futures.as_completed(_pf):
+            r = fut.result()
+            if r is None:
+                continue
+            (_bad_anchor if r[0] == "anchor" else _bad_compile).append((r[1], r[2]))
 
-print("measuring the baseline (unmutated, LOOM_TEST_JOBS=1) — nothing can be graded against a red suite...")
-_base = make_tree("base")
-try:
-    base_rc, base_pass, base_fail = build_and_run(_base)
-finally:
-    shutil.rmtree(_base, ignore_errors=True)
+    if _bad_anchor or _bad_compile:
+        print(f"\nREFUSING: {len(_bad_anchor) + len(_bad_compile)} mutant(s) cannot grade anything. "
+              f"They are reported here rather than as a score at the end,\n"
+              f"          because a mutant that never ran is not evidence that a defect would be caught.\n")
+        for nm, why in sorted(_bad_anchor):
+            print(f"  STALE ANCHOR    {nm}\n                  {why}\n"
+                  f"                  FIX: re-anchor `find` on the current source — the code moved under it.")
+        for nm, why in sorted(_bad_compile):
+            print(f"  DOES NOT BUILD  {nm}\n                  {why}\n"
+                  f"                  FIX: rewrite `repl` — it anchors, but the text it produces is not "
+                  f"valid TypeScript.")
+        sys.exit(2)
+    print(f"pre-flight clean: all {len(MUTATIONS) + 1} anchor and compile.\n")
 
-if base_rc is None:
-    print(f"\nREFUSING: the unmutated tree {base_pass}.")
-    sys.exit(2)
-if base_rc != 0 or base_fail:
-    print(f"\nREFUSING: the BASELINE suite is red ({len(base_pass)} passed, {len(base_fail)} failed, "
-          f"exit {base_rc}) — a red baseline cannot grade anything.\n"
-          f"Every mutant would inherit these failures and be scored 'caught' on the exit code alone.\n"
-          f"Fix these first, then re-run:\n")
-    for n in sorted(base_fail):
-        print(f"  - {n}")
-    if not base_fail:
-        print("  (non-zero exit with no named failure — the suite crashed; run ./test.sh to see it)")
-    sys.exit(2)
-print(f"baseline is green: {len(base_pass)} tests pass, and a mutant is 'caught' only by breaking one of them.\n")
-
-survived, stale, ungraded, noncompiling = [], [], [], []
-print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
-
-
-def run_one(idx, name, rel, find, repl):
-    work = make_tree(idx)
+    print("measuring the baseline (unmutated, LOOM_TEST_JOBS=1) — nothing can be graded against a red suite...")
+    _base = make_tree("base")
     try:
-        p = work / rel
-        src = p.read_text()
-        n = src.count(find)
-        if n != 1:
-            return ("STALE", name, f"({rel}: pattern occurs {n} times, expected 1)")
-        p.write_text(src.replace(find, repl))
-        rc, passed, failed = build_and_run(work)
-        if rc is None:
-            # NOT "STALE". WL-007-R1: these are different failures with different causes and
-            # different fixes, and for one run they wore the same word — which cost the owner a wrong
-            # first diagnosis until they read the reason on the next line. A STALE anchor means the
-            # code moved out from under `find`; a mutant that does not BUILD means `repl` is not
-            # valid TypeScript. One is the source drifting, the other is the mutant being wrong.
-            # The pre-flight should make this branch unreachable; it is kept because "unreachable"
-            # is a claim about the pre-flight, and a gate that trusts its own claims is the thing
-            # this file exists to disbelieve.
-            return ("NOCOMPILE", name, "(mutant does not compile — the pre-flight should have caught this)")
-        # THE GRADE: only a test that passed on the baseline and fails here counts.
-        broke = sorted(failed & base_pass)
-        if broke:
-            shown = "; ".join(broke[:3]) + (f"; +{len(broke) - 3} more" if len(broke) > 3 else "")
-            return ("caught", name, f"({len(broke)} baseline-passing test(s) now fail: {shown})")
-        if rc != 0:
-            # Non-zero exit, but no test that was green on the baseline went red — so the exit code
-            # is telling us something other than "the suite noticed this defect". Not a catch.
-            return ("UNGRADED", name,
-                    f"(exit {rc} but no baseline-passing test failed; {len(failed)} failure(s) reported)")
-        return ("SURVIVED", name, "")
+        base_rc, base_pass, base_fail = build_and_run(_base)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(_base, ignore_errors=True)
+
+    if base_rc is None:
+        print(f"\nREFUSING: the unmutated tree {base_pass}.")
+        sys.exit(2)
+    if base_rc != 0 or base_fail:
+        print(f"\nREFUSING: the BASELINE suite is red ({len(base_pass)} passed, {len(base_fail)} failed, "
+              f"exit {base_rc}) — a red baseline cannot grade anything.\n"
+              f"Every mutant would inherit these failures and be scored 'caught' on the exit code alone.\n"
+              f"Fix these first, then re-run:\n")
+        for n in sorted(base_fail):
+            print(f"  - {n}")
+        if not base_fail:
+            print("  (non-zero exit with no named failure — the suite crashed; run ./test.sh to see it)")
+        sys.exit(2)
+    print(f"baseline is green: {len(base_pass)} tests pass, and a mutant is 'caught' only by breaking one of them.\n")
+
+    survived, stale, ungraded, noncompiling = [], [], [], []
+    print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
 
 
-def report(status, name, detail):
-    if status == "caught":
-        print(f"  caught    {name}\n            {detail}")
-    elif status == "SURVIVED":
-        print(f"  SURVIVED  {name}")
-        survived.append(name)
-    elif status == "UNGRADED":
-        print(f"  UNGRADED  {name}\n            {detail}")
-        ungraded.append(f"{name} {detail}")
-    elif status == "NOCOMPILE":
-        print(f"  NOBUILD   {name}\n            {detail}")
-        noncompiling.append(name)
-    else:
-        print(f"  STALE     {name}\n            {detail}")
-        stale.append(name)
+    def run_one(idx, name, rel, find, repl):
+        work = make_tree(idx)
+        try:
+            p = work / rel
+            src = p.read_text()
+            n = src.count(find)
+            if n != 1:
+                return ("STALE", name, f"({rel}: pattern occurs {n} times, expected 1)")
+            p.write_text(src.replace(find, repl))
+            rc, passed, failed = build_and_run(work)
+            if rc is None:
+                # NOT "STALE". WL-007-R1: these are different failures with different causes and
+                # different fixes, and for one run they wore the same word — which cost the owner a wrong
+                # first diagnosis until they read the reason on the next line. A STALE anchor means the
+                # code moved out from under `find`; a mutant that does not BUILD means `repl` is not
+                # valid TypeScript. One is the source drifting, the other is the mutant being wrong.
+                # The pre-flight should make this branch unreachable; it is kept because "unreachable"
+                # is a claim about the pre-flight, and a gate that trusts its own claims is the thing
+                # this file exists to disbelieve.
+                return ("NOCOMPILE", name, "(mutant does not compile — the pre-flight should have caught this)")
+            # THE GRADE: only a test that passed on the baseline and fails here counts.
+            broke = sorted(failed & base_pass)
+            if broke:
+                shown = "; ".join(broke[:3]) + (f"; +{len(broke) - 3} more" if len(broke) > 3 else "")
+                return ("caught", name, f"({len(broke)} baseline-passing test(s) now fail: {shown})")
+            if rc != 0:
+                # Non-zero exit, but no test that was green on the baseline went red — so the exit code
+                # is telling us something other than "the suite noticed this defect". Not a catch.
+                return ("UNGRADED", name,
+                        f"(exit {rc} but no baseline-passing test failed; {len(failed)} failure(s) reported)")
+            return ("SURVIVED", name, "")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
 
-with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-    futures = [pool.submit(run_one, i, *m) for i, m in enumerate(MUTATIONS)]
-    selfcheck = pool.submit(run_one, "noop", *NOOP_SELFCHECK)
-    for fut in concurrent.futures.as_completed(futures):
-        report(*fut.result())
-    sc_status, sc_name, sc_detail = selfcheck.result()
+    def report(status, name, detail):
+        if status == "caught":
+            print(f"  caught    {name}\n            {detail}")
+        elif status == "SURVIVED":
+            print(f"  SURVIVED  {name}")
+            survived.append(name)
+        elif status == "UNGRADED":
+            print(f"  UNGRADED  {name}\n            {detail}")
+            ungraded.append(f"{name} {detail}")
+        elif status == "NOCOMPILE":
+            print(f"  NOBUILD   {name}\n            {detail}")
+            noncompiling.append(name)
+        else:
+            print(f"  STALE     {name}\n            {detail}")
+            stale.append(name)
 
-print()
-# ── FX-002 · CONTAINMENT SELF-CHECK ───────────────────────────────────────────────────────────────
-# A 173-mutant gate is 173 suite runs. Before FX-002 each one left every fixture it created on the
-# host, and 892,449 of them took the filesystem to 100% of its inode table with 74 GB free. TMPDIR is
-# now pointed inside each throwaway tree, but a mutant on THIS file can never be caught (the copy's
-# driver is never executed), so the containment is asserted here at run time instead: if the host's
-# temp root gained `loom-*` entries across the run, the fixtures escaped and the gate says so.
-host_leak = _host_fixture_count() - HOST_FIXTURES_AT_START
-if host_leak > 0:
-    print(f"CONTAINMENT FAILED: the run left {host_leak} loom-* director(ies) in {tempfile.gettempdir()} "
-          f"— TMPDIR is no longer inside the throwaway trees, and a full gate now costs the host inodes.")
-else:
-    print(f"containment: 0 loom-* left in {tempfile.gettempdir()} across {len(MUTATIONS)} suite run(s).")
 
-sc_ok = sc_status == "SURVIVED"
-if sc_ok:
-    print("self-check: the no-op mutant SURVIVED — the harness can tell a real defect from a no-op.")
-else:
-    print(f"SELF-CHECK FAILED: the no-op mutant was reported {sc_status} {sc_detail}\n"
-          f"  A mutation that changes NOTHING must survive. Until that holds, every score above is\n"
-          f"  unreadable — this is the 2026-09-13 defect (a red baseline made every mutant 'caught').")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+        futures = [pool.submit(run_one, i, *m) for i, m in enumerate(MUTATIONS)]
+        selfcheck = pool.submit(run_one, "noop", *NOOP_SELFCHECK)
+        for fut in concurrent.futures.as_completed(futures):
+            report(*fut.result())
+        sc_status, sc_name, sc_detail = selfcheck.result()
 
-if survived or stale or ungraded or noncompiling or not sc_ok:
     print()
-    for s in survived:
-        print(f"SURVIVED:  {s}")
-    for s in stale:
-        print(f"STALE:     {s}  (anchor no longer matches — re-anchor `find`)")
-    for s in noncompiling:
-        print(f"NOBUILD:   {s}  (anchors, but `repl` is not valid TypeScript — rewrite it)")
-    for s in ungraded:
-        print(f"UNGRADED:  {s}")
-    ungradeable = len(survived) + len(stale) + len(ungraded) + len(noncompiling)
-    parts = [f"{len(survived)} survived", f"{len(stale)} stale",
-             f"{len(noncompiling)} non-compiling", f"{len(ungraded)} ungraded"]
-    line = (f"\n{len(MUTATIONS) - ungradeable}/{len(MUTATIONS)} caught, " + ", ".join(parts))
-    # Only claim a defect could return when one actually can. A failing SELF-CHECK with a clean
-    # scoreboard means the opposite: the scoreboard cannot be trusted to tell us either way.
-    if survived or stale or ungraded or noncompiling:
-        line += " — those defects could return unnoticed"
+    # ── FX-002 · CONTAINMENT SELF-CHECK ───────────────────────────────────────────────────────────────
+    # A 173-mutant gate is 173 suite runs. Before FX-002 each one left every fixture it created on the
+    # host, and 892,449 of them took the filesystem to 100% of its inode table with 74 GB free. TMPDIR is
+    # now pointed inside each throwaway tree, but a mutant on THIS file can never be caught (the copy's
+    # driver is never executed), so the containment is asserted here at run time instead: if the host's
+    # temp root gained `loom-*` entries across the run, the fixtures escaped and the gate says so.
+    host_leak = _host_fixture_count() - HOST_FIXTURES_AT_START
+    if host_leak > 0:
+        print(f"CONTAINMENT FAILED: the run left {host_leak} loom-* director(ies) in {tempfile.gettempdir()} "
+              f"— TMPDIR is no longer inside the throwaway trees, and a full gate now costs the host inodes.")
     else:
-        line += " — but the SELF-CHECK above failed, so this scoreboard is not evidence of anything"
-    print(line)
-    sys.exit(1)
-print(f"all {len(MUTATIONS)} mutations caught — every defect of that night now breaks the suite")
+        print(f"containment: 0 loom-* left in {tempfile.gettempdir()} across {len(MUTATIONS)} suite run(s).")
+
+    sc_ok = sc_status == "SURVIVED"
+    if sc_ok:
+        print("self-check: the no-op mutant SURVIVED — the harness can tell a real defect from a no-op.")
+    else:
+        print(f"SELF-CHECK FAILED: the no-op mutant was reported {sc_status} {sc_detail}\n"
+              f"  A mutation that changes NOTHING must survive. Until that holds, every score above is\n"
+              f"  unreadable — this is the 2026-09-13 defect (a red baseline made every mutant 'caught').")
+
+    if survived or stale or ungraded or noncompiling or not sc_ok:
+        print()
+        for s in survived:
+            print(f"SURVIVED:  {s}")
+        for s in stale:
+            print(f"STALE:     {s}  (anchor no longer matches — re-anchor `find`)")
+        for s in noncompiling:
+            print(f"NOBUILD:   {s}  (anchors, but `repl` is not valid TypeScript — rewrite it)")
+        for s in ungraded:
+            print(f"UNGRADED:  {s}")
+        ungradeable = len(survived) + len(stale) + len(ungraded) + len(noncompiling)
+        parts = [f"{len(survived)} survived", f"{len(stale)} stale",
+                 f"{len(noncompiling)} non-compiling", f"{len(ungraded)} ungraded"]
+        line = (f"\n{len(MUTATIONS) - ungradeable}/{len(MUTATIONS)} caught, " + ", ".join(parts))
+        # Only claim a defect could return when one actually can. A failing SELF-CHECK with a clean
+        # scoreboard means the opposite: the scoreboard cannot be trusted to tell us either way.
+        if survived or stale or ungraded or noncompiling:
+            line += " — those defects could return unnoticed"
+        else:
+            line += " — but the SELF-CHECK above failed, so this scoreboard is not evidence of anything"
+        print(line)
+        sys.exit(1)
+    print(f"all {len(MUTATIONS)} mutations caught — every defect of that night now breaks the suite")

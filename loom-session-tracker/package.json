@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role ↔ webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -521,6 +521,11 @@
           "type": "boolean",
           "default": true,
           "description": "Supply the HOW TO REACH ME BACK block (playbook §11) into any handoff whose inbox lacks one, composed from this bus's own records. Sends no message to anyone. Off, §11 depends on every orchestrator remembering it, which is what it stopped doing."
+        },
+        "loomSessionTracker.watcherReminders": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remind the tagged orchestrator once when its own session is seen ARMING a watcher — a Monitor, a ScheduleWakeup, a CronCreate, or a background shell loop polling the bus (playbook §17). Reads only the orchestrator's own tool calls appended since the last check, never a subagent's, never one-shot background work, and never a wait on a build log."
         },
         "loomSessionTracker.delegationReminders": {
           "type": "boolean",
