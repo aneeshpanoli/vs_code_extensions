@@ -35,15 +35,15 @@ import { rebindFrame, RebindLog } from "./rebind";
 import { planOpen, writeResult, strandedNote, Opened } from "./requests";
 import { overlapFor, overlapReason } from "./overlap";
 import { planFocus } from "./focus";
-import { readFrames } from "./cdp";
+import { readFrames, openWindowRoots } from "./cdp";
 import { isOwnerRole } from "./naming";
 import { eligibleTargets, resolveOrchestrator } from "./dispatch";
 import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree,
          isWorkingLike, boardSessionId, statusSessionId, sessionAgreement } from "./health";
 import { watcherTick, loadWatchers, saveWatchers, markWatcherReminded,
          watcherReminder } from "./watchers";
-import { quietTick, gatherSignals, loadQuiet, saveQuiet, markNotified, quietMessage,
-         DEFAULT_QUIET_MINUTES, FrameSeen } from "./quiet";
+import { quietTick, gatherSignals, loadQuiet, saveQuiet, markNotified, markDropped, quietMessage,
+         gateByOpenWindow, DEFAULT_QUIET_MINUTES, FrameSeen } from "./quiet";
 import { sendPush, preflight, pushKey, DEFAULT_CONTAINER, DEFAULT_TIMEOUT_SEC } from "./push";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
@@ -253,7 +253,28 @@ export function activate(context: vscode.ExtensionContext) {
           debugLog({ quiet: { skipped: findings.map((f) => f.repo), why: ready.note } });
           return;                          // NOT latched — it will be reported when the door works
         }
-        for (const f of findings) {
+        // NT-001-R1 · HIS CONVENTION: only a project whose window is OPEN may be reported.
+        // READ HERE, AFTER PREFLIGHT, AND NOT EARLIER. Openness is evaluated at SEND time because
+        // preflight can take seconds and he may close the window in them — and by his convention a
+        // stop that was pending when the window closed must not be told. The decision itself is
+        // pure and lives in quiet.ts; this only supplies the observation and obeys the split.
+        const gate = gateByOpenWindow(findings, await openWindowRoots());
+        for (const f of gate.dropped) {
+          // DROPPED, NOT DEFERRED — latched so a reopened window never backfills this stop.
+          const cur = loadQuiet();
+          if (cur.projects[f.repo]) { cur.projects[f.repo] = markDropped(cur.projects[f.repo]); saveQuiet(cur); }
+          debugLog({ quiet: { repo: f.repo, dropped: "window closed — his convention says stay silent" } });
+        }
+        if (gate.withheld.length > 0) {
+          // NOT latched: doubt is not closure, so these are reconsidered next tick and reported
+          // once the window list can be read. Said out loud rather than silently swallowed.
+          quietNote = `stop held: window list unreadable (${gate.withheld.map((f) => f.repo).join(", ")})`;
+          debugLog({ quiet: { withheld: gate.withheld.map((f) => f.repo), why: "window list unreadable — not treated as closed" } });
+        }
+        if (gate.dropped.length > 0 && gate.send.length === 0 && gate.withheld.length === 0) {
+          quietNote = `stop dropped: ${gate.dropped.map((f) => f.repo).join(", ")} window closed`;
+        }
+        for (const f of gate.send) {
           const res = await sendPush(pcfg, f.title, f.body, f.key, undefined);
           if (res.delivered) {
             const cur = loadQuiet();       // re-read: other projects' ticks may have written since

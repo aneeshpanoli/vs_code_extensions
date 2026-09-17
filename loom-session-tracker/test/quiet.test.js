@@ -252,3 +252,122 @@ suite("quiet: the push key is unique per stop, so two windows racing dedupe inst
   ok(a.length <= 200, "dedup_key is varchar(200)");
 });
 
+
+
+// ── NT-001-R1 · ONLY A PROJECT WHOSE WINDOW IS OPEN ────────────────────────────────────────────
+//
+// His convention, verbatim: "The notification should only be sent about project windows that are
+// open. So if I walk away from something, I will close it." So a closed window is an EXPLICIT
+// request for silence, and these tests pin the three things that can go wrong with honouring it:
+//
+//   1. THE REQUIREMENT EXISTS AT ALL. Without a test that an open window is REQUIRED, "we only
+//      notify about open windows" is an unfalsifiable claim — the mutant that deletes the check
+//      must fail something.
+//   2. DOUBT IS NOT CLOSURE. An unreadable window list must withhold, never drop. This is the
+//      direction of failure that produces no complaint: a notification that never arrives, about a
+//      stop you were not sure of, is indistinguishable from a quiet night.
+//   3. A DROP DOES NOT COME BACK. Reopening a window is not a request for the stop that happened
+//      while it was shut.
+const { windowOpenness, gateByOpenWindow, markDropped } = load("quiet.js");
+
+/** A window list as cdp.openWindowRoots yields one. */
+const seen = (...roots) => ({ pages: roots.length, roots });
+const noRoles = () => [];
+
+suite("quiet R1: a window whose folder IS the repo means OPEN", () => {
+  eq(windowOpenness(seen("vs_code_extensions"), "vs_code_extensions", []), "open");
+  eq(windowOpenness(seen("other", "vs_code_extensions"), "vs_code_extensions", []),
+     "open", "one matching window among several is enough — he has many windows");
+});
+
+suite("quiet R1: a WORKTREE window counts as the project's window", () => {
+  // `.claude/worktrees/developer1` presents itself by its own basename, so the roster is the map.
+  eq(windowOpenness(seen("developer1"), "vs_code_extensions", ["productowner", "developer1"]),
+     "open", "a worker's worktree window is that project's window");
+  eq(windowOpenness(seen("developer1"), "vs_code_extensions", []),
+     "closed", "and a role this project does not have is not its window");
+});
+
+suite("quiet R1: windows are seen, none of them this project's -> CLOSED", () => {
+  eq(windowOpenness(seen("ReciEats", "Lumen"), "vs_code_extensions", ["developer1"]), "closed");
+});
+
+suite("quiet R1: a window with NO FOLDER open is a real window and nobody's project", () => {
+  // It raises `pages` and contributes no name: it cannot make a project open, and its presence
+  // means the read DID work, so the verdict is a genuine `closed` rather than doubt.
+  eq(windowOpenness({ pages: 2, roots: [] }, "vs_code_extensions", []), "closed");
+});
+
+suite("quiet R1: AN UNREADABLE WINDOW LIST IS UNKNOWN, NEVER CLOSED", () => {
+  eq(windowOpenness(null, "r", []), "unknown", "the read failed — that is not a closed window");
+  eq(windowOpenness({ pages: 0, roots: [] }, "r", []), "unknown",
+     "a read that lists NO window at all contradicts running inside one — doubt, not closure");
+  eq(windowOpenness({ pages: 3, roots: null }, "r", []), "unknown", "a malformed shape is doubt too");
+  eq(windowOpenness(undefined, "r", []), "unknown");
+});
+
+suite("quiet R1: THE GATE — an open window sends, a closed one drops, doubt withholds", () => {
+  const f = [{ repo: "vs_code_extensions" }];
+  const g1 = gateByOpenWindow(f, seen("vs_code_extensions"), noRoles);
+  eq(g1.send.length, 1, "open -> sent"); eq(g1.dropped.length, 0); eq(g1.withheld.length, 0);
+
+  const g2 = gateByOpenWindow(f, seen("somethingelse"), noRoles);
+  eq(g2.send.length, 0, "closed -> NOT sent"); eq(g2.dropped.length, 1, "and dropped, not withheld");
+
+  const g3 = gateByOpenWindow(f, null, noRoles);
+  eq(g3.send.length, 0, "unknown -> NOT sent");
+  eq(g3.dropped.length, 0, "and NOT dropped — a dropped stop is gone for good");
+  eq(g3.withheld.length, 1, "withheld, so the next readable tick still reports it");
+});
+
+suite("quiet R1: the gate decides PER PROJECT — one closed window never silences another", () => {
+  const g = gateByOpenWindow([{ repo: "alpha" }, { repo: "beta" }], seen("beta"), noRoles);
+  eq(g.send.map((f) => f.repo), ["beta"]);
+  eq(g.dropped.map((f) => f.repo), ["alpha"]);
+});
+
+suite("quiet R1: a roster lookup that throws is contained, and sends nothing", () => {
+  const g = gateByOpenWindow([{ repo: "r" }], seen("r2"), () => { throw new Error("no board"); });
+  // The roles are unknown, so a name-only verdict stands: `r2` is not `r`, hence closed. What must
+  // NOT happen is an exception escaping into a tick.
+  eq(g.send.length, 0, "nothing is sent on a broken roster");
+  eq(g.dropped.length + g.withheld.length, 1, "and the finding is accounted for rather than lost");
+});
+
+suite("quiet R1: A CLOSED WINDOW DROPS THE STOP — and a REOPENED window never backfills it", () => {
+  // He walked away at 12:00, the threshold elapsed at 12:15 with the window shut, and he reopens it
+  // at 14:00. The stop must never arrive — it is two hours stale and he asked not to hear it.
+  const stopped = NOW - 20 * MIN;
+  let st = { lastActivityAt: stopped, lastWhat: "dev1 · NT-001 · shipped", notifiedFor: null, seenActive: true };
+  const r = quietTick(silent(), st, NOW);
+  ok(r.finding, "the stop IS detected — openness gates the SEND, not the detection");
+  eq(r.finding.stoppedAt, stopped, "and stoppedAt is still the moment activity ENDED");
+
+  st = markDropped(r.state);                       // window was closed at send time
+  const later = quietTick(silent(), st, NOW + 120 * MIN);   // window reopened, still nothing running
+  eq(later.finding, null, "the reopened window does not deliver the old stop");
+  eq(later.skip, "already notified for this stop", "the latch holds it, by the same mechanism");
+});
+
+suite("quiet R1: a drop latches the WATERMARK, so a NEW stop after it still reports", () => {
+  // Dropping must silence ONE stop, not the project. If he closes a window, reopens it, works, and
+  // walks away again, that second stop is a new event and he wants it.
+  const st = markDropped({ lastActivityAt: NOW - 20 * MIN, lastWhat: "x", notifiedFor: null, seenActive: true });
+  const worked = quietTick(busy(), st, NOW);                       // new activity re-arms
+  eq(worked.state.notifiedFor, null, "new activity cleared the drop latch");
+  const again = quietTick(silent(), worked.state, NOW + 20 * MIN);
+  ok(again.finding, "the NEXT stop is reported normally");
+  eq(again.finding.stoppedAt, NOW, "and it is the new stop, not the dropped one");
+});
+
+suite("quiet R1: withholding latches NOTHING — an unreadable tick loses no notification", () => {
+  const st = { lastActivityAt: NOW - 20 * MIN, lastWhat: "x", notifiedFor: null, seenActive: true };
+  const r = quietTick(silent(), st, NOW);
+  ok(r.finding, "the stop is found");
+  const held = gateByOpenWindow([{ repo: "r" }], null, noRoles);
+  eq(held.withheld.length, 1);
+  // The state is untouched by withholding — there is no markWithheld, deliberately.
+  const next = quietTick(silent(), r.state, NOW + MIN);
+  ok(next.finding, "so the very next tick finds the same stop again and can report it");
+  eq(next.finding.stoppedAt, r.finding.stoppedAt, "as the SAME stop, with the same instant");
+});

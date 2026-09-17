@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role ↔ webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.49.0",
+  "version": "0.50.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -541,7 +541,7 @@
         "loomSessionTracker.quietPushEnabled": {
           "type": "boolean",
           "default": false,
-          "description": "SENDS TO AN EXTERNAL SERVICE. When a project stops completely, push one notification to your phone naming the project, when it stopped, and what was last done. The message leaves this machine: it goes to the shwab_docker backend container, which files it as a SYSTEM alert and forwards it to your Android app over Firebase Cloud Messaging. Off by default; nothing is ever sent while this is off. No credential is read, copied or stored by this extension — the service account and device tokens stay inside that container."
+          "description": "SENDS TO AN EXTERNAL SERVICE. When a project stops completely, push one notification to your phone naming the project, when it stopped, and what was last done. The message leaves this machine: it goes to the shwab_docker backend container, which files it as a SYSTEM alert and forwards it to your Android app over Firebase Cloud Messaging. ONLY PROJECTS WHOSE EDITOR WINDOW IS OPEN are reported: closing a window is how you say \"I walked away from this on purpose, leave me alone\", and a stop pending when you close the window is dropped rather than delivered later. Off by default; nothing is ever sent while this is off. No credential is read, copied or stored by this extension — the service account and device tokens stay inside that container."
         },
         "loomSessionTracker.quietMinutes": {
           "type": "number",

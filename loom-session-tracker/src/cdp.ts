@@ -125,6 +125,52 @@ export function windowRootFromTitle(title: string | null | undefined): string | 
   return parts.length >= 3 ? parts[parts.length - 2] : null;
 }
 
+/**
+ * NT-001-R1 · WHICH EDITOR WINDOWS ARE OPEN RIGHT NOW.
+ *
+ * WHY THIS IS NOT `readFrames`. `readFrames` enumerates ATTACHED FRAMES — conversation panels. A
+ * window with no Claude panel in it produces no frame and is still an open window, so a frame count
+ * cannot answer "is this project's window open". `/json/list` answers it directly: every VS Code
+ * window is one `type: "page"` target (its own WebContents), listed whether or not it hosts a panel,
+ * and its title names the folder. That is the one identity a panel cannot fake by what it prints —
+ * the same reason `windowRoot` is taken from the parent page's title rather than from the frame.
+ *
+ * THREE-VALUED, and the third value is the whole point. `null` means WE COULD NOT READ — the
+ * endpoint was down, the body was not JSON, the shape was wrong. It does NOT mean "no windows".
+ * Returning `[]` for a failed read would make every unreadable tick look like a machine with every
+ * window closed, and the caller would fall silent — the direction of failure that produces no
+ * complaint, so nobody would ever report it. `pages` is carried alongside the roots for the same
+ * reason: a SUCCESSFUL read that lists zero pages contradicts the fact that this code is running
+ * inside a window, so the caller can treat that as unknown too rather than as "all closed".
+ *
+ * `roots` holds only the windows that have a folder open; a folderless window is a real open window
+ * but belongs to no project, so it raises `pages` and contributes no name. NEVER throws.
+ */
+export interface WindowRead { pages: number; roots: string[] }
+export async function openWindowRoots(host = "127.0.0.1", port = cdpPort(),
+                                      timeoutMs = 3000): Promise<WindowRead | null> {
+  try {
+    const list = await httpJson(host, port, "/json/list", timeoutMs);
+    if (!Array.isArray(list)) return null;          // a body we cannot read is not an empty machine
+    return windowsFromTargets(list);
+  } catch {
+    return null;                                    // endpoint down / timeout -> UNKNOWN, never "closed"
+  }
+}
+
+/** The pure half of `openWindowRoots`, so the decision is testable without a socket. */
+export function windowsFromTargets(list: any[]): WindowRead {
+  let pages = 0;
+  const roots: string[] = [];
+  for (const t of list) {
+    if (!t || t.type !== "page") continue;           // iframes/webviews are panels, not windows
+    pages++;
+    const root = windowRootFromTitle(t.title);
+    if (root) roots.push(root);
+  }
+  return { pages, roots };
+}
+
 export function parseRead(value: string): { text: string; contextPct: number | null; sessionId: string | null } {
   if (value.charCodeAt(0) === 123 /* { */) {
     try {

@@ -196,3 +196,59 @@ suite("cdp: a plain-string answer is still valid (no envelope)", () => {
   eq(parseRead('{"t":"hi","c":42}'), { text: "hi", contextPct: 42, sessionId: null }, "envelope");
   eq(parseRead('{"broken'), { text: '{"broken', contextPct: null, sessionId: null }, "unparseable -> treated as text");
 });
+
+
+// ── NT-001-R1 · WHICH WINDOWS ARE OPEN ─────────────────────────────────────────────────────────
+//
+// The notifier may only speak about a project whose window is open, so this read is the evidence
+// behind a decision the owner feels directly. The property that matters most is the NEGATIVE one: a
+// read that did not work must be distinguishable from a machine with everything closed, because
+// confusing the two silently loses notifications and the symptom is nothing happening.
+const { openWindowRoots, windowsFromTargets } = load("cdp.js");
+
+const page = (title) => ({ id: "p" + title, type: "page", title, url: "vscode-file://x" });
+
+suite("cdp R1: every window is one `page` target, and its folder comes out of the title", async () => {
+  await withFake({ listTargets: [
+    page("extension.ts - vs_code_extensions - VSCodium"),
+    page("App.tsx - ReciEats - VSCodium"),
+    { id: "i1", type: "iframe", title: "a conversation", url: wv("cccccccc-3333"), parentId: "pfoo" },
+  ] }, async (fake) => {
+    const r = await openWindowRoots("127.0.0.1", fake.port, 2000);
+    eq(r.roots.sort(), ["ReciEats", "vs_code_extensions"], "both windows, by folder");
+    eq(r.pages, 2, "and the iframe is NOT counted as a window — it is a panel inside one");
+  });
+});
+
+suite("cdp R1: A WINDOW WITH NO CLAUDE PANEL IS STILL AN OPEN WINDOW", () => {
+  // This is the whole reason the frame list cannot answer the question. He can open a project and
+  // never open a conversation in it; by his convention that window still means "tell me".
+  const r = windowsFromTargets([page("README.md - vs_code_extensions - VSCodium")]);
+  eq(r.roots, ["vs_code_extensions"], "no iframe target anywhere, and the window is still reported");
+});
+
+suite("cdp R1: a window with no folder open raises the page count and names nothing", () => {
+  const r = windowsFromTargets([{ id: "p", type: "page", title: "Welcome - VSCodium" }]);
+  eq(r.roots, [], "it is nobody's project");
+  eq(r.pages, 1, "but it IS an open window, so the read is known to have worked");
+});
+
+suite("cdp R1: AN UNREACHABLE ENDPOINT IS null, NOT an empty window list", async () => {
+  pointAtDeadPort();
+  const r = await openWindowRoots("127.0.0.1", DEAD_PORT, 500);
+  eq(r, null, "null means UNKNOWN — returning [] here would read as 'every window is closed'");
+});
+
+suite("cdp R1: a body that is not a target array is null too", async () => {
+  // /json/list answering with an object, an error page, or half a response is doubt, not closure.
+  await withFake({ listTargets: { error: "nope" } }, async (fake) => {
+    eq(await openWindowRoots("127.0.0.1", fake.port, 2000), null);
+  });
+});
+
+suite("cdp R1: junk entries are skipped without throwing — a monitor may never break a tick", () => {
+  const r = windowsFromTargets([null, undefined, 7, "x", { type: "page" },
+                                page("a - Lumen - VSCodium")]);
+  eq(r.roots, ["Lumen"]);
+  eq(r.pages, 2, "the titleless page counts as a window, it just names no folder");
+});

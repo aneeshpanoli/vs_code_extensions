@@ -1531,3 +1531,130 @@ suite("MP-002: a role whose frame resolves to the orchestrator's is not typed in
     eq(modelInjections(), [], "nothing typed into the orchestrator's frame: " + JSON.stringify(injectLog()));
   } finally { off(); }
 });
+
+
+// ── NT-001-R1 · THE STOP NOTIFIER OBEYS THE OPEN-WINDOW CONVENTION, END TO END ────────────────
+//
+// The DECISION is pure and pinned in quiet.test.js. THIS file exists because a pure decision nobody
+// calls is worth nothing: the requirement lives in `runQuiet`, and a mutant that deletes the gate
+// from the wiring would leave every unit test green. So these drive `activate()` itself and assert
+// on what reached the sender.
+//
+// NOTHING REACHES HIS PHONE. `push.sendPush` and `push.preflight` are replaced on the module object
+// for the duration; the real runner is never constructed and no container is contacted. That is
+// structural, not careful — there is no code path from here to a notification.
+const push = load("push.js");
+
+/** Drive one activation with the notifier ARMED, and report what it tried to send. */
+async function withQuiet(windowRead, body) {
+  const realPre = push.preflight, realSend = push.sendPush, realWins = cdp.openWindowRoots;
+  const sent = [];
+  push.preflight = async () => ({ delivered: true, note: "fake door open" });
+  push.sendPush = async (_cfg, title, bodyText, key) => { sent.push({ title, body: bodyText, key }); return { delivered: true, note: "fake sent" }; };
+  cdp.openWindowRoots = async () => (typeof windowRead === "function" ? windowRead() : windowRead);
+  vscode._config["loomSessionTracker.quietPushEnabled"] = true;
+  vscode._config["loomSessionTracker.quietMinutes"] = 15;
+  try { return await body(sent); }
+  finally {
+    push.preflight = realPre; push.sendPush = realSend; cdp.openWindowRoots = realWins;
+    delete vscode._config["loomSessionTracker.quietPushEnabled"];
+    delete vscode._config["loomSessionTracker.quietMinutes"];
+    try { fs.unlinkSync(path.join(LOOM, "quiet-state.json")); } catch {}
+  }
+}
+
+/** A bus whose only role stopped `minsAgo` minutes ago: the status file's MTIME is the watermark. */
+function stoppedProject(minsAgo = 25) {
+  const repo = makeRepo({ developer1: { session_id: "s", branch: "b", status: "idle" } });
+  setStatus(repo, "developer1", { status: "idle", last_handled: "NT-001", last_line: "shipped 0.47.0" });
+  const then = (Date.now() - minsAgo * 60_000) / 1000;
+  fs.utimesSync(busPath(repo, "developer1", "status.json"), then, then);
+  return repo;
+}
+
+suite("quiet wiring: a stopped project WITH ITS WINDOW OPEN is reported", async () => {
+  const repo = stoppedProject();
+  await withQuiet({ pages: 1, roots: [repo] }, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      const mine = sent.filter((s) => s.title.startsWith(repo));
+      eq(mine.length, 1, "exactly one notification for the project whose window is open");
+      match(mine[0].body, /Quiet since \d\d:\d\d/, "and it leads with WHEN it stopped");
+    } finally { off(); }
+  });
+});
+
+suite("quiet wiring: A STOPPED PROJECT WHOSE WINDOW IS CLOSED IS NEVER SENT, AND IS DROPPED", async () => {
+  // His convention: he closes a window when he walks away on purpose. This is the whole block — if
+  // this assertion can be removed without failing anything, the feature is an unfalsifiable claim.
+  const repo = stoppedProject();
+  await withQuiet({ pages: 2, roots: ["SomeOtherProject", "AndAnother"] }, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      eq(sent.filter((s) => s.title.startsWith(repo)).length, 0, "nothing was sent about it");
+      const st = readJson(path.join(LOOM, "quiet-state.json"));
+      const mine = st && st.projects && st.projects[repo];
+      ok(mine, "the project's state was still written — the watermark advances regardless");
+      eq(mine.notifiedFor, mine.lastActivityAt,
+         "and the stop is LATCHED: dropped, not deferred, so a reopened window cannot backfill it");
+    } finally { off(); }
+  });
+});
+
+suite("quiet wiring: AN UNREADABLE WINDOW LIST WITHHOLDS AND LATCHES NOTHING", async () => {
+  // The failure nobody complains about. If doubt latched, one bad `/json/list` would permanently
+  // erase a notification he was owed.
+  const repo = stoppedProject();
+  await withQuiet(null, async (sent) => {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      eq(sent.filter((s) => s.title.startsWith(repo)).length, 0, "nothing sent while we cannot tell");
+      const st = readJson(path.join(LOOM, "quiet-state.json"));
+      const mine = st && st.projects && st.projects[repo];
+      ok(mine, "state written");
+      eq(mine.notifiedFor, null, "NOT latched — the next readable tick still owes him this stop");
+    } finally { off(); }
+  });
+});
+
+suite("quiet wiring: openness is read AT SEND TIME — a window closed during preflight drops the stop", async () => {
+  // He walks away, the threshold elapses, and he closes the window while the notifier is still
+  // opening its door. By his convention that means do not tell him, so the read must happen AFTER
+  // preflight, not when the stop was detected.
+  const repo = stoppedProject();
+  const realPre = push.preflight, realSend = push.sendPush, realWins = cdp.openWindowRoots;
+  const sent = [];
+  let closedYet = false;
+  push.preflight = async () => { closedYet = true; return { delivered: true, note: "slow door" }; };
+  push.sendPush = async (_c, title) => { sent.push(title); return { delivered: true, note: "x" }; };
+  cdp.openWindowRoots = async () => (closedYet ? { pages: 1, roots: ["Elsewhere"] } : { pages: 1, roots: [repo] });
+  vscode._config["loomSessionTracker.quietPushEnabled"] = true;
+  try {
+    const off = await activate([]);
+    try {
+      await settle(80);
+      eq(sent.filter((t) => t.startsWith(repo)).length, 0,
+         "the window that was open at DETECTION time was shut by SEND time — nothing sent");
+    } finally { off(); }
+  } finally {
+    push.preflight = realPre; push.sendPush = realSend; cdp.openWindowRoots = realWins;
+    delete vscode._config["loomSessionTracker.quietPushEnabled"];
+    try { fs.unlinkSync(path.join(LOOM, "quiet-state.json")); } catch {}
+  }
+});
+
+suite("quiet wiring: the notifier stays OFF BY DEFAULT — the setting alone arms it", async () => {
+  const repo = stoppedProject();
+  const realPre = push.preflight, realSend = push.sendPush;
+  const sent = [];
+  push.preflight = async () => ({ delivered: true, note: "would be open" });
+  push.sendPush = async (_c, title) => { sent.push(title); return { delivered: true, note: "x" }; };
+  try {
+    const off = await activate([]);                   // quietPushEnabled untouched -> false
+    try { await settle(80); eq(sent.length, 0, "nothing is sent, and preflight is never even reached"); }
+    finally { off(); }
+  } finally { push.preflight = realPre; push.sendPush = realSend; }
+});
