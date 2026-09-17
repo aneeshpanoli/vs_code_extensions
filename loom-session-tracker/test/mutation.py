@@ -61,6 +61,59 @@ MUTATIONS = [
   'if (m[2] !== "True") return { delivered: false, note: "off — FCM service account not present in the backend" };',
   'if (false) return { delivered: false, note: "off — FCM service account not present in the backend" };'),
 
+ # ── NT-001-R1 · only a project whose window is OPEN ───────────────────────────────────────────
+ # The first of these IS the block: it deletes the open-window requirement outright. A requirement
+ # with no mutant is an unfalsifiable claim, so if this one ever survives, the feature is decoration.
+ ("THE WHOLE BLOCK REMOVED — every project is reported whether or not its window is open",
+  "src/quiet.ts",
+  '    if (state === "open") g.send.push(f);',
+  '    if (state === state) g.send.push(f);'),
+
+ ("a CLOSED window is treated as doubt — he closes a window to be left alone and is told anyway",
+  "src/quiet.ts",
+  '  return "closed";\n}',
+  '  return "unknown";\n}'),
+
+ ("AN UNREADABLE WINDOW LIST READS AS CLOSED — real notifications lost with no symptom",
+  "src/quiet.ts",
+  '  if (!read || !Array.isArray(read.roots)) return "unknown";',
+  '  if (!read || !Array.isArray(read.roots)) return "closed";'),
+
+ ("a read that lists ZERO windows is believed — one partial /json/list silences the machine",
+  "src/quiet.ts",
+  '  if (!Number.isFinite(read.pages) || read.pages <= 0) return "unknown";',
+  "  if (false) return \"unknown\";"),
+
+ ("a worktree window no longer counts as its project's window — worker-only projects go unreported",
+  "src/quiet.ts",
+  "  const names = new Set<string>([repo, ...roles]);",
+  "  const names = new Set<string>([repo]);"),
+
+ ("a dropped stop is DEFERRED instead — reopening a window backfills a stop hours stale",
+  "src/quiet.ts",
+  "export function markDropped(st: ProjectQuiet): ProjectQuiet {\n  return markNotified(st);",
+  "export function markDropped(st: ProjectQuiet): ProjectQuiet {\n  return st;"),
+
+ ("withholding latches too — one unreadable tick permanently erases a notification he was owed",
+  "src/extension.ts",
+  "        if (gate.withheld.length > 0) {",
+  "        for (const f of gate.withheld) { const c = loadQuiet(); if (c.projects[f.repo]) { c.projects[f.repo] = markDropped(c.projects[f.repo]); saveQuiet(c); } }\n        if (gate.withheld.length > 0) {"),
+
+ ("openness is read at STOP time, before preflight — a window closed in between is told anyway",
+  "src/extension.ts",
+  "        const gate = gateByOpenWindow(findings, await openWindowRoots());",
+  "        const gate = { send: findings, dropped: [] as typeof findings, withheld: [] as typeof findings };"),
+
+ ("an iframe counts as a window — a panel of any project makes every window look open",
+  "src/cdp.ts",
+  '    if (!t || t.type !== "page") continue;',
+  "    if (!t) continue;"),
+
+ ("a failed /json/list becomes an EMPTY window list — the machine reads as all-closed",
+  "src/cdp.ts",
+  "    return null;                                    // endpoint down / timeout -> UNKNOWN, never \"closed\"",
+  "    return { pages: 0, roots: [] };"),
+
  ("`po` is not an owner role — the Gita PO could not be found at all",
   "src/naming.ts",
   'OWNER_CANONICAL, "productowner", "product_owner", "po", "owner", "orchestrator", "pm",',

@@ -219,6 +219,96 @@ export function quietTick(s: ProjectSignals, prev: ProjectQuiet | undefined, now
   };
 }
 
+// ── NT-001-R1 · ONLY A PROJECT WHOSE WINDOW IS OPEN ────────────────────────────────────────────
+//
+// THE OWNER SUPPLIED THE MISSING STATE HIMSELF, out of band, with a gesture he already makes:
+// "The notification should only be sent about project windows that are open. So if I walk away from
+// something, I will close it." NT-001's honest-limits list said this bus could not tell "parked on
+// purpose" from "died", nor "window closed" from "sessions ended", because nothing it observes
+// expresses intent. A closed window now IS that expression: silence is requested, and an open
+// window is the request to be told. So this is not a heuristic — it is a convention being honoured,
+// and the code must honour it exactly, including where it is inconvenient.
+//
+// WHAT "OPEN" IS KEYED ON, and why that and nothing else. `cdp.openWindowRoots` lists every
+// `type: "page"` target — one per VS Code window, present whether or not the window hosts a Claude
+// panel — and takes the folder out of each title. A project's window is open when some window's
+// folder basename is the repo id, OR is one of the project's board role names, which is how a
+// worktree window (`.claude/worktrees/developer1`) presents itself; that is the same mapping
+// `tracker.inMyWindow` already uses in the other direction. Frames are deliberately NOT the signal:
+// he can have a window open with no conversation panel in it, and by his convention that window
+// still means "tell me".
+export type Openness = "open" | "closed" | "unknown";
+
+/**
+ * Three-valued, and `unknown` is the one that matters.
+ *
+ * A failed or partial read of the window list is NOT evidence of a closed window. Treating it as
+ * one would silently lose real notifications — a failure nobody complains about, because its symptom
+ * is the absence of a message you were not sure was coming. So every doubtful shape lands on
+ * `unknown`, and the caller withholds and SAYS SO rather than concluding closed:
+ *   · `null`          — the read failed outright.
+ *   · `pages <= 0`    — the read succeeded and listed no window at all, which contradicts the fact
+ *                       that this code is running inside one. A partial `/json/list` is far likelier
+ *                       than a machine with zero windows, so this is doubt, not closure.
+ * Only a successful read that DID see windows, none of them this project's, is `closed`.
+ */
+export function windowOpenness(read: { pages: number; roots: string[] } | null,
+                               repo: string, roles: string[]): Openness {
+  if (!read || !Array.isArray(read.roots)) return "unknown";
+  if (!Number.isFinite(read.pages) || read.pages <= 0) return "unknown";
+  const names = new Set<string>([repo, ...roles]);
+  for (const r of read.roots) if (r && names.has(r)) return "open";
+  return "closed";
+}
+
+/**
+ * Split this tick's findings by the openness of each project's window, AT SEND TIME.
+ *
+ * WHY THE SPLIT IS THREE WAYS AND NOT TWO — the two silent outcomes are not the same fact and must
+ * not share a mechanism:
+ *   · `dropped`  — positively observed closed. He has told us not to say anything about this stop.
+ *                  It is DROPPED, NOT DEFERRED: the caller latches it with `markDropped`, so when
+ *                  the window reopens the stop does not arrive late. Reopening a window is not a
+ *                  request for what happened while it was shut, and a backfilled buzz about work
+ *                  that ended hours ago is exactly the spam this whole file exists to avoid.
+ *   · `withheld` — we do not know. Nothing is sent and NOTHING IS LATCHED, so the same stop is
+ *                  reconsidered next tick and reported once the read works. Latching here would
+ *                  turn one unreadable tick into a permanently lost notification.
+ * The caller evaluates this immediately before sending, never when the stop was detected: he may
+ * walk away and then close the window before N elapses, and by his convention that means do not
+ * tell him.
+ */
+export interface OpenGate<T> { send: T[]; dropped: T[]; withheld: T[] }
+export function gateByOpenWindow<T extends { repo: string }>(
+  findings: T[], read: { pages: number; roots: string[] } | null,
+  rolesOf: (repo: string) => string[] = boardRoles,
+): OpenGate<T> {
+  const g: OpenGate<T> = { send: [], dropped: [], withheld: [] };
+  for (const f of findings) {
+    let roles: string[] = [];
+    try { roles = rolesOf(f.repo) || []; } catch { roles = []; }
+    const state = windowOpenness(read, f.repo, roles);
+    if (state === "open") g.send.push(f);
+    else if (state === "closed") g.dropped.push(f);
+    else g.withheld.push(f);
+  }
+  return g;
+}
+
+/**
+ * Record a stop DELIBERATELY NOT SENT because the project's window was closed.
+ *
+ * It sets the same latch as `markNotified` and that is not sloppiness — the latch stores "the stop
+ * we have finished dealing with", and a stop he has asked not to hear about is finished. THE
+ * DISTINCTION FROM A FAILED SEND, which must NOT latch: a failed send is a message he wanted and did
+ * not get, so it is owed to him; a closed window is a message he asked not to receive. Only a
+ * POSITIVE observation of closure may come here — never an unreadable window list, which is why
+ * `windowOpenness` never returns "closed" on doubt.
+ */
+export function markDropped(st: ProjectQuiet): ProjectQuiet {
+  return markNotified(st);
+}
+
 /**
  * Record a DELIVERED notification.
  *
