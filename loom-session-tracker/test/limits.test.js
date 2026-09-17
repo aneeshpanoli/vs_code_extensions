@@ -2,6 +2,7 @@ const { suite, ok, eq, match, load, makeRepo, busPath, readJson, LOOM } = requir
 const fs = require("fs");
 const path = require("path");
 const { detectLimit, parseEta, LimitWatcher, loadLimitState, CLEAR_TICKS_REQUIRED, TAIL_CHARS } = load("limits.js");
+const { setOrchestrator } = load("orchestrator.js");
 
 // Banner strings exactly as the shipped webview builds them (2.1.263).
 const blocked = (label, resets) => `chat...\nYou've hit your ${label}${resets ? ` · resets ${resets}` : ""}\nBypass permissions\n`;
@@ -152,6 +153,60 @@ suite("watcher: resume injects into the blocked session via loom_cdp", () => {
           match(dbg.out, /--role w1/, "targeted the blocked role");
           match(dbg.out, /--submit/, "submitted the prompt");
           match(dbg.out, /loom-resume/, "sent the resume message");
+          resolve();
+        } catch (e) { reject(e); }
+      });
+  });
+});
+
+
+// ── CX-001 · THE PATH THAT BYPASSES THE CHOKEPOINT ───────────────────────────────────────────
+//
+// `LimitWatcher.resume` calls loom_cdp.py directly rather than through `injectTo`, and — unlike
+// every other injection in this extension — the text it types is NOT a constant. It is
+// `loomSessionTracker.resumeMessage`, a USER SETTING (extension.ts), so the sentence "this extension
+// never types /clear at an orchestrator" was true here only of what the caller happened to pass.
+//
+// Found by sweeping every `execFile` of loom_cdp.py instead of every use of `injectTo`, which is the
+// sweep that finds the paths going AROUND the chokepoint. Same shared refusal, both directions.
+
+suite("CX-001: a resume message set to /clear is refused when the target is an orchestrator", () => {
+  const repo = makeRepo({ po: {} });
+  setOrchestrator(repo, "po", "wid-po");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
+  fs.rmSync(path.join(LOOM, "resume-debug.json"), { force: true });
+  return new Promise((resolve, reject) => {
+    new LimitWatcher(repo).resume(
+      { repo, role: "po", kind: "session limit", blockedSince: new Date().toISOString() },
+      "/clear",                                    // what a user could put in the setting
+      (okFlag, note) => {
+        try {
+          eq(okFlag, false, "refused");
+          match(note, /never clears an orchestrator/, "with the reason");
+          eq(readJson(path.join(LOOM, "resume-debug.json")), null,
+             "and nothing was spawned at all — no debug file, because no injection was attempted");
+          resolve();
+        } catch (e) { reject(e); }
+      });
+  });
+});
+
+suite("CX-001: a WORKER is still resumed normally, and could still be sent a /clear", () => {
+  // Both halves again. The resume path exists to wake WORKERS, and a worker is exactly who playbook
+  // §12 clears — so the guard must be invisible here.
+  const repo = makeRepo({ w1: {} });
+  setOrchestrator(repo, "po", "wid-po");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
+  return new Promise((resolve, reject) => {
+    new LimitWatcher(repo).resume(
+      { repo, role: "w1", kind: "session limit", blockedSince: new Date().toISOString() },
+      "/clear",
+      (okFlag) => {
+        try {
+          ok(okFlag, "delivered");
+          const dbg = readJson(path.join(LOOM, "resume-debug.json"));
+          match(dbg.out, /--role w1/, "to the worker");
+          match(dbg.out, /--submit/, "and submitted, unchanged");
           resolve();
         } catch (e) { reject(e); }
       });

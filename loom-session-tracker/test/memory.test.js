@@ -1,15 +1,18 @@
 // memory.test.js — the orchestrator context-memory cycle.
 //
-// decide() is pure, so every rule is asserted directly. The rules that matter most are the ones that
-// REFUSE: /clear is irreversible from inside the session, so a save that did not happen, a stale memory
-// file, or a session mid-turn must all mean "not yet" rather than "close enough".
+// decide() is pure, so every rule is asserted directly.
+//
+// CX-001 REWROTE THE HALF OF THIS FILE THAT ASSERTED A CLEAR. The owner's instruction was "do not ever
+// clear the orchestrator's context", so the suites that used to require `kind === "clear"` now require
+// that no clear is EVER produced, from any state. What stayed: a save that did not happen and a stale
+// memory file still mean "not yet", because the banked file is the whole point of the subsystem.
 const { suite, ok, eq, match, load, makeRepo, busPath, readJson, home } = require("./harness");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
   decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
-  saveMessage, restoreMessage, CLEAR_MESSAGE, MIN_MEMORY_BYTES, DEFAULT_CONFIG,
+  saveMessage, restoreMessage, MIN_MEMORY_BYTES, DEFAULT_CONFIG,
 } = load("memory.js");
 const { transcriptFor } = load("context.js");
 
@@ -57,10 +60,10 @@ suite("memory: the prompts carry the memory contract — concision, UNSURE secti
   match(restore, /each role's status\.json/, "status files, not just the board");
   match(restore, /ONLY the project docs the memory names — not CLAUDE\.md and docs\/ wholesale/, "docs narrowed");
   match(restore, /Do NOT arm watchers, Monitors or \/loop/, "no watchers (playbook §17)");
-  // an oversize memory still clears — with a note
-  const fat = decide(input({ state: { phase: "saving", phaseAt: NOW - 60_000, memoryBaseline: 0, idleTicks: 5 },
+  // an oversize memory is still a banked memory — with a note
+  const fat = decide(input({ state: { phase: "saving", phaseAt: NOW - 60_000, memoryBaseline: 0 },
                              memoryMtime: NOW - 1000, memorySize: MAX_MEMORY_BYTES + 1 }));
-  eq(fat.kind, "clear", "a fat memory is still a banked memory");
+  eq(fat.next.phase, "banked", "a fat memory is still a banked memory");
   match(fat.note, /large; every fresh context re-reads it in full/,
         "and the note OBSERVES the cost instead of ordering a trim against a number");
 });
@@ -156,23 +159,19 @@ suite("memory: an unidentified frame blocks the whole cycle", () => {
 });
 
 suite("memory: a frame we cannot see this tick is not typed into", () => {
-  // Without the frame in the read, "not busy" is an assumption — and a /clear typed into a running
-  // turn interrupts it. The save and clear steps wait; only the restore step is exempt.
+  // Without the frame in the read there is no evidence about the session at all, and the save prompt
+  // should not go out on a guess. Only the `banked` phase is exempt, because a cleared panel is
+  // exactly the thing that stops being recognisable.
   const s = decide(input({ frameSeen: false }));
   eq(s.kind, "none", "no save");
   match(s.note, /not seen this tick/, "says why");
-  const clearing = decide(input({
-    frameSeen: false, state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000 },
-    memoryMtime: 5000, memorySize: 4096,
-  }));
-  eq(clearing.kind, "none", "and no clear either");
 });
 
 suite("memory: the restore step still works on a panel too empty to recognise", () => {
   // A cleared panel holds ~170 characters, so it no longer detects as the orchestrator at all.
   const s = decide(input({
     frameSeen: false,
-    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: "s-old", transcriptDir: "/tmp/x" },
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: "s-old", transcriptDir: "/tmp/x" },
     reading: reading(900, "s-new", "/tmp/x/s-new.jsonl"),
   }));
   eq(s.kind, "restore", "the cycle can finish");
@@ -182,19 +181,20 @@ suite("memory: disabled means disabled", () => {
   eq(decide(input({ cfg: { ...DEFAULT_CONFIG, enabled: false } })).kind, "none", "off");
 });
 
-// ── saving -> clearing: the dangerous transition ────────────────────────────
+// ── saving -> banked ────────────────────────────────────────────────────────
 const saving = (over = {}) => input({
-  state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000, sessionId: "s-old",
+  state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000, sessionId: "s-old",
            transcriptDir: "/tmp/x" },
   ...over,
 });
 
-suite("memory: /clear is sent only after the memory file is verifiably written", () => {
+suite("memory: a verified save banks the memory and types NOTHING", () => {
   const s = decide(saving({ memoryMtime: 2000, memorySize: 4096 }));
-  eq(s.kind, "clear", "clears");
-  eq(s.message, CLEAR_MESSAGE, "with /clear");
-  eq(s.next.phase, "clearing", "phase advances");
-  eq(s.next.sessionId, "s-old", "remembers the session id being replaced");
+  eq(s.kind, "none", "nothing is injected — this is the whole of CX-001");
+  eq(s.message, undefined, "and there is no message to inject");
+  eq(s.next.phase, "banked", "phase advances");
+  eq(s.next.sessionId, "s-old", "remembers the session id it is watching");
+  match(s.note, /will not clear po/, "and the panel says so, so nobody expects a reset");
 });
 
 suite("memory: an OLD memory file is not a save", () => {
@@ -209,29 +209,34 @@ suite("memory: a stub of a memory file is not a save either", () => {
   eq(s.kind, "none", "too small to be a handoff");
 });
 
-suite("memory: a banked memory still waits for the turn to end before clearing", () => {
+suite("memory: a busy orchestrator no longer holds the cycle — there is nothing to interrupt", () => {
+  // CX-001 REVERSED THIS ASSERTION DELIBERATELY. It used to require that a banked memory WAIT for the
+  // turn to end, and the only reason was that a /clear typed into a working composer interrupts it.
+  // No clear is sent now, and nothing else this cycle types is a command, so a busy session simply
+  // banks and moves on. Left as an explicit assertion rather than a deleted suite: a re-added wait
+  // would mean someone re-added something to protect it from.
   const s = decide(saving({ memoryMtime: 5000, memorySize: 4096, busy: true }));
-  eq(s.kind, "none", "not while it is working");
-  match(s.note, /banked; waiting/, "says what it is waiting for");
+  eq(s.kind, "none", "still injects nothing");
+  eq(s.next.phase, "banked", "and does not stall mid-turn");
 });
 
-suite("memory: if the memory is never written the cycle ABORTS and clears nothing", () => {
-  const s = decide(saving({ state: { phase: "saving", idleTicks: 9, phaseAt: NOW - 11 * MIN, memoryBaseline: 1000 } }));
+suite("memory: if the memory is never written the cycle ABORTS", () => {
+  const s = decide(saving({ state: { phase: "saving", phaseAt: NOW - 11 * MIN, memoryBaseline: 1000 } }));
   eq(s.kind, "abort", "aborts");
   eq(s.next.phase, "watch", "back to watching");
   eq(s.next.aborts, 1, "counted");
-  match(s.note, /NOT clearing/, "and is explicit that nothing was destroyed");
+  match(s.note, /nothing is banked/, "and is explicit that there is no saved file");
   ok(s.next.lastCycleAt, "cooldown starts, so it does not immediately re-ask");
 });
 
-// ── clearing -> restore ─────────────────────────────────────────────────────
+// ── banked -> restore (on a clear the EXTENSION did not cause) ──────────────
 const clearing = (over = {}) => input({
-  state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: "s-old", transcriptDir: "/tmp/x",
+  state: { phase: "banked", phaseAt: NOW - MIN, sessionId: "s-old", transcriptDir: "/tmp/x",
            cycles: 2 },
   ...over,
 });
 
-suite("memory: a fresh session id is what proves the clear landed", () => {
+suite("memory: a fresh session id is what proves a clear happened", () => {
   const s = decide(clearing({ reading: reading(1200, "s-new", "/tmp/x/s-new.jsonl") }));
   eq(s.kind, "restore", "restores");
   eq(s.next.phase, "watch", "cycle over");
@@ -242,24 +247,30 @@ suite("memory: a fresh session id is what proves the clear landed", () => {
   match(s.message, /the board and the docs win/, "and reconciles it against the docs");
 });
 
-suite("memory: the same session id means the clear has not happened yet", () => {
+suite("memory: the same session id means nobody has cleared it", () => {
   const s = decide(clearing({ reading: reading(600_000, "s-old") }));
   eq(s.kind, "none", "no restore");
-  match(s.note, /waiting for the cleared session/, "keeps waiting");
+  match(s.note, /nothing will be typed/, "and says plainly that it is only watching");
 });
 
-suite("memory: a clear that never lands aborts, and says the memory is safe", () => {
-  const s = decide(clearing({ state: { phase: "clearing", phaseAt: NOW - 6 * MIN, sessionId: "s-old" },
+suite("memory: nobody clearing is NOT a failure — it goes back to watching, no abort", () => {
+  // CX-001: this used to abort with "no fresh session appeared after /clear", which under this block
+  // would be a warning about a clear that was never sent. A person clears when they choose, or never.
+  const s = decide(clearing({ state: { phase: "banked", phaseAt: NOW - 16 * MIN, sessionId: "s-old",
+                                       aborts: 4 },
                               reading: reading(600_000, "s-old") }));
-  eq(s.kind, "abort", "gives up on the cycle");
-  match(s.note, /memory doc is written and safe/, "reassures about the file");
+  eq(s.kind, "none", "not an abort — nothing went wrong");
+  eq(s.next.phase, "watch", "back to watching the context");
+  eq(s.next.aborts, 4, "and nothing is counted against anyone");
+  ok(s.next.lastCycleAt, "cooldown starts, so the re-bank is not immediate");
+  match(s.note, /banked and safe/, "reassures about the file");
 });
 
 // ── state on the bus ────────────────────────────────────────────────────────
 suite("memory: the cycle survives an IDE restart", () => {
   const repo = makeRepo({ po: {} });
   eq(loadState(repo).phase, "watch", "fresh bus starts watching");
-  saveState(repo, { phase: "saving", idleTicks: 9, phaseAt: 123, memoryBaseline: 5 });
+  saveState(repo, { phase: "saving", phaseAt: 123, memoryBaseline: 5 });
   eq(loadState(repo).phase, "saving", "read back after a 'restart'");
   eq(loadState(repo).memoryBaseline, 5, "with its baseline");
   ok(readJson(busPath(repo, "context-state.json")).updatedAt, "stamped");
@@ -299,22 +310,22 @@ suite("memory: while watching, the board's session id is what gets read", () => 
   eq(r.tokens, 700000, "read from the board's session");
 });
 
-suite("memory: while clearing, the FRESH transcript in the same directory is what counts", () => {
+suite("memory: while banked, the FRESH transcript in the same directory is what counts", () => {
   const repo = makeRepo({ po: { session_id: "sid-old" } });
   const { dir } = projectTranscript("-mem-clear", "sid-old", 800000, 1000);
   projectTranscript("-mem-clear", "sid-new", 900);
   const r = readOrchestratorContext(repo, "po",
-    { phase: "clearing", sessionId: "sid-old", transcriptDir: dir, phaseAt: 0 }, 1000000);
+    { phase: "banked", sessionId: "sid-old", transcriptDir: dir, phaseAt: 0 }, 1000000);
   eq(r.sessionId, "sid-new", "the new session is found");
   eq(r.tokens, 900, "and it is nearly empty");
 });
 
-suite("memory: with no fresh transcript, clearing keeps reading the old one", () => {
+suite("memory: with no fresh transcript, a banked cycle keeps reading the old one", () => {
   // Which is what makes decide() say 'not yet' instead of mistaking silence for a successful clear.
   const repo = makeRepo({ po: { session_id: "sid-only" } });
   const { dir } = projectTranscript("-mem-noclear", "sid-only", 800000);
   const r = readOrchestratorContext(repo, "po",
-    { phase: "clearing", sessionId: "sid-only", transcriptDir: dir, phaseAt: Date.now() + 60000 },
+    { phase: "banked", sessionId: "sid-only", transcriptDir: dir, phaseAt: Date.now() + 60000 },
     1000000);
   eq(r.sessionId, "sid-only", "still the old session");
 });
@@ -370,11 +381,11 @@ suite("orchestrator: rebindSession records the post-/clear session id on the boa
 });
 
 // ── confirming a clear with no transcript to check ──────────────────────────
-suite("memory: an emptied panel is proof enough that /clear landed", () => {
+suite("memory: an emptied panel is proof enough that a clear happened", () => {
   // A cleared tab renders ~170 characters and loses its compact button; the live orchestrator
   // conversation it replaces was 145,680.
   const s = decide(input({
-    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: undefined },
     reading: null, panelPct: null, panelChars: 170,
   }));
   eq(s.kind, "restore", "restored");
@@ -384,25 +395,25 @@ suite("memory: an emptied panel is proof enough that /clear landed", () => {
 
 suite("memory: a still-full panel is not a clear", () => {
   const s = decide(input({
-    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: undefined },
     reading: null, panelPct: null, panelChars: 145680,
   }));
   eq(s.kind, "none", "no restore");
-  match(s.note, /waiting for the cleared session/, "keeps waiting");
+  match(s.note, /watching in case/, "keeps watching");
 });
 
 suite("memory: a small panel that still shows a context button has NOT been cleared", () => {
   // Belt and braces: the button only exists past 50% used, so its presence contradicts a clear.
   const s = decide(input({
-    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: undefined },
     reading: null, panelPct: 62, panelChars: 500,
   }));
   eq(s.kind, "none", "not treated as cleared");
 });
 
-suite("memory: an unseen panel during clearing is not mistaken for an empty one", () => {
+suite("memory: an unseen panel while banked is not mistaken for an empty one", () => {
   const s = decide(input({
-    state: { phase: "clearing", phaseAt: NOW - MIN, sessionId: undefined },
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: undefined },
     reading: null, panelPct: null, panelChars: null, frameSeen: false,
   }));
   eq(s.kind, "none", "unknown is not proof");
@@ -424,26 +435,26 @@ suite("memory: only one window may start a cycle", () => {
   match(second.note, /another window is running this cycle/, "and says why");
 });
 
-suite("memory: the second window does NOT also send /clear", () => {
-  // The one that actually destroys something: a duplicate /clear lands in the freshly restored session.
-  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 0,
+suite("memory: the second window does NOT also drive the cycle", () => {
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0,
                    owner: "win-A", ownerAt: NOW - MIN };
   const mine = decide(input({ windowId: "win-A", state: saving, memoryMtime: NOW, memorySize: 5000 }));
-  eq(mine.kind, "clear", "the owner clears");
+  eq(mine.next.phase, "banked", "the owner advances it");
   const theirs = decide(input({ windowId: "win-B", state: saving, memoryMtime: NOW, memorySize: 5000 }));
-  eq(theirs.kind, "none", "the other window does not");
+  eq(theirs.next.phase, "saving", "the other window leaves the phase alone");
+  match(theirs.note, /another window is running this cycle/, "and says why");
 });
 
 suite("memory: a window that goes away does not strand the project", () => {
-  const stale = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 0,
+  const stale = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0,
                   owner: "win-gone", ownerAt: NOW - LEASE_MS - 1 };
   const s = decide(input({ windowId: "win-B", state: stale, memoryMtime: NOW, memorySize: 5000 }));
-  eq(s.kind, "clear", "the lease has expired, so another window may take over");
+  eq(s.next.phase, "banked", "the lease has expired, so another window may take over");
   eq(s.next.owner, "win-B", "and it takes ownership as it acts");
 });
 
 suite("memory: the owner keeps its claim alive while it waits", () => {
-  const held = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const held = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
                  owner: "win-A", ownerAt: NOW - LEASE_MS + 1000 };   // past half-life
   const s = decide(input({ windowId: "win-A", state: held }));       // still waiting for the file
   eq(s.kind, "none", "nothing to do yet");
@@ -451,7 +462,7 @@ suite("memory: the owner keeps its claim alive while it waits", () => {
 });
 
 suite("memory: a finished cycle releases the claim", () => {
-  const clearing = { phase: "clearing", phaseAt: NOW - MIN, owner: "win-A", ownerAt: NOW - 1000 };
+  const clearing = { phase: "banked", phaseAt: NOW - MIN, owner: "win-A", ownerAt: NOW - 1000 };
   const s = decide(input({ windowId: "win-A", state: clearing, reading: null,
                            panelPct: null, panelChars: 170 }));
   eq(s.kind, "restore", "cycle completes");
@@ -460,23 +471,23 @@ suite("memory: a finished cycle releases the claim", () => {
 
 suite("memory: an aborted cycle releases the claim too", () => {
   const s = decide(input({ windowId: "win-A", state: {
-    phase: "saving", idleTicks: 9, phaseAt: NOW - 11 * MIN, memoryBaseline: 0, owner: "win-A", ownerAt: NOW - 1000 } }));
+    phase: "saving", phaseAt: NOW - 11 * MIN, memoryBaseline: 0, owner: "win-A", ownerAt: NOW - 1000 } }));
   eq(s.kind, "abort", "gives up");
   eq(s.next.owner, undefined, "claim released, so a retry is not blocked by a dead lease");
 });
 
 suite("memory: state written before leases existed is adoptable", () => {
   // 0.13.x wrote no owner at all; an in-flight cycle must not deadlock on upgrade.
-  const legacy = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 0 };
+  const legacy = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 0 };
   const s = decide(input({ windowId: "win-B", state: legacy, memoryMtime: NOW, memorySize: 5000 }));
-  eq(s.kind, "clear", "an unowned cycle is claimable");
+  eq(s.next.phase, "banked", "an unowned cycle is claimable");
   eq(s.next.owner, "win-B", "and gets an owner from here on");
 });
 
-suite("memory: re-tagging mid-cycle abandons it rather than clearing on the wrong file", () => {
+suite("memory: re-tagging mid-cycle abandons it rather than judging the wrong file", () => {
   // The baseline was taken from po/memory.md. If the tag moves to another role, its memory.md may
-  // already exist and be newer — which would read as "banked" and send /clear to the new session.
-  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
+  // already exist and be newer — which would read as "banked" when nothing was written for us.
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
                    role: "po", memoryFile: "/m/po/memory.md", owner: "win-A", ownerAt: NOW };
   const s = decide(input({ windowId: "win-A", state: saving, role: "other",
                            memoryFile: "/m/other/memory.md", memoryMtime: NOW, memorySize: 9000 }));
@@ -487,7 +498,7 @@ suite("memory: re-tagging mid-cycle abandons it rather than clearing on the wron
 });
 
 suite("memory: pointing contextMemoryFile somewhere else mid-cycle does the same", () => {
-  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
                    role: "po", memoryFile: "/m/po/memory.md" };
   const s = decide(input({ state: saving, memoryFile: "/elsewhere/memory.md",
                            memoryMtime: NOW, memorySize: 9000 }));
@@ -495,53 +506,132 @@ suite("memory: pointing contextMemoryFile somewhere else mid-cycle does the same
 });
 
 suite("memory: an unchanged target proceeds normally", () => {
-  const saving = { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000,
+  const saving = { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000,
                    role: "po", memoryFile: "/tmp/demo/po/memory.md" };   // == the input's file
-  eq(decide(input({ state: saving, memoryMtime: 2000, memorySize: 4096 })).kind, "clear",
+  eq(decide(input({ state: saving, memoryMtime: 2000, memorySize: 4096 })).next.phase, "banked",
     "same role, same file -> the cycle continues");
 });
 
-// ── the orchestrator must be IDLE, and stay idle, before /clear ──────────────────────────────────
+// ── CX-001 · THE EXTENSION NEVER CLEARS AN ORCHESTRATOR ──────────────────────────────────────
+//
+// Owner, 2026-09-16: "Do not ever clear the orchestrator's context. Remove that from the
+// loom-session-tracker add-on."
+//
+// WHAT THIS REPLACED, AND WHY THE REPLACEMENT IS NOT SMALLER. Until this block, the suites here
+// asserted that a clear WAITED for two consecutive idle readings and for a frame we could see
+// (user request 2026-09-10, "make sure it is idle in order to not disrupt the ongoing process").
+// Those were rules about HOW to clear safely. There is no safe clear now, there is no clear, so
+// asserting the timing of one would assert that the thing still happens. The rules below assert
+// the absence instead — and they are deliberately harder to satisfy by accident than the ones they
+// replace, because an absence that is only true of the inputs someone happened to write down is not
+// an absence at all.
 
-suite("memory: /clear waits for consecutive idle readings, not one", async () => {
-  // User request 2026-09-10: "when sending clear to free context from the orchestrator, make sure it
-  // is idle in order to not disrupt the ongoing process." One idle reading is a single sample of a
-  // panel that updates several times a second — a turn pausing between tool calls reads idle.
-  const { IDLE_TICKS_REQUIRED } = load("memory.js");
-  const banked = { phase: "saving", memoryBaseline: NOW - MIN, role: "po",
-                   memoryFile: "/tmp/demo/po/memory.md", owner: "win-A", ownerAt: NOW };
-  const saved = { memoryMtime: NOW, memorySize: MIN_MEMORY_BYTES + 10 };
-
-  // busy -> never clears, and the idle run resets
-  let st = { ...banked, idleTicks: IDLE_TICKS_REQUIRED - 1 };
-  const busy = decide(input({ state: st, busy: true, ...saved }));
-  eq(busy.kind, "none", "a busy orchestrator is never cleared");
-  match(busy.note, /waiting for the turn to end/, "and says why");
-  eq(busy.next.idleTicks, 0, "one busy reading resets the run — it must be UNBROKEN");
-
-  // idle, but not yet long enough
-  st = { ...banked, idleTicks: 0 };
-  const first = decide(input({ state: st, busy: false, ...saved }));
-  eq(first.kind, "none", `one idle reading is not enough (need ${IDLE_TICKS_REQUIRED})`);
-  match(first.note, /idle for 1 of 2 checks/, "reports progress toward the confirmation");
-  eq(first.next.idleTicks, 1);
-
-  // idle again -> now it clears
-  const second = decide(input({ state: first.next, busy: false, ...saved }));
-  eq(second.kind, "clear", "consecutive idle readings allow the clear");
-  eq(second.message, CLEAR_MESSAGE);
-  eq(second.next.idleTicks, 0, "the counter resets once the clear is sent");
+suite("CX-001: decide() never returns a clear step, from ANY state it can be in", () => {
+  // A SWEEP, not a sample. The old cycle reached its clear through a specific corridor — banked
+  // memory, idle, frame seen, lease held — so a test that only visited today's happy path could be
+  // satisfied by a version that still cleared somewhere else. This enumerates the cross product of
+  // every field the decision actually branches on and asserts the absence across all of it.
+  const phases = ["watch", "saving", "banked"];
+  const saved = [{ memoryMtime: NOW, memorySize: 9000 },            // a verified save
+                 { memoryMtime: 900, memorySize: 9000 },            // stale file
+                 { memoryMtime: null, memorySize: 0 }];             // nothing written
+  const panels = [{ panelPct: 99, panelChars: 145680 },             // full
+                  { panelPct: null, panelChars: 170 },              // emptied
+                  { panelPct: null, panelChars: null }];            // unseen
+  let checked = 0;
+  for (const phase of phases)
+    for (const mem of saved)
+      for (const panel of panels)
+        for (const busy of [true, false])
+          for (const frameSeen of [true, false])
+            for (const age of [0, MIN, 11 * MIN, 60 * MIN]) {
+              const s = decide(input({
+                ...mem, ...panel, busy, frameSeen,
+                state: { phase, phaseAt: NOW - age, memoryBaseline: 1000, sessionId: "s-old",
+                         role: "po", memoryFile: "/tmp/demo/po/memory.md", transcriptDir: "/tmp/x" },
+              }));
+              ok(s.kind !== "clear", `phase=${phase} busy=${busy} seen=${frameSeen} age=${age} -> ${s.kind}`);
+              ok(!/^\s*\/clear\b/.test(String(s.message || "")),
+                 `no step in ${phase} may carry /clear as its message`);
+              checked++;
+            }
+  ok(checked >= 400, `swept ${checked} states`);
+  // …and the phase it could once advance INTO is gone from the type's vocabulary entirely.
+  const banked = decide(input({ state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
+                                memoryMtime: NOW, memorySize: 9000 }));
+  eq(banked.next.phase, "banked", "a verified save banks; it does not enter a clearing phase");
 });
 
-suite("memory: a frame that was not seen this tick can never be cleared", () => {
-  // busy is a GUESS when the frame was not in the read, and a /clear typed into a running turn
-  // interrupts it. The save step and the clear step both require a frame we can actually see.
-  const banked = { phase: "saving", memoryBaseline: NOW - MIN, role: "po",
-                   memoryFile: "/tmp/demo/po/memory.md", idleTicks: 99 };
-  const s = decide(input({ state: banked, frameSeen: false, busy: false,
-                           memoryMtime: NOW, memorySize: MIN_MEMORY_BYTES + 10 }));
-  eq(s.kind, "none", "no frame, no clear — however idle it looks");
-  match(s.note, /not seen this tick/, "and the reason names the real uncertainty");
+suite("CX-001: a threshold-triggered clear cannot be re-added without failing this", () => {
+  // THE REGRESSION TEST THE BLOCK EXISTS FOR (acceptance §5.3). The removed behaviour had one
+  // shape: context over the threshold -> ask for a save -> once the file is on disk, type /clear.
+  // This walks exactly that path, in order, and asserts that the end of it types nothing. Someone
+  // re-adding the trigger has to make this pass, and the only way to do that is to delete it.
+  const over = input({ panelPct: 80, state: { phase: "watch" } });
+  const step1 = decide(over);
+  eq(step1.kind, "save", "the threshold still asks for a bank — that half is kept on purpose");
+  eq(step1.next.phase, "saving");
+
+  // the orchestrator writes the file, and is idle, and its frame is plainly visible: the exact
+  // conditions under which the old code cleared.
+  const step2 = decide(input({ panelPct: 80, state: step1.next, busy: false, frameSeen: true,
+                               memoryMtime: NOW + 1, memorySize: 9000 }));
+  eq(step2.kind, "none", "NOTHING IS TYPED — this is the assertion the owner asked for");
+  eq(step2.message, undefined, "and there is no message at all, not merely a non-clear one");
+  eq(step2.next.phase, "banked");
+
+  // and it stays that way however many ticks pass in the banked phase
+  for (const age of [MIN, 5 * MIN, 30 * MIN]) {
+    const later = decide(input({ panelPct: 80, busy: false, frameSeen: true,
+                                 memoryMtime: NOW + 1, memorySize: 9000,
+                                 state: { ...step2.next, phaseAt: NOW - age } }));
+    ok(later.kind !== "clear", `still no clear ${age / MIN} minutes later`);
+  }
+});
+
+suite("CX-001 R1: an empty panel only witnesses a clear if the panel was FULL when we banked", () => {
+  // A DEFECT THIS BLOCK INTRODUCED, AND THE TEST THAT CAUGHT IT. While the extension sent the clear
+  // itself, "the panel is nearly empty" could only mean the clear it had just typed had landed —
+  // the phase lasted seconds. Banking instead means the SAME phase now sits there indefinitely, so
+  // any panel that merely reads small — a partial CDP read, a narrow view — would be taken for a
+  // clear and a restore prompt would be injected into a session that is mid-work and had never been
+  // cleared. That is a worse injection than the one this block removed.
+  // `state` is merged, not replaced: spreading `over` wholesale would drop the phase and every case
+  // below would silently exercise the `watch` branch instead.
+  const banked = ({ state = {}, ...over } = {}) => decide(input({
+    reading: null, panelPct: null,
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: undefined, ...state },
+    ...over,
+  }));
+  // the real path: full when banked (the threshold had just fired), empty now -> a clear happened
+  eq(banked({ panelChars: 170, state: { bankedChars: 145680 } }).kind, "restore",
+     "a genuine fall from full to empty is still the witness it always was");
+  // the defect: it was ALREADY small when we banked, so small now proves nothing
+  eq(banked({ panelChars: 170, state: { bankedChars: 300 } }).kind, "none",
+     "a panel that was never full cannot have emptied — no restore is injected");
+  eq(banked({ panelChars: 170, state: { bankedChars: null } }).kind, "none",
+     "and a panel we never saw is unknown, not empty");
+  // …but the OTHER witness needs no panel at all, so those cases still finish
+  const byId = decide(input({
+    panelChars: 170, panelPct: null, reading: reading(1200, "s-new", "/tmp/x/s-new.jsonl"),
+    state: { phase: "banked", phaseAt: NOW - MIN, sessionId: "s-old", bankedChars: 300 },
+  }));
+  eq(byId.kind, "restore", "a fresh session id finishes the cycle whatever the panel looked like");
+  // and the value is actually recorded when banking, or none of the above can ever apply
+  const bank = decide(input({ panelChars: 145680,
+                              state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
+                              memoryMtime: NOW, memorySize: 9000 }));
+  eq(bank.next.bankedChars, 145680, "the 'before' is written into the state at bank time");
+});
+
+suite("CX-001: the restore half survives — a clear a PERSON did still brings the memory back", () => {
+  // The value that was NOT removed. Deleting the whole subsystem would have taken this with it, and
+  // then a hand-cleared orchestrator would come back with no idea who it is (§4 decision).
+  const s = decide(input({ state: { phase: "banked", phaseAt: NOW - MIN, sessionId: "s-old",
+                                    transcriptDir: "/tmp/x" },
+                           reading: reading(1200, "s-new", "/tmp/x/s-new.jsonl") }));
+  eq(s.kind, "restore", "the person cleared it; the tool notices and helps");
+  match(s.message, /you are po, the orchestrator of demo/, "and it comes back knowing what it is");
 });
 
 suite("memory: a known transcript that stopped before the last clear is dead — the cycle does not loop on it", () => {
@@ -598,26 +688,27 @@ suite("WL-003 R2: the briefing is APPENDED to the restore message, after the bin
 
 /** Every string the memory cycle puts in front of an agent. */
 function agentFacingMemoryTexts() {
-  const { saveMessage, restoreMessage, CLEAR_MESSAGE, MAX_MEMORY_BYTES } = load("memory.js");
+  const { saveMessage, restoreMessage, MAX_MEMORY_BYTES } = load("memory.js");
   return {
     save: saveMessage("/bus/memory.md", 120000, 78),
     restore: restoreMessage("/bus/memory.md", "demo", "po"),
-    // CLEAR_MESSAGE is the literal "/clear", so it can never carry a byte count. It stays in the loop
-    // as a REGRESSION GUARD — if anyone ever makes the clear step carry prose, it is covered the day
-    // they do — but it provides no coverage today and should not be read as if it did.
+    // CX-001 DROPPED THE `clear` ENTRY, and dropping it is more honest than keeping it. It held
+    // `String(CLEAR_MESSAGE || "")`; CLEAR_MESSAGE is now deleted, so the expression still evaluates
+    // — to the empty string — and every assertion below would keep passing while testing nothing at
+    // all under a name that says it covers the clear message. A loop entry that cannot fail is worse
+    // than an absent one, because the suite reports it as coverage.
     //
     // AND NOTE WHAT IS DELIBERATELY NOT HERE: `step.note` still contains `(N bytes)`, correctly. It
     // reaches setStatusBarMessage and debugLog only, never a composer, so it is panel telemetry about
     // a file — not an instruction to an agent. `message` is the field that gets typed into a frame,
     // and that is what this loop covers. Do not "fix" the note by removing its byte count.
-    clear: String(CLEAR_MESSAGE || ""),
     max: MAX_MEMORY_BYTES,
   };
 }
 
 suite("WL-004 R3: no agent-facing memory prompt names a size, a cap, or the threshold", () => {
   const t = agentFacingMemoryTexts();
-  for (const [which, text] of [["save", t.save], ["restore", t.restore], ["clear", t.clear]]) {
+  for (const [which, text] of [["save", t.save], ["restore", t.restore]]) {
     // A byte/KB count of the file.
     ok(!/\b[\d][\d,_.]*\s*(?:bytes?|kb|kib|kilobytes?)\b/i.test(text),
        `${which}: no byte or KB count`);
@@ -685,9 +776,9 @@ suite("WL-004 R4: both prompts say the split, and notes.md is read even when mem
 
 suite("WL-004: MIN_MEMORY_BYTES stays — it is evidence a file was written, not a target", () => {
   const { MIN_MEMORY_BYTES } = load("memory.js");
-  eq(MIN_MEMORY_BYTES, 200, "the floor that stops a clear destroying an unwritten session");
+  eq(MIN_MEMORY_BYTES, 200, "the floor that says a file was really written, not merely touched");
   const t = agentFacingMemoryTexts();
-  for (const text of [t.save, t.restore, t.clear]) {
+  for (const text of [t.save, t.restore]) {
     ok(!text.includes("200 bytes"), "and it is never quoted at an agent either");
   }
 });

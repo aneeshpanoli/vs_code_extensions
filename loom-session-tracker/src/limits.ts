@@ -22,7 +22,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { senderArgs } from "./inject";
+import { senderArgs, refuseClear } from "./inject";
 import { execFile } from "child_process";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
@@ -186,6 +186,15 @@ export class LimitWatcher {
 
   /** Wake the session back up by injecting a prompt into its composer. Fire-and-forget. */
   resume(ev: ResumeEvent, message: string, done?: (ok: boolean, note: string) => void): void {
+    // CX-001 · THIS PATH DOES NOT GO THROUGH `injectTo`, and its message is not a constant: it is
+    // `loomSessionTracker.resumeMessage`, a USER SETTING, defaulting to the resume prose but free to
+    // hold anything — `/clear` included. So the sentence "the extension never clears an
+    // orchestrator" was not true by construction here; it was true only of what the caller happened
+    // to pass. Found by sweeping every execFile of loom_cdp.py rather than every use of `injectTo`,
+    // which is the sweep that finds the paths that bypass the chokepoint. Same refusal, shared
+    // implementation — a second copy of this rule would be a second thing to forget.
+    const refusal = refuseClear({ role: ev.role, repo: ev.repo }, message);
+    if (refusal) { done?.(false, refusal); return; }
     // --repo: see inject.ts — a bare role name shared by two buses must not resolve cross-project.
     execFile("python3", [LOOM_CDP, "inject", "--role", ev.role, "--message", message, "--submit",
                          ...(ev.repo ? ["--repo", ev.repo] : []), ...senderArgs("resume", ev.repo)],

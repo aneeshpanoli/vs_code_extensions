@@ -115,15 +115,13 @@ MUTATIONS = [
   "      if (wid && orchestratorFrame && wid === orchestratorFrame) continue;",
   "      if (wid && orchestratorFrame && wid === orchestratorFrame && Boolean(0)) continue;"),
 
- ("/clear is sent on a single idle reading, not a confirmed run",
-  "src/memory.ts",
-  "      if (idleTicks < IDLE_TICKS_REQUIRED) {",
-  "      if (idleTicks < 1) {"),
-
- ("a busy orchestrator does not reset the idle run",
-  "src/memory.ts",
-  "                    { ...state, idleTicks: 0 });",
-  "                    { ...state });"),
+ # CX-001 REMOVED TWO MUTANTS HERE, and they are not re-anchored because there is nothing left to
+ # anchor them to. Both restored a defect in the IDLE GATE ("/clear is sent on a single idle
+ # reading"; "a busy orchestrator does not reset the idle run"), which existed for one reason: a
+ # /clear typed into a working composer interrupts the turn. The extension sends no clear now, so
+ # the gate is gone (memory.ts), and a mutant that reintroduces a flaw in deleted code grades
+ # nothing. The property they protected is covered by a stronger claim: that no clear is produced
+ # from ANY state, busy or idle — see the two CX-001 mutants at the end of this table.
 
  ("a blank shell is closed even though it is no longer blank (the reopen reused it)",
   "src/blanks.ts",
@@ -1220,8 +1218,10 @@ MUTATIONS = [
  # 'trim it' is an order to cut content to reach a number, which is the defect, not the report.
  ("the clear note goes back to ordering a trim against a named cap",
   "src/memory.ts",
-  '                 ? ` — large; every fresh context re-reads it in full` : ""}) — clearing`,',
-  '                 ? ` — over the ${MAX_MEMORY_BYTES.toLocaleString()}-byte cap; every fresh context pays for it, trim it` : ""}) — clearing`,'),
+  # CX-001 RE-ANCHORED: the note this lands on is now the BANKED note, not the clear note — the step
+  # was renamed, the sentence WL-004 fought for was not, and the claim is unchanged.
+  '                 ? ` — large; every fresh context re-reads it in full` : ""}) — ` +',
+  '                 ? ` — over the ${MAX_MEMORY_BYTES.toLocaleString()}-byte cap; every fresh context pays for it, trim it` : ""}) — ` +'),
 
  # R1/R4 — killed by "WL-004 R1: the save prompt asks for CONCISION" and the R4 split test. The
  # number is not the only way to order the trade: 'cut the least important section until it fits'
@@ -1653,16 +1653,15 @@ MUTATIONS = [
  # asserts the delivered --reply line is context-restore's, never context-save's.
  ("the restore step's reply hint reverts to the save one — a fresh session is told to write, not read",
   "src/extension.ts",
-  '        : step.kind === "clear" ? "context-clear" : "context-restore";',
-  '        : step.kind === "clear" ? "context-clear" : "context-save";'),
+  # CX-001 RE-ANCHORED onto the two-arm ternary the clear step left behind. MC-001's claim is
+  # untouched: whatever else changes, a RESTORE must not carry the SAVE's reply hint.
+  '      const replyKind = step.kind === "save" ? "context-save" : "context-restore";',
+  '      const replyKind = step.kind === "save" ? "context-save" : "context-save";'),
 
- # MC-001 · the clear step's own reply key swapped for the restore one — killed by "context memory:
- # /clear follows only once the memory file is on disk", which asserts context-clear's own line, not
- # some other step's.
- ("the clear step's reply hint is keyed as a restore instead of its own",
-  "src/extension.ts",
-  '      const replyKind = step.kind === "save" ? "context-save"\n        : step.kind === "clear" ? "context-clear" : "context-restore";',
-  '      const replyKind = step.kind === "save" ? "context-save"\n        : step.kind === "clear" ? "context-restore" : "context-restore";'),
+ # CX-001 REMOVED THE CLEAR-STEP REPLY-KEY MUTANT. It swapped the `clear` arm of the replyKind
+ # ternary for the restore one; that arm no longer exists, because no clear step is ever produced or
+ # injected. `REPLY_FOR["context-clear"]` is kept in inject.ts as documentation of a message this
+ # subsystem once sent — it is unreachable, so there is nothing about it left to mutate.
 
  # MC-001 · the whole point of injectTo's new `replyKind` parameter is that it can differ from the
  # debug-log file name; dropping it collapses save/clear/restore back onto ONE reply line again (via
@@ -1722,6 +1721,83 @@ MUTATIONS = [
   "  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days — yours, for choosing the next ` +\n"
   "          `block; nothing here is a mark on you, and none of it is for repeating upward:`,",
   "  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days:`,"),
+ # ── CX-001 · the extension never clears an orchestrator ───────────────────────────────────────
+ # Owner, 2026-09-16: "Do not ever clear the orchestrator's context." The removal is in memory.ts
+ # (no clear step is produced); the GUARANTEE is the refusal at the injector, which is what a future
+ # caller inherits. Both are mutated below, because either alone would let the behaviour back.
+
+ # THE WHOLE BLOCK, REVERTED IN ONE LINE: the chokepoint stops refusing and the clear is typed.
+ # Killed by "CX-001: injectTo REFUSES a /clear at the orchestrator" (inject.test.js), which asserts
+ # loom_cdp.py was never even spawned.
+ ("the chokepoint stops refusing — a /clear aimed at an orchestrator is typed again",
+  "src/inject.ts",
+  # `&& Boolean(0)` rather than `false &&`: a literal false makes the branch unreachable, and
+  # TypeScript does not narrow in unreachable code, so `refusal` read as `string | null` inside and
+  # the mutant would be refused at pre-flight for not compiling. (Measured 2026-09-17, same shape as
+  # the WL-012 finder mutant.) This keeps the branch typed and simply never taken.
+  "  const refusal = refuseClear(target, message);\n  if (refusal) {",
+  "  const refusal = refuseClear(target, message);\n  if (refusal && Boolean(0)) {"),
+
+ # The refusal keyed on the message only, dropping the ROLE half — which is the half that keeps
+ # playbook §12 alive. This mutant makes the extension refuse a WORKER's /clear too, silently
+ # undoing a standing owner directive from 2026-09-08. Killed by "CX-001: a WORKER's /clear still
+ # goes through, BYTE-IDENTICAL to before the guard".
+ ("the refusal stops looking at WHO the target is — worker clearing (playbook §12) dies with it",
+  "src/inject.ts",
+  "  if (!isClearCommand(message)) return null;\n  if (!isOrchestratorTarget(role, taggedRole)) return null;",
+  "  if (!isClearCommand(message)) return null;"),
+
+ # The TAG half of "who is an orchestrator" removed. Names alone cannot catch a project whose
+ # orchestrator is called something OWNER_ALIASES has never heard of — measured 2026-09-09,
+ # livegita's is named `po` and its tag once read `{"role":"gitadeveloper"}`. Killed by "CX-001: the
+ # refusal is by ROLE, so it holds for a tagged orchestrator with a worker-ish name".
+ ("only owner-NAMED roles are protected — a tagged orchestrator with an ordinary name is cleared",
+  "src/inject.ts",
+  "  if (isOwnerRole(r)) return true;\n  return !!taggedRole && taggedRole === r;",
+  "  return isOwnerRole(r);"),
+
+ # …and the NAME half removed, which is the one that works on a bus with no tag at all — the state
+ # every project starts in. Killed by the same suite's `isOrchestratorTarget("product-owner", null)`.
+ ("an untagged bus protects nobody — the owner-named role is treated as a worker",
+  "src/inject.ts",
+  "  if (isOwnerRole(r)) return true;\n  return !!taggedRole && taggedRole === r;",
+  "  return !!taggedRole && taggedRole === r;"),
+
+ # The command test loses its anchor, so PROSE about clearing reads as a command. This is the mutant
+ # that expresses the trap the block was warned about: health.ts's clearReminder says "clear
+ # <role> and re-bind it" in a sentence, and a guard that matched it would stop the §12 reminder
+ # reaching the orchestrator at all. Killed by "CX-001: what counts as a clear COMMAND".
+ ("a slash anywhere in a sentence counts as a command — the §12 clear reminder is swallowed",
+  "src/inject.ts",
+  'return /^\\/clear\\b/i.test(String(message || "").trimStart());',
+  'return /\\/clear\\b/i.test(String(message || ""));'),
+
+ # THE PATH THAT GOES AROUND THE CHOKEPOINT. limits.ts calls loom_cdp.py directly and types a USER
+ # SETTING (`loomSessionTracker.resumeMessage`), so without this guard the extension will type
+ # whatever that setting holds — `/clear` included — at whatever role is being resumed. Killed by
+ # "CX-001: a resume message set to /clear is refused when the target is an orchestrator".
+ ("the resume path drops its guard — a user setting can type /clear at an orchestrator again",
+  "src/limits.ts",
+  "    const refusal = refuseClear({ role: ev.role, repo: ev.repo }, message);\n    if (refusal) { done?.(false, refusal); return; }",
+  ""),
+
+ # The decision half: a verified save goes back to producing a clear step, which is precisely the
+ # threshold-triggered behaviour the owner asked to have removed. Killed by "CX-001: decide() never
+ # returns a clear step, from ANY state it can be in" and by the §5.3 regression walk.
+ ("a verified save produces a clear step again — the removed trigger, restored",
+  "src/memory.ts",
+  '      return {\n        kind: "none",\n        // WL-004 R2 · AN OBSERVATION FOR THE PANEL',
+  '      return {\n        kind: "clear", message: "/clear",\n        // WL-004 R2 · AN OBSERVATION FOR THE PANEL'),
+
+ # CX-001 R1 · the emptied-panel witness stops requiring a FALL. The phase it reads in now lasts
+ # indefinitely rather than seconds, so a panel that merely reads small — a partial CDP read — is
+ # taken for a clear and a restore prompt is injected into a session that is mid-work and was never
+ # cleared. Killed by "CX-001 R1: an empty panel only witnesses a clear if the panel was FULL".
+ ("a small panel is read as a cleared one — a working session is interrupted with a restore prompt",
+  "src/memory.ts",
+  "    const wasFull = state.bankedChars === undefined ||\n      (state.bankedChars !== null && state.bankedChars >= CLEARED_PANEL_CHARS);",
+  "    const wasFull = true;"),
+
 ]
 
 def sh(cmd):

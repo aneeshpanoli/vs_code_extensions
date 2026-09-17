@@ -101,25 +101,27 @@ suite("edge: the threshold is inclusive", () => {
 
 suite("edge: a memory file exactly at the minimum size counts as banked", () => {
   const saving = (size) => decide(input({
-    state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000 },
+    state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
     memoryMtime: 2000, memorySize: size,
   }));
-  eq(saving(MIN_MEMORY_BYTES).kind, "clear", "exactly the minimum is a handoff");
-  eq(saving(MIN_MEMORY_BYTES - 1).kind, "none", "one byte less is not");
+  // CX-001: "banked" is now the phase, not the step — nothing is injected either way, so the phase
+  // it lands in is the only thing that distinguishes a save that counted from one that did not.
+  eq(saving(MIN_MEMORY_BYTES).next.phase, "banked", "exactly the minimum is a handoff");
+  eq(saving(MIN_MEMORY_BYTES - 1).next.phase, "saving", "one byte less is not");
 });
 
 suite("edge: the memory file must be strictly newer than the request", () => {
   const at = (mtime) => decide(input({
-    state: { phase: "saving", idleTicks: 9, phaseAt: NOW - MIN, memoryBaseline: 1000 },
+    state: { phase: "saving", phaseAt: NOW - MIN, memoryBaseline: 1000 },
     memoryMtime: mtime, memorySize: 4096,
   }));
-  eq(at(1000).kind, "none", "the same mtime is the OLD file, not a save");
-  eq(at(1001).kind, "clear", "a millisecond newer is a save");
+  eq(at(1000).next.phase, "saving", "the same mtime is the OLD file, not a save");
+  eq(at(1001).next.phase, "banked", "a millisecond newer is a save");
 });
 
 suite("edge: the cleared-panel threshold is exclusive", () => {
   const chars = (n) => decide(input({
-    state: { phase: "clearing", phaseAt: NOW - MIN }, reading: null, panelPct: null, panelChars: n,
+    state: { phase: "banked", phaseAt: NOW - MIN }, reading: null, panelPct: null, panelChars: n,
   }));
   eq(chars(CLEARED_PANEL_CHARS - 1).kind, "restore", "below the line is cleared");
   eq(chars(CLEARED_PANEL_CHARS).kind, "none", "exactly at it is not");
@@ -127,14 +129,14 @@ suite("edge: the cleared-panel threshold is exclusive", () => {
 });
 
 suite("edge: timeouts fire strictly after the window, not at it", () => {
-  const at = (age) => decide(input({ state: { phase: "saving", idleTicks: 9, phaseAt: NOW - age, memoryBaseline: 0 } }));
+  const at = (age) => decide(input({ state: { phase: "saving", phaseAt: NOW - age, memoryBaseline: 0 } }));
   eq(at(10 * MIN).kind, "none", "exactly at the 10m timeout it is still waiting");
   eq(at(10 * MIN + 1).kind, "abort", "a millisecond later it gives up");
 });
 
 suite("edge: a clock that moves backwards does not fire a timeout", () => {
   // now < phaseAt happens on an NTP correction or a suspended laptop.
-  const s = decide(input({ state: { phase: "saving", idleTicks: 9, phaseAt: NOW + 3600_000, memoryBaseline: 0 } }));
+  const s = decide(input({ state: { phase: "saving", phaseAt: NOW + 3600_000, memoryBaseline: 0 } }));
   eq(s.kind, "none", "negative elapsed time is not a timeout");
 });
 
@@ -146,7 +148,8 @@ suite("edge: a zero cooldown means no cooldown", () => {
 });
 
 suite("edge: a state from another version does not crash the machine", () => {
-  // 0.11.0 wrote phases watch|saving|clearing; a future one may write something else.
+  // 0.11.0 wrote phases watch|saving|clearing (CX-001 renamed the third to `banked`); a state file
+  // written by either version, or by a future one, must not crash the machine.
   const s = decide(input({ state: { phase: "restoring", phaseAt: NOW, futureField: 1 } }));
   eq(s.kind, "save", "an unknown phase is treated as watching");
   eq(s.next.futureField, 1, "and fields it does not understand are preserved");

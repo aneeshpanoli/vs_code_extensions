@@ -330,9 +330,9 @@ export function activate(context: vscode.ExtensionContext) {
     // ── orchestrator context memory ────────────────────────────────────────────────────────
     // The orchestrator is the session that actually fills up (measured: shwab_docker's had
     // auto-compacted four times). Past the threshold it is asked to write its working memory to a
-    // file, and ONLY once that file is verifiably on disk is /clear sent, followed by a prompt that
-    // reads the memory back and reconciles it with the docs. Every rule lives in memory.decide();
-    // this function is the I/O around it.
+    // file. CX-001: THE EXTENSION DOES NOT CLEAR IT — a person does, on their own timing, and when
+    // that clear is observed the restore prompt reads the memory back and reconciles it with the
+    // docs. Every rule lives in memory.decide(); this function is the I/O around it.
     let contextNote = "";
     // Identifies this window for the duration of its life. Two windows are routinely scoped to the
     // same project (a worktree window resolves to its parent repo id), and only one may drive a cycle.
@@ -341,7 +341,8 @@ export function activate(context: vscode.ExtensionContext) {
       enabled: cfg().get<boolean>("contextMemory", true) === true,
       thresholdPct: Math.min(95, Math.max(10, Number(cfg().get("contextThresholdPct", 30)) || 30)),
       saveTimeoutMinutes: Math.max(1, Number(cfg().get("contextSaveTimeoutMinutes", 10)) || 10),
-      clearTimeoutMinutes: Math.max(1, Number(cfg().get("contextClearTimeoutMinutes", 5)) || 5),
+      // CX-001 · `contextClearTimeoutMinutes` was read here and is gone: it timed how long to wait
+      // for a fresh session after a `/clear` THIS EXTENSION SENT, and it no longer sends one.
       cooldownMinutes: Math.max(0, Number(cfg().get("contextCooldownMinutes", 15)) ?? 15),
     });
     // ── WL-001 · the work ledger ───────────────────────────────────────────────────────────────
@@ -473,14 +474,13 @@ export function activate(context: vscode.ExtensionContext) {
       if (step.kind === "none") return step;
       if (step.kind === "abort") { vscode.window.showWarningMessage(`Loom: ${step.note}`); return step; }
       const target = { role: orch.role, webviewId: known ? known.webviewId : null, repo };
-      const label = step.kind === "save" ? `Loom: ${step.note}`
-        : step.kind === "clear" ? `Loom: ${orch.role} — ${step.note} (its context is being reset)`
-        : `Loom: ${step.note}`;
+      // No `clear` arm: `decide()` cannot return one (memory.ts), and if some future edit made it,
+      // `injectTo` refuses it by role (inject.ts). Nothing here needs to describe a reset.
+      const label = `Loom: ${step.note}`;
       vscode.window.showInformationMessage(label);
       // MC-001 · the reply hint is keyed by WHICH of the three messages this is (save/clear/restore),
       // not by the shared debug log file — see inject.ts's REPLY_FOR and injectTo's `replyKind`.
-      const replyKind = step.kind === "save" ? "context-save"
-        : step.kind === "clear" ? "context-clear" : "context-restore";
+      const replyKind = step.kind === "save" ? "context-save" : "context-restore";
       injectTo(target, step.message || "", "context-debug.json", (ok, note) => {
         if (!ok) vscode.window.showWarningMessage(
           `Loom: could not deliver the context-memory ${step.kind} to ${orch.role} (${note}).`);
@@ -1218,18 +1218,19 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage("Loom worktree cleanup:\n" + notes.join("\n"), { modal: true });
         await runTick();
       }),
-      // Bank the orchestrator's memory now, whatever its context is. The clear still only happens
-      // after the memory doc is verified on disk, on a later tick.
+      // Bank the orchestrator's memory now, whatever its context is. CX-001: banking is ALL this
+      // does — nothing is cleared, by this command or by any tick that follows it.
       vscode.commands.registerCommand("loomSessionTracker.bankContext", async () => {
         if (!repo) { vscode.window.showWarningMessage("Loom: no project in this window."); return; }
         const orch = getOrchestrator(repo);
         if (!orch) { vscode.window.showWarningMessage("Loom: no orchestrator tagged — nothing to bank."); return; }
-        const ok = await vscode.window.showWarningMessage(
-          `Ask '${orch.role}' to write its working memory, then CLEAR its context?\n\n` +
-          `The clear is only sent once the memory file exists and was written after this request. ` +
-          `If it is not written, nothing is cleared.`,
-          { modal: true }, "Bank & clear");
-        if (ok !== "Bank & clear") return;
+        const ok = await vscode.window.showInformationMessage(
+          `Ask '${orch.role}' to write its working memory now?\n\n` +
+          `Its context is NOT cleared — not by this and not afterwards. Once the file is on disk ` +
+          `you can clear the session by hand whenever you choose, and it will be restored from the ` +
+          `file automatically.`,
+          { modal: true }, "Bank memory");
+        if (ok !== "Bank memory") return;
         const step = runContextMemory(true);
         if (step && step.kind === "none") vscode.window.showInformationMessage(`Loom: ${step.note}`);
       }),

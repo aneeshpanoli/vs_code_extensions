@@ -1,5 +1,17 @@
 // memory.ts — ONE JOB: stop the orchestrator from dying of a full context, by making it bank what it is
-// doing into a memory doc, clearing, and coming back with that doc loaded.
+// doing into a memory doc, and — when a PERSON chooses to clear it — bringing it back with that doc loaded.
+//
+// ── CX-001 · THIS SUBSYSTEM NO LONGER CLEARS ANYTHING (owner directive 2026-09-16) ────────────
+// "Do not ever clear the orchestrator's context. Remove that from the loom-session-tracker add-on."
+// The cycle was THREE steps — save, /clear, restore — and the middle one is gone. What is left is
+// worth keeping and is the reason this was not deleted wholesale: banking is the half that makes an
+// orchestrator's context survivable at all, and a person clearing by hand needs the memory doc to
+// exist BEFORE they do it, not after. So the extension asks for the bank, then WATCHES. The clear is
+// the person's, on their timing; when one is observed, the restore prompt still goes out and the
+// fresh session still comes back knowing who it is and what to read.
+// The guarantee is enforced twice over, deliberately (see inject.ts): `decide()` never returns a
+// `clear` step, AND `injectTo` refuses a clear command aimed at an orchestrator whatever produced it.
+// WORKER clearing under playbook §12 is untouched — the orchestrator types those, not this extension.
 //
 // WHY THE ORCHESTRATOR SPECIFICALLY: workers finish a handoff and stop; the orchestrator runs for days
 // across every role, so it is the session that actually fills. Measured on the live transcripts
@@ -9,13 +21,18 @@
 // Banking to a file first is the same act done deliberately: the session decides what matters, writes it
 // somewhere durable, and the next context starts by reading it.
 //
-// THE ONE DANGEROUS STEP is `/clear`: it is irreversible from inside the session. Everything here exists to
-// make sure it can only happen AFTER the memory doc is on disk:
+// THE SAVE MUST BE REAL before the cycle believes it, because the whole point is that the doc is on disk
+// before a person clears:
 //   * the doc's mtime must be NEWER than the moment the save prompt was injected, and the file must be
 //     non-trivial — an old file, or an empty one, is not a save;
-//   * the session must not be mid-turn (a /clear typed into a working composer would interrupt it);
-//   * if the doc never appears within the save timeout the cycle ABORTS and warns. It never clears anyway.
-// The state machine lives on the bus, so an IDE restart mid-cycle resumes rather than re-clearing.
+//   * if the doc never appears within the save timeout the cycle ABORTS and warns.
+// The state machine lives on the bus, so an IDE restart mid-cycle resumes where it was.
+//
+// THE BUSY / IDLE GATE IS GONE, and its absence is a decision rather than an oversight. It existed for
+// one reason — "a /clear typed into a working composer would interrupt it" — and it guarded the step
+// that no longer exists. A save prompt is a MESSAGE: it queues behind the current turn (dispatch.ts),
+// so there is nothing to protect it from. A gate left standing over a deleted act reads to the next
+// person as a live safety rule and would be maintained as one.
 //
 // decide() is pure: every rule above is a test, not a hope.
 
@@ -30,12 +47,8 @@ import { ContextReading, pct, transcriptFor, newestTranscriptIn, boardSessionId,
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
 /** A memory doc smaller than this is not a handoff — treat it as "not written yet". */
-/** Consecutive idle readings required before `/clear`. Two, because one is a single sample of a
- *  panel that changes several times a second and a turn pausing between tool calls reads idle. */
-export const IDLE_TICKS_REQUIRED = 2;
-
 /** KEPT DELIBERATELY (WL-004). Not an instruction to anyone — the check that something was actually
- *  written before a clear destroys the session. It is a floor on evidence, not a target for prose. */
+ *  written before the cycle believes a save happened. A floor on evidence, not a target for prose. */
 export const MIN_MEMORY_BYTES = 200;
 /**
  * INTERNAL ONLY — this number must never reach a string an agent reads (WL-004, asserted by test).
@@ -48,8 +61,8 @@ export const MIN_MEMORY_BYTES = 200;
  */
 export const MAX_MEMORY_BYTES = 12_000;
 /** How long one window's claim on a cycle stands before another may take it over. Longer than the
- *  save and clear timeouts combined, so a live owner is never overtaken mid-cycle; short enough that
- *  a window closed mid-cycle does not strand the project. */
+ *  save timeout, so a live owner is never overtaken mid-cycle; short enough that a window closed
+ *  mid-cycle does not strand the project. */
 export const LEASE_MS = 15 * 60_000;
 
 /** A panel holding less than this has been cleared. Measured: a cleared tab renders ~170 characters;
@@ -58,12 +71,16 @@ export const CLEARED_PANEL_CHARS = 4000;
 /** The app renders its compact button only once this much of the usable window is used. */
 export const PANEL_BUTTON_PCT = 50;
 
-export type Phase = "watch" | "saving" | "clearing";
+/**
+ * `banked` was called `clearing` until CX-001, and the rename is the block in one word: the phase
+ * used to mean "we have typed /clear and are waiting to see it land", and now means "the memory is
+ * on disk and we are watching in case a PERSON clears". The watching is identical — a fresh session
+ * id, or the panel emptying — but nothing is waited ON. A phase named for an act the extension no
+ * longer performs would have been the last place the removed behaviour still looked alive.
+ */
+export type Phase = "watch" | "saving" | "banked";
 
 export interface ContextState {
-  /** Consecutive ticks the orchestrator has read idle while a save is banked. Reset by any busy
-   *  reading, so it counts an UNBROKEN run, not a total. */
-  idleTicks?: number;
   phase: Phase;
   /** The orchestrator role this cycle is about, and the file it was told to write. Both are pinned
    *  at the start: if either changes mid-cycle the cycle is abandoned rather than judged against a
@@ -78,6 +95,23 @@ export interface ContextState {
   phaseAt?: number;
   /** mtime of the memory doc when the save was asked for; the save must beat it. */
   memoryBaseline?: number;
+  /**
+   * How much text the panel held at the moment the memory was banked — the "before" the emptied-panel
+   * witness is a comparison against.
+   *
+   * CX-001 · WHY THIS IS SUDDENLY NEEDED. "The panel emptied" used to be read only in the seconds
+   * after this extension had itself typed `/clear`, so an empty panel could only mean the clear
+   * landed. Now the same phase is entered by BANKING, and then sits there for as long as nobody
+   * clears — so a panel that is merely SMALL, or one read partially, would be read as a clear that
+   * never happened, and a restore prompt would be injected into a session mid-work. Caught by the
+   * extension-level test on 2026-09-17: the banked phase restored on its very next tick because the
+   * fixture's panel holds a few hundred characters and always did.
+   *
+   * So the witness now requires a FALL: the panel must have been full when we banked and empty now.
+   * `null`/absent means we never saw the panel then — the witness is unavailable rather than assumed,
+   * and the fresh-session-id witness (which needs no panel at all) carries those cases.
+   */
+  bankedChars?: number | null;
   triggerTokens?: number;
   triggerPct?: number;
   /** Did the trigger come from the panel's own figure, or from the transcript estimate? */
@@ -103,12 +137,15 @@ export interface MemoryConfig {
   /** Fire when the context is at least this percent full. */
   thresholdPct: number;
   saveTimeoutMinutes: number;
-  clearTimeoutMinutes: number;
+  /** How long the cycle watches for a clear it did not cause before going back to watching context.
+   *  NOT a deadline on anyone: a person clears when they choose, and if they never do, the cycle
+   *  simply re-asks for a fresh bank later — which is what keeps the memory doc current. CX-001
+   *  replaced `clearTimeoutMinutes` with this; that one timed a `/clear` this extension had sent. */
   cooldownMinutes: number;
 }
 
 export const DEFAULT_CONFIG: MemoryConfig = {
-  enabled: true, thresholdPct: 30, saveTimeoutMinutes: 10, clearTimeoutMinutes: 5, cooldownMinutes: 15,
+  enabled: true, thresholdPct: 30, saveTimeoutMinutes: 10, cooldownMinutes: 15,
 };
 
 export interface ContextInput {
@@ -136,10 +173,10 @@ export interface ContextInput {
    *  a /clear is confirmed when no transcript identifies the session. */
   panelChars: number | null;
   /** Was the orchestrator's frame actually seen in this tick's CDP read? When it was not, `busy` is a
-   *  guess rather than a fact — and a `/clear` typed into a turn that is still running interrupts it.
-   *  So the two steps that carry consequences wait for a frame we can see. The RESTORE step is exempt
-   *  on purpose: a freshly cleared panel holds almost no text, so it stops detecting as the
-   *  orchestrator at all — requiring it there would strand every cycle at the last step. */
+   *  guess rather than a fact, and the SAVE prompt should not be sent on a guess about a frame we
+   *  cannot see at all. The `banked` phase is exempt on purpose: a freshly cleared panel holds almost
+   *  no text, so it stops detecting as the orchestrator — requiring a sighting there would strand
+   *  every cycle at the restore, which is the one step that only ever helps. */
   frameSeen: boolean;
   memoryFile: string;
   /** WL-003: the orchestrator's audit, already rendered, appended to the RESTORE message. Empty
@@ -152,6 +189,17 @@ export interface ContextInput {
   state: ContextState;
 }
 
+/**
+ * `"clear"` IS STILL HERE, AND `decide()` NEVER RETURNS IT. That is the point.
+ *
+ * CX-001 §4, and MP-002's lesson before it: if the rule "this extension never clears an
+ * orchestrator" is enforced only by the absence of code, there is nothing left to assert against —
+ * the property becomes unfalsifiable, no mutant can express its violation, and the test that would
+ * catch someone re-adding a threshold-triggered clear cannot even be written, because the kind it
+ * would have to name would not compile. Keeping the variant keeps the claim expressible: `decide()`
+ * is asserted never to produce it, and `injectTo` is asserted to refuse it. Two guards, two tests,
+ * one rule. Anything that constructs a `clear` step is dead on arrival at the injector.
+ */
 export type StepKind = "none" | "save" | "clear" | "restore" | "abort";
 
 export interface Step {
@@ -197,7 +245,11 @@ export function saveMessage(memoryFile: string, tokens: number | null, percent: 
     `because after you write it this session is cleared and that file is what you get back.`;
 }
 
-export const CLEAR_MESSAGE = "/clear";
+// CX-001 · `CLEAR_MESSAGE` (the literal "/clear") WAS HERE, and it is deleted rather than left
+// unused: it was the only string in this extension's source that a composer would have executed as a
+// context clear, and the cheapest way to keep it un-typed is for it not to exist. The refusal in
+// inject.ts is the guard for everything a deletion cannot reach — a clear reconstructed by a future
+// caller, or handed in from a user setting, which is exactly how `limits.ts` could take one.
 
 /** Injected into the FRESH context. Also the "update the memory from the docs" half of the cycle. */
 export function restoreMessage(memoryFile: string, repo: string, role: string,
@@ -305,50 +357,38 @@ export function decide(input: ContextInput): Step {
                 `the context cycle against a worker session (add the spelling to OWNER_ALIASES in ` +
                 `src/naming.ts if it really is this project's orchestrator)`);
   }
-  const unseen = !input.frameSeen && phase !== "clearing";
-  if (unseen) return keep("the orchestrator's frame was not seen this tick — cannot tell if it is mid-turn");
+  const unseen = !input.frameSeen && phase !== "banked";
+  if (unseen) return keep("the orchestrator's frame was not seen this tick — not asking it to bank on a guess");
 
   if (phase === "saving") {
     const wrote = input.memoryMtime !== null &&
       input.memoryMtime > (state.memoryBaseline ?? 0) &&
       input.memorySize >= MIN_MEMORY_BYTES;
     if (wrote) {
-      // IDLE, AND STILL IDLE. One idle reading is a single sample of a panel that updates several
-      // times a second: a turn that has just paused between tool calls reads idle, and a `/clear`
-      // typed there interrupts work that was still going. Require CONSECUTIVE idle ticks, so a
-      // momentary gap cannot be mistaken for the end of a turn (user request, 2026-09-10: make sure
-      // the orchestrator is idle "in order to not disrupt the ongoing process").
-      // loom_cdp.py refuses a slash command into a busy composer as the last line of defence; this is
-      // the first, and it is the one that keeps the cycle from even trying.
-      if (input.busy) {
-        return keep("memory banked; waiting for the turn to end before clearing",
-                    { ...state, idleTicks: 0 });
-      }
-      const idleTicks = (state.idleTicks ?? 0) + 1;
-      if (idleTicks < IDLE_TICKS_REQUIRED) {
-        return keep(`memory banked; ${input.role} has been idle for ${idleTicks} of ` +
-                    `${IDLE_TICKS_REQUIRED} checks — confirming the turn really ended before clearing`,
-                    { ...state, idleTicks });
-      }
+      // THE CYCLE ENDS HERE AS FAR AS TYPING GOES (CX-001). The memory is on disk; the next act is a
+      // person's, or nobody's. `kind: "none"` — nothing is injected, and the note is what the panel
+      // shows: it must not read as though a clear is imminent, because none is coming.
       return {
-        kind: "clear",
-        message: CLEAR_MESSAGE,
+        kind: "none",
         // WL-004 R2 · AN OBSERVATION FOR THE PANEL, NOT A TRIM ORDER. The size is a real cost and
         // worth seeing; "trim it" is an instruction to an agent to cut content to reach a number,
         // which is the same defect as the prompt. The threshold stays internal and is never phrased
         // as a cap: this note says what the file costs, and leaves what to do about it to a person.
         note: `memory banked (${input.memorySize} bytes${input.memorySize > MAX_MEMORY_BYTES
-                 ? ` — large; every fresh context re-reads it in full` : ""}) — clearing`,
-        next: { ...state, ...claim, phase: "clearing", phaseAt: now, idleTicks: 0,
+                 ? ` — large; every fresh context re-reads it in full` : ""}) — ` +
+              `this tool will not clear ${input.role}; clear it by hand when you choose and it will ` +
+              `be restored from the file`,
+        next: { ...state, ...claim, phase: "banked", phaseAt: now,
+                bankedChars: input.panelChars,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
-                lastNote: "cleared after a verified save" },
+                lastNote: "memory banked; no clear sent" },
       };
     }
     if (now - (state.phaseAt ?? now) > cfg.saveTimeoutMinutes * MIN_TO_MS) {
       return {
         kind: "abort",
         note: `${input.role} did not write ${input.memoryFile} within ${cfg.saveTimeoutMinutes}m — ` +
-          `NOT clearing. Its context is still ${pct(input.reading?.fraction ?? 0)}% full.`,
+          `nothing is banked. Its context is still ${pct(input.reading?.fraction ?? 0)}% full.`,
         next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
                 aborts: (state.aborts ?? 0) + 1, lastNote: "save timed out; clear refused" },
       };
@@ -356,20 +396,31 @@ export function decide(input: ContextInput): Step {
     return keep("waiting for the memory doc to be written");
   }
 
-  if (phase === "clearing") {
-    // TWO independent witnesses that the clear landed, because only one of them is always available:
+  if (phase === "banked") {
+    // TWO independent witnesses that a clear happened, because only one of them is always available:
     //   * a NEW session id in the same project directory (when a transcript identifies the session);
     //   * the PANEL emptying out — a cleared tab renders a couple of hundred characters and loses its
     //     compact button. This is the one that works for an orchestrator with no board entry.
     const fresh = !!(input.reading && input.reading.sessionId !== state.sessionId);
-    const emptied = input.panelChars !== null && input.panelChars < CLEARED_PANEL_CHARS &&
+    // A FALL, not a level. See `bankedChars`: an empty panel is only evidence of a clear if this
+    // panel was FULL when we banked.
+    //
+    // ABSENT AND NULL ARE DIFFERENT THINGS HERE, and the difference is the whole reliability of the
+    // witness. `null` is this version's own record that it LOOKED and the frame was not in that
+    // tick's read — no "before" exists, so the witness is withheld and `fresh` below carries the
+    // cycle. `undefined` is a state file written before this field existed (≤ 0.43.0), where the
+    // phase could only have been entered by a clear we ourselves sent; withholding there would
+    // strand an in-flight cycle across the upgrade, so it stays permissive exactly as it was.
+    const wasFull = state.bankedChars === undefined ||
+      (state.bankedChars !== null && state.bankedChars >= CLEARED_PANEL_CHARS);
+    const emptied = wasFull && input.panelChars !== null && input.panelChars < CLEARED_PANEL_CHARS &&
       (input.panelPct === null || input.panelPct === undefined);
     if (fresh || emptied) {
       return {
         kind: "restore",
         message: restoreMessage(input.memoryFile, input.repo, input.role, input.briefing || ""),
-        note: `cleared (${fresh ? "new session id" : "panel emptied"}) — ` +
-          `restoring ${input.role} from ${path.basename(input.memoryFile)}`,
+        note: `${input.role} was cleared (${fresh ? "new session id" : "panel emptied"}) — ` +
+          `restoring it from ${path.basename(input.memoryFile)}`,
         next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
                 sessionId: input.reading ? input.reading.sessionId : state.sessionId,
                 transcriptDir: input.reading ? path.dirname(input.reading.file) : state.transcriptDir,
@@ -377,16 +428,20 @@ export function decide(input: ContextInput): Step {
                 cycles: (state.cycles ?? 0) + 1, lastNote: "cycle complete" },
       };
     }
-    if (now - (state.phaseAt ?? now) > cfg.clearTimeoutMinutes * MIN_TO_MS) {
-      return {
-        kind: "abort",
-        note: `no fresh session appeared after /clear within ${cfg.clearTimeoutMinutes}m — ` +
-          `check ${input.role} by hand; its memory doc is written and safe.`,
-        next: { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
-                aborts: (state.aborts ?? 0) + 1, lastNote: "clear not observed" },
-      };
+    // NOT AN ABORT, and not a timeout on a person (CX-001). Nothing has gone wrong when nobody
+    // clears: the memory doc is written and safe, which was the whole objective. This just stops the
+    // cycle sitting in `banked` forever holding the lease — it returns to watching the context, and
+    // `lastCycleAt` starts the cooldown so the threshold can ask for a FRESH bank later rather than
+    // leaving an ageing file to be restored from. The old code aborted here with "no fresh session
+    // appeared after /clear", which under this block would be a warning about a clear never sent.
+    if (now - (state.phaseAt ?? now) > cfg.cooldownMinutes * MIN_TO_MS) {
+      return keep(
+        `${input.role} was not cleared; its memory doc is banked and safe — watching its context ` +
+        `again, and it will be asked to re-bank if it fills further`,
+        { ...state, ...release, phase: "watch", phaseAt: now, lastCycleAt: now,
+          lastNote: "banked; no clear observed" });
     }
-    return keep("waiting for the cleared session to appear");
+    return keep(`memory banked — watching in case ${input.role} is cleared; nothing will be typed`);
   }
 
   // watch
@@ -484,7 +539,7 @@ export function readOrchestratorContext(repo: string, role: string, state: Conte
                                         windowTokens = DEFAULT_WINDOW_TOKENS): ContextReading | null {
   const known = state.sessionId || boardSessionId(repo, role);
   const knownFile = known ? transcriptFor(known) : null;
-  if (state.phase === "clearing" && state.transcriptDir) {
+  if (state.phase === "banked" && state.transcriptDir) {
     const fresh = newestTranscriptIn(state.transcriptDir,
       { sinceMs: state.phaseAt, exclude: known || undefined });
     if (fresh) {

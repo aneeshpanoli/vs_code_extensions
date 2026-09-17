@@ -1,10 +1,11 @@
 // inject.test.js — the delivery layer. It shells out to loom_cdp.py, so the tests stub that file with
 // a python script that reports back what it was asked to do.
-const { suite, ok, eq, match, load, readJson, LOOM } = require("./harness");
+const { suite, ok, eq, match, load, readJson, LOOM, makeRepo } = require("./harness");
 const fs = require("fs");
 const path = require("path");
 const { injectTo, REPLY_FOR, REPORTING_CONTRACT, ORCHESTRATOR_KINDS, WORKER_KINDS,
-        withContract } = load("inject.js");
+        withContract, isClearCommand, isOrchestratorTarget, clearRefusal } = load("inject.js");
+const { setOrchestrator } = load("orchestrator.js");
 
 const CDP = path.join(LOOM, "loom_cdp.py");
 /** Stub loom_cdp.py: echo the argv, plus whatever result dict the test wants it to report. */
@@ -223,4 +224,124 @@ suite("PD-001: the contract is ONE line and names the four things a report must 
   match(REPORTING_CONTRACT, /broken for a user/, "what is broken, in a user's terms");
   match(REPORTING_CONTRACT, /next block changes for a user/, "what the next block buys a user");
   match(REPORTING_CONTRACT, /decision the owner must make/, "and the decision being asked for");
+});
+
+
+// ── CX-001 · THE CHOKEPOINT REFUSES A CLEAR AIMED AT AN ORCHESTRATOR ──────────────────────────
+//
+// Owner, 2026-09-16: "Do not ever clear the orchestrator's context."
+//
+// memory.ts no longer produces a clear step, and that is the removal. This is the GUARANTEE — the
+// part that survives a caller written next month by someone who never read memory.ts. Every test
+// below is in BOTH directions on purpose: the refusal is worthless if it also stops a WORKER being
+// cleared, because clearing workers between handoffs is playbook §12 and a standing owner directive.
+
+suite("CX-001: what counts as a clear COMMAND, and what is merely prose about clearing", () => {
+  // The distinction the whole guard rests on. A composer executes a line as a command only when it
+  // STARTS with the slash, so anything else — however much it talks about clearing — is a message.
+  ok(isClearCommand("/clear"), "the bare command");
+  ok(isClearCommand("  /clear  "), "leading whitespace is still a command to the composer");
+  ok(isClearCommand("/CLEAR"), "case does not change what the composer does with it");
+  ok(isClearCommand("/clear now"), "with an argument");
+  ok(!isClearCommand("/clearcache"), "a different command that merely starts the same way");
+  ok(!isClearCommand(""), "nothing is not a command");
+  ok(!isClearCommand("please /clear the worker"), "a slash mid-sentence is typed, not executed");
+  // THE ONE THAT WOULD HAVE UNDONE PLAYBOOK §12. health.ts's clearReminder is orchestrator-addressed
+  // prose telling the orchestrator to clear its WORKERS, and its debug file is named clear-debug.json.
+  // A guard keyed on the word "clear", or on the debug name, would have silently killed it.
+  const { HealthWatcher } = load("health.js");
+  const reminder = new HealthWatcher(null).clearReminder(
+    { repo: "demo", role: "developer1", blocks: 3, ids: ["A-1", "A-2", "A-3"], since: "yesterday" });
+  match(reminder, /clear developer1 and re-bind it/, "the reminder does say the word, in prose");
+  ok(!isClearCommand(reminder), "and it is NOT a command — the §12 reminder still goes out");
+});
+
+suite("CX-001: who counts as an orchestrator — by owner NAME and by the project's TAG", () => {
+  ok(isOrchestratorTarget("product-owner", null), "an owner-named role, with no tag on the bus at all");
+  ok(isOrchestratorTarget("productowner", null), "whatever spelling the project uses");
+  ok(isOrchestratorTarget("po", null), "livegita's spelling too");
+  // the case NAMES cannot catch: a project whose orchestrator is called something unremarkable
+  ok(isOrchestratorTarget("gitadeveloper", "gitadeveloper"), "the tagged role, whatever it is called");
+  ok(!isOrchestratorTarget("developer1", "gitadeveloper"), "a worker is not the tagged role");
+  ok(!isOrchestratorTarget("developer1", null), "and a worker on an untagged bus is still a worker");
+  ok(!isOrchestratorTarget("", "developer1"), "an empty role names nobody");
+});
+
+suite("CX-001: the refusal fires on BOTH halves together, never on one alone", () => {
+  // Both, or nothing. Either half on its own would be wrong in a way that breaks something real.
+  ok(clearRefusal("product-owner", "/clear", null), "clear + orchestrator -> refused");
+  ok(!clearRefusal("developer1", "/clear", null), "clear + WORKER -> allowed (playbook §12)");
+  ok(!clearRefusal("product-owner", "[loom-clears] clear developer1 and re-bind it", null),
+     "prose + orchestrator -> allowed, or the §12 reminder itself would be blocked");
+  ok(!clearRefusal("developer1", "hello", null), "neither -> allowed");
+  match(String(clearRefusal("product-owner", "/clear", null)), /never clears an orchestrator/,
+     "and the refusal says why, so it is not read as a broken injector");
+  match(String(clearRefusal("gitadeveloper", "/clear", "gitadeveloper")), /tagged orchestrator/,
+     "naming which of the two tests caught it");
+});
+
+suite("CX-001: injectTo REFUSES a /clear at the orchestrator — nothing is spawned, and it says so", () => {
+  stub();
+  const repo = makeRepo({ po: {} });
+  setOrchestrator(repo, "po", "wid-po");
+  fs.rmSync(path.join(LOOM, "t-clear-refused.json"), { force: true });
+  return run({ role: "po", webviewId: "wid-po", repo }, "/clear", "t-clear-refused.json").then((r) => {
+    eq(r.ok, false, "the caller is told it did not happen");
+    match(r.note, /never clears an orchestrator/, "with the reason");
+    const dbg = readJson(path.join(LOOM, "t-clear-refused.json"));
+    eq(dbg.refused, true, "the refusal is on the record, not a silent no-op");
+    eq(dbg.ok, false);
+    // THE ASSERTION THAT MATTERS: the injector was never even invoked. The stub echoes its argv into
+    // `out`, so an empty `out` is proof no python ran and nothing was typed anywhere.
+    eq(dbg.out, "", "loom_cdp.py was never spawned — no text reached any composer");
+  });
+});
+
+suite("CX-001: a WORKER's /clear still goes through, BYTE-IDENTICAL to before the guard", () => {
+  // THE LOAD-BEARING HALF. Playbook §12 clears a worker between every handoff; a guard that also
+  // stopped that would silently undo a standing owner directive from 2026-09-08.
+  stub();
+  const repo = makeRepo({ developer1: {} });
+  setOrchestrator(repo, "po", "wid-po");          // there IS an orchestrator; it is just not the target
+  return run({ role: "developer1", webviewId: "wid-d1", repo }, "/clear", "t-clear-worker.json").then((r) => {
+    ok(r.ok, "delivered");
+    const dbg = readJson(path.join(LOOM, "t-clear-worker.json"));
+    eq(dbg.message, "/clear", "the message is unchanged — no contract, no header, no rewriting");
+    eq(dbg.contract, false, "a command never carries the reporting contract");
+    match(dbg.out, /--role developer1/, "addressed to the worker");
+    match(dbg.out, /--webview-id wid-d1/, "at its own frame");
+    match(dbg.out, /--submit/, "and actually submitted");
+  });
+});
+
+suite("CX-001: the refusal is by ROLE, so it holds for a tagged orchestrator with a worker-ish name", () => {
+  // livegita's orchestrator is named `po`; another project's could be named anything. The NAME test
+  // cannot catch that one — only the tag can, and the tag is re-read on every injection because it
+  // can be moved between ticks.
+  stub();
+  const repo = makeRepo({ gitadeveloper: {} });
+  setOrchestrator(repo, "gitadeveloper", "wid-x");
+  return run({ role: "gitadeveloper", webviewId: "wid-x", repo }, "/clear", "t-clear-tagged.json").then((r) => {
+    eq(r.ok, false, "refused on the tag alone");
+    match(r.note, /tagged orchestrator/, "and says which test caught it");
+    eq(readJson(path.join(LOOM, "t-clear-tagged.json")).out, "", "nothing was spawned");
+  });
+});
+
+suite("CX-001: everything that is NOT a clear reaches the orchestrator exactly as before", () => {
+  // The guard must be invisible to the nine other messages this extension sends upward. A refusal
+  // that also swallowed the stall alert or the finish notice would be a far larger outage than the
+  // behaviour it removed.
+  stub();
+  const repo = makeRepo({ po: {} });
+  setOrchestrator(repo, "po", "wid-po");
+  return run({ role: "po", webviewId: "wid-po", repo },
+             "[loom-stall] developer1 has been \"working\" with no status update for 3.0h.",
+             "stall-debug.json").then((r) => {
+    ok(r.ok, "delivered");
+    const dbg = readJson(path.join(LOOM, "stall-debug.json"));
+    ok(!dbg.refused, "not refused");
+    match(dbg.out, /--webview-id wid-po/, "and it went to the orchestrator's frame");
+    eq(dbg.contract, true, "still carrying the reporting contract it is supposed to carry");
+  });
 });

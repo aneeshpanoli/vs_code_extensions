@@ -213,7 +213,6 @@ suite("safeguards: the context threshold in the code and in the SETTING default 
   // The same drift is possible for every other context default that exists in both places.
   const pairs = [
     ["contextSaveTimeoutMinutes", "saveTimeoutMinutes"],
-    ["contextClearTimeoutMinutes", "clearTimeoutMinutes"],
     ["contextCooldownMinutes", "cooldownMinutes"],
   ];
   for (const [settingName, field] of pairs) {
@@ -221,4 +220,17 @@ suite("safeguards: the context threshold in the code and in the SETTING default 
     ok(s, `${settingName} is declared`);
     eq(DEFAULT_CONFIG[field], s.default, `${settingName} agrees with DEFAULT_CONFIG.${field}`);
   }
+
+  // CX-001 · THE SETTING THAT NO LONGER DOES ANYTHING MUST NOT STAY IN THE MANIFEST.
+  // `contextClearTimeoutMinutes` timed the wait for a fresh session after a `/clear` this extension
+  // sent, and it sends none. A setting left behind in package.json advertises a behaviour to anyone
+  // reading the settings UI, and the only thing worse than a removed feature is one the manifest
+  // still offers to configure. Asserted as an ABSENCE so it cannot quietly come back with the
+  // behaviour still gone.
+  ok(!props["loomSessionTracker.contextClearTimeoutMinutes"],
+     "the dead clear-timeout setting is gone from package.json");
+  ok(!("clearTimeoutMinutes" in DEFAULT_CONFIG),
+     "and MemoryConfig does not carry a field nothing reads");
+  match(props["loomSessionTracker.contextMemory"].description, /NEVER clears/,
+     "and the master setting's description says plainly that nothing is cleared");
 });

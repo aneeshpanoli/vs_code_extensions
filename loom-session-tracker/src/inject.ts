@@ -20,6 +20,9 @@ import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 
+import { isOwnerRole } from "./naming";
+import { getOrchestrator } from "./orchestrator";
+
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 const LOOM_CDP = path.join(LOOM_ROOT, "loom_cdp.py");
 export const INJECT_TIMEOUT_MS = 60_000;
@@ -45,6 +48,87 @@ export interface InjectTarget {
 }
 
 export interface InjectResult { ok: boolean; note: string; }
+
+// ── THE ORCHESTRATOR IS NEVER CLEARED BY THIS EXTENSION (owner directive 2026-09-16 · CX-001) ──
+//
+// "Do not ever clear the orchestrator's context. Remove that from the loom-session-tracker add-on."
+//
+// WHY A GUARD AND NOT ONLY A DELETION. memory.ts no longer produces a clear step at all, and that
+// deletion is the real removal. But a property enforced only by the absence of a call site is
+// unfalsifiable — there is nothing left to mutate, nothing to assert against, and the next person to
+// add a trigger inherits nothing. So the rule also lives HERE, at the one point every injection
+// passes through, keyed on WHO the target is. A caller written next month gets the refusal without
+// knowing this rule exists.
+//
+// WHAT IS NOT TOUCHED, AND THIS IS THE HALF THAT MATTERS: a WORKER's `/clear`. Playbook §12 — a
+// worker is cleared and re-bound between every handoff — is a standing owner directive from
+// 2026-09-08, and it is the ORCHESTRATOR that types those clears, not this extension. The guard is
+// keyed on the TARGET'S ROLE, so a worker-addressed clear passes through byte-identical.
+//
+// Nor does it touch `health.ts`'s `clearReminder` / `remindClears`: that is prose ("[loom-clears] …
+// clear <role> and re-bind it on your NEXT dispatch") telling an orchestrator to clear its WORKERS.
+// It is orchestrator-addressed and its debug file is literally named `clear-debug.json`, so a guard
+// keyed on the debug NAME, or on the word "clear" appearing anywhere, would silently undo §12. The
+// key is: the MESSAGE IS A CLEAR COMMAND, and the TARGET IS AN ORCHESTRATOR. Both, or nothing.
+
+/**
+ * Is this message the context-clearing COMMAND (as opposed to prose that merely discusses clearing)?
+ *
+ * A composer executes a line as a command only when it STARTS with the slash — which is the same
+ * rule `withContract` below already relies on, and the same one loom_cdp.py's `compose_outgoing()`
+ * uses. So leading whitespace is stripped and nothing else counts: `clearReminder`'s body mentions
+ * "clear <role>" in the middle of a sentence and is not a command, and must not be read as one.
+ * `\b` after `clear` so a future `/clearcache` is not swept up by accident, while `/clear` with any
+ * argument, or in any case, is.
+ */
+export function isClearCommand(message: string): boolean {
+  return /^\/clear\b/i.test(String(message || "").trimStart());
+}
+
+/**
+ * Is this target the session that reports upward — the one that must never be cleared by the tool?
+ *
+ * TWO INDEPENDENT ANSWERS, because neither alone is sufficient and each covers the other's gap.
+ * Mirrors `ModelPolicy.enforce`'s chokepoint (models.ts), deliberately: one rule, recognisable twice.
+ *   * by NAME — an owner-named role is never a worker, tagged or not (`isOwnerRole`). This holds on a
+ *     bus with no tag at all, which is the state every project starts in.
+ *   * by TAG — the role this project has actually tagged as its orchestrator. This catches a project
+ *     whose orchestrator is named something `OWNER_ALIASES` has never heard of; measured 2026-09-09,
+ *     livegita's real orchestrator is named `po`, and its tag once read `{"role":"gitadeveloper"}`.
+ * `taggedRole` is passed in rather than read here so the whole decision is a PURE function and the
+ * claim is testable without a bus on disk.
+ */
+export function isOrchestratorTarget(role: string | null | undefined,
+                                     taggedRole: string | null | undefined): boolean {
+  const r = String(role || "");
+  if (!r) return false;
+  if (isOwnerRole(r)) return true;
+  return !!taggedRole && taggedRole === r;
+}
+
+/**
+ * The refusal, as a pure function: the note to record when this injection must not happen, or `null`
+ * when it may proceed. Returning the NOTE rather than a boolean means the reason reaches the debug
+ * log and the caller's `done`, so a refusal is never a silent no-op — the failure mode that would
+ * make this look like a broken injector rather than an enforced rule.
+ */
+export function clearRefusal(role: string | null | undefined, message: string,
+                             taggedRole: string | null | undefined): string | null {
+  if (!isClearCommand(message)) return null;
+  if (!isOrchestratorTarget(role, taggedRole)) return null;
+  const why = isOwnerRole(String(role || "")) ? "an owner-named role" : "this project's tagged orchestrator";
+  return `refused: ${role} is ${why}, and this extension never clears an orchestrator ` +
+    `(owner directive 2026-09-16). A worker's /clear between handoffs is untouched — playbook §12.`;
+}
+
+/** The same decision, reading the tag off the bus. A tag can be set or moved between ticks, so it is
+ *  read fresh at every injection: a stale answer here is exactly the injection this must not make. */
+export function refuseClear(target: { role: string; repo?: string | null }, message: string): string | null {
+  if (!isClearCommand(message)) return null;   // the common case — do not touch the disk for it
+  let tagged: string | null = null;
+  try { tagged = getOrchestrator(target.repo ?? null)?.role ?? null; } catch { /* untagged */ }
+  return clearRefusal(target.role, message, tagged);
+}
 
 // ── the RETURN ADDRESS (user rule, 2026-09-12) ─────────────────────────────────────────────────
 // "Any time any session communicates with another, it should always broadcast its ID and how to
@@ -117,9 +201,10 @@ export const ORCHESTRATOR_KINDS: ReadonlySet<string> = new Set([
   "brief-debug.json",    // extension.ts  — the work-ledger briefing at a dispatch point
   "context-save",        // memory.ts     — write your working memory before the clear
   "context-restore",     // memory.ts     — fresh context; here is who you are and what to read
-  // "context-clear" is the literal string "/clear" — a command, and commands carry no header and no
-  // contract (see `withContract`). Listed here in the comment rather than the set so the table
-  // stays honest about every message this subsystem sends without asserting a falsehood.
+  // "context-clear" is UNREACHABLE as of CX-001 — memory.ts produces no clear step, and a clear
+  // aimed at an orchestrator is refused above whatever produces it. Its REPLY_FOR entry is kept as
+  // the record of a message this subsystem once sent; it was never in this set anyway, because a
+  // command carries no header and no contract (see `withContract`).
 ]);
 
 /**
@@ -194,6 +279,20 @@ export function injectTo(target: InjectTarget, message: string, debugName: strin
   // rather than at the nine call sites so that no orchestrator-facing message can be added without
   // one, and no worker-facing message can pick one up by accident.
   const kind = replyKind ?? debugName;
+  // CX-001 · BEFORE anything is composed or spawned. The refusal is the first thing this function
+  // does with the message, so no future edit between here and the execFile can slip past it, and the
+  // one thing that must not happen costs nothing to prevent: a non-clear message never reads the bus.
+  const refusal = refuseClear(target, message);
+  if (refusal) {
+    try {
+      fs.writeFileSync(path.join(LOOM_ROOT, debugName), JSON.stringify({
+        at: new Date().toISOString(), target, ok: false, note: refusal, refused: true,
+        message: String(message || "").slice(0, 300), contract: false, out: "", err: "",
+      }, null, 2));
+    } catch { /* a failed log must never break the caller */ }
+    done?.(false, refusal);
+    return;
+  }
   const outgoing = withContract(kind, message);
   const args = [LOOM_CDP, "inject", "--role", target.role, "--message", outgoing, "--submit",
                 ...senderArgs(kind, target.repo ?? null)];

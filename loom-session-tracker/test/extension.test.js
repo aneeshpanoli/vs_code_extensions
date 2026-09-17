@@ -301,7 +301,7 @@ suite("context memory: a comfortable context is left alone", async () => {
   } finally { off(); }
 });
 
-suite("context memory: /clear follows only once the memory file is on disk", async () => {
+suite("context memory: a verified save banks, and NOTHING is ever typed at the orchestrator", async () => {
   const repo = makeRepo({ po: { session_id: "sid-ctx3" } }, "ctxC");
   openProject(repo);
   setOrchestrator(repo, "po", "wid-po");
@@ -317,22 +317,24 @@ suite("context memory: /clear follows only once the memory file is on disk", asy
     // Now the orchestrator writes it.
     writeJson(busPath(repo, "po", "memory.md"), {});      // just to make the directory
     fs.writeFileSync(busPath(repo, "po", "memory.md"), "# working memory\n" + "x".repeat(500));
-    // A banked file is not enough on its own: the orchestrator must also read IDLE on consecutive
-    // ticks, so a turn that merely paused between tool calls is not mistaken for a finished one.
+    // CX-001 · THE ASSERTION THE OWNER ASKED FOR, DRIVEN THROUGH THE REAL PATH rather than through
+    // decide() alone: the banked file was the last precondition the old code needed, so this is the
+    // tick on which a /clear used to be typed. It runs the extension's actual tick and then reads
+    // the injector's own debug log, which is the record of everything this extension typed anywhere.
     await vscode.commands.executeCommand("loomSessionTracker.refresh");
     await settle(60);
-    const mid = readJson(busPath(repo, "context-state.json"));
-    eq(mid.phase, "saving", "still saving after ONE idle reading — the run is not confirmed yet");
-    eq(mid.idleTicks, 1, "and it counts that reading");
-    await vscode.commands.executeCommand("loomSessionTracker.refresh");
-    await settle(60);
-    eq(readJson(busPath(repo, "context-state.json")).phase, "clearing", "now it clears");
+    eq(readJson(busPath(repo, "context-state.json")).phase, "banked", "the memory is banked");
     const dbg = readJson(path.join(LOOM, "context-debug.json"));
-    eq(dbg.message, "/clear", "with /clear");
-    // MC-001: the CLEAR step's own reply hint (documented as never actually delivered, since a bare
-    // "/clear" message skips loom_cdp.py's header entirely) — not the save hint left over.
-    match(dbg.out, new RegExp(esc(REPLY_FOR["context-clear"])), "clear carries the clear reply hint");
-    ok(!new RegExp(esc(REPLY_FOR["context-save"])).test(dbg.out), "not the save hint");
+    ok(!/^\s*\/clear\b/.test(String(dbg.message || "")), "no /clear was typed — it is the save prompt that stands");
+    match(dbg.message, /\[loom-context\] Your context is/, "the last thing typed is still the SAVE prompt");
+    // …and it stays that way however long it sits there.
+    for (let i = 0; i < 3; i++) {
+      await vscode.commands.executeCommand("loomSessionTracker.refresh");
+      await settle(60);
+    }
+    eq(readJson(busPath(repo, "context-state.json")).phase, "banked", "still banked, still waiting on a person");
+    const after = readJson(path.join(LOOM, "context-debug.json"));
+    ok(!/^\s*\/clear\b/.test(String(after.message || "")), "and three more ticks typed no clear either");
   } finally { off(); }
 });
 
@@ -344,9 +346,9 @@ suite("context memory: the fresh session is restored from the memory doc", async
   fs.mkdirSync(busPath(repo, "po"), { recursive: true });
   fs.writeFileSync(busPath(repo, "po", "memory.md"), "# working memory\n" + "x".repeat(500));
   writeJson(busPath(repo, "context-state.json"), {
-    phase: "clearing", sessionId: "sid-ctx4", transcriptDir: dir, phaseAt: Date.now() - 1000,
+    phase: "banked", sessionId: "sid-ctx4", transcriptDir: dir, phaseAt: Date.now() - 1000,
   });
-  transcript("-ctx-d", "sid-ctx5", 900);                 // the post-/clear session
+  transcript("-ctx-d", "sid-ctx5", 900);                 // the session a PERSON's /clear started
   const off = await activate([poFrame("wid-po", repo)]);
   try {
     await settle(60);
@@ -385,7 +387,10 @@ suite("context memory: the manual command runs the cycle regardless of the thres
     await settle(60);
     const before = readJson(busPath(repo, "context-state.json"));
     ok(!before || before.phase === "watch", "the tick left it alone");
-    vscode._warnAnswer = "Bank & clear";                 // confirm the modal
+    // CX-001: no longer a destructive confirmation — it is an information modal, because banking a
+    // file destroys nothing. `_answer` is the fake's showInformationMessage channel, `_warnAnswer`
+    // the showWarningMessage one, and the switch between them is itself the claim.
+    vscode._answer = "Bank memory";
     await vscode.commands.executeCommand("loomSessionTracker.bankContext");
     await settle(60);
     eq(readJson(busPath(repo, "context-state.json")).phase, "saving", "manual run started the cycle");
