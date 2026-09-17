@@ -154,3 +154,79 @@ suite("requests: a role stranded in another cwd is SPAWNED and bound, never reop
   request(repo, ["designer"]);
   eq(planOpen(repo, new Set(), 5).open.map((c) => c.role), ["designer"]);
 });
+
+// ── the guard's two answers, at the spawn path (OV-001-R1 §1(3)) ────────────────────────────────
+
+suite("requests: an overlapping role is REFUSED, and one waved through by the exemption is REPORTED", () => {
+  // The defect this closes: a refusal came back in `refused` with a reason, while a non-refusal the
+  // exemption caused came back as an ordinary open — indistinguishable from two genuinely disjoint
+  // briefs. The orchestrator could not tell that a judgement had been made for it.
+  const list = (id, files) => `---\nid: ${id}\nfiles:\n${files.map((f) => `  - ${f}\n`).join("")}---\n# ${id}\n`;
+  const inbox = (repo, role, text) => {
+    const f = busPath(repo, role, "inbox.md");
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, text);
+  };
+
+  const repo = makeRepo(bus({ developer1: "s-d1", developer2: "s-d2", productowner: "s-po" }), "req-exempt");
+  reopenable(repo, "developer2", "s-d2");
+  inbox(repo, "developer1", list("X-1", ["src/delegation.ts", "package.json", "HANDOVER.md"]));
+  inbox(repo, "developer2", list("X-2", ["src/overlap.ts", "package.json", "HANDOVER.md"]));
+  writeJson(busPath(repo, "developer1", "status.json"), { status: "working", current: "X-1" });
+  request(repo, ["developer2"]);
+  const p = planOpen(repo, new Set(["developer1"]), 5);
+  eq(p.open.map((c) => c.role), ["developer2"], "the dispatch happens — that is what the exemption is for");
+  eq(p.refused, [], "nothing is refused");
+  eq(p.exempted, [{ role: "developer2", reason: "shares package.json with developer1, allowed as a mechanical merge" }],
+     "and the file the guard let through is named, in the result the orchestrator reads back");
+
+  // A REAL shared file still refuses, and then there is no exemption line: one answer per pair.
+  const repo2 = makeRepo(bus({ developer1: "s-d1", developer2: "s-d2", productowner: "s-po" }), "req-exempt2");
+  reopenable(repo2, "developer2", "s-d2");
+  inbox(repo2, "developer1", list("X-3", ["src/overlap.ts", "package.json"]));
+  inbox(repo2, "developer2", list("X-4", ["src/overlap.ts", "package.json"]));
+  writeJson(busPath(repo2, "developer1", "status.json"), { status: "working", current: "X-3" });
+  request(repo2, ["developer2"]);
+  const p2 = planOpen(repo2, new Set(["developer1"]), 5);
+  eq(p2.open, [], "no tab is opened");
+  eq(p2.refused.map((r) => r.reason), ["overlaps developer1 on src/overlap.ts"], "the refusal names the real file");
+  eq(p2.exempted, [], "and says nothing about the manifest it also shared — the refusal is the report");
+
+  // Two disjoint briefs are silent, as they always were: the note exists to mark a JUDGEMENT, not a
+  // dispatch, and a line on every open would be noise nobody reads.
+  const repo3 = makeRepo(bus({ developer1: "s-d1", developer2: "s-d2", productowner: "s-po" }), "req-exempt3");
+  reopenable(repo3, "developer2", "s-d2");
+  inbox(repo3, "developer1", list("X-5", ["src/a.ts"]));
+  inbox(repo3, "developer2", list("X-6", ["src/b.ts"]));
+  writeJson(busPath(repo3, "developer1", "status.json"), { status: "working", current: "X-5" });
+  request(repo3, ["developer2"]);
+  const p3 = planOpen(repo3, new Set(["developer1"]), 5);
+  eq(p3.open.map((c) => c.role), ["developer2"]); eq(p3.exempted, [], "nothing was waived, so nothing is said");
+
+  // AND A ROLE IS NEVER IN BOTH LISTS. The first draft noted the exemption BEFORE the cap check, so a
+  // role held back for a slot came back refused AND waived in one result — the note claiming a file
+  // two roles were about to edit unguarded when nothing had been dispatched at all. Found by the
+  // refutation pass; this is the assertion that keeps it fixed.
+  const repo4 = makeRepo(bus({ developer1: "s-d1", developer2: "s-d2", productowner: "s-po" }), "req-exempt4");
+  reopenable(repo4, "developer2", "s-d2");
+  inbox(repo4, "developer1", list("X-7", ["src/a.ts", "package.json"]));
+  inbox(repo4, "developer2", list("X-8", ["src/b.ts", "package.json"]));
+  writeJson(busPath(repo4, "developer1", "status.json"), { status: "working", current: "X-7" });
+  request(repo4, ["developer2"]);
+  const p4 = planOpen(repo4, new Set(["developer1"]), 0);           // no slots left
+  eq(p4.refused.map((r) => r.reason), ["active-session cap reached"], "the cap refuses it");
+  eq(p4.exempted, [], "and nothing was waived, because nothing was dispatched");
+});
+
+suite("requests: writeResult carries `exempted` only when there is something to say", () => {
+  // Narrowly named on purpose: this one drives writeResult DIRECTLY and proves only the file shape.
+  // The suite above is the one that proves planOpen fills the list.
+  const repo = makeRepo(bus({ designer: "s-x" }), "req-exempt-write");
+  writeResult(repo, [], [], [{ role: "developer2", reason: "shares package.json with developer1, allowed as a mechanical merge" }]);
+  const back = JSON.parse(fs.readFileSync(busPath(repo, "open-requests.json"), "utf8"));
+  eq(back.exempted[0].role, "developer2", "the waived judgement is readable back by the orchestrator");
+  writeResult(repo, [], []);
+  const plain = JSON.parse(fs.readFileSync(busPath(repo, "open-requests.json"), "utf8"));
+  eq("exempted" in plain, false, "and an ordinary dispatch grows no empty key");
+  eq(plain.refused, [], "the keys that were always there are unchanged");
+});

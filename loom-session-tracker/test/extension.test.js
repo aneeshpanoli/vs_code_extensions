@@ -1290,6 +1290,36 @@ suite("CH-001 R2: an ALREADY-BOUND role that overlaps a working one is warned ab
   } finally { off(); }
 });
 
+suite("OV-001-R1: a pair WAVED THROUGH is noted, and a later real collision still warns", async () => {
+  // The regression this pins was introduced by the fix for §1(3) and caught reading the diff. The
+  // warning tick dedupes per colliding pair, and the exemption note first shared that key — so a
+  // pair waved through on a version bump at 14:02 would have had its genuine collision at 14:40
+  // silently swallowed, because the pair had "already been reported". An inbox being rewritten while
+  // a pair is live is not an edge case here: it is how every block starts.
+  const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "r1-ov-waived");
+  openProject(repo);
+  setOrchestrator(repo, "product-owner", "wid-po");
+  putFilesHandoff(repo, "alpha", "R1-1", "src/models.ts, package.json");
+  putFilesHandoff(repo, "beta", "R1-2", "src/other.ts, package.json");
+  setStatus(repo, "alpha", { status: "working", current: "R1-1", updated_at: "T1" });
+  clearInjectLog();
+  const off = await activate([poFrame("wid-po", repo),
+                             frame("wid-b", "w" + marker("beta") + footer("Opus 5"))], LOGGING_CDP);
+  try {
+    await settle(400);
+    ok(vscode._statusMessages.some((m) => /beta's handoff shares package\.json with alpha, allowed as a mechanical merge/.test(m)),
+       "the judgement made on the orchestrator's behalf is SAID: " + JSON.stringify(vscode._statusMessages));
+    ok(vscode._statusMessages.some((m) => /§19 waived/.test(m)), "and marked as a waiver, not a refusal");
+    eq(opensSoFar(), 0, "note ONLY — nothing was opened, and the pair is running correctly");
+    // Now beta's brief is replaced by one that really does collide. The pair is the same pair.
+    putFilesHandoff(repo, "beta", "R1-3", "src/models.ts, package.json");
+    await vscode._commands["loomSessionTracker.refresh"]();
+    await settle(300);
+    ok(vscode._statusMessages.some((m) => /beta's handoff overlaps alpha on src\/models\.ts/.test(m)),
+       "the REFUSAL is not swallowed by the note that came before it: " + JSON.stringify(vscode._statusMessages));
+  } finally { off(); }
+});
+
 suite("CH-001 R2: a role whose handoff declares NOTHING is opened as before — no refusal on absence", async () => {
   const repo = makeRepo({ roles: { alpha: {}, beta: {} } }, "ch-ov-silent");
   openProject(repo);
