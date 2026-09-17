@@ -29,7 +29,9 @@
 //    request cannot loop;
 //  - never a role whose handoff declares `files:` that a currently WORKING role's handoff also
 //    declares — playbook §19's disjointness rule (CH-001). Both sides must declare; an absent
-//    `files:` line refuses nothing, ever. See overlap.ts.
+//    `files:` line refuses nothing, ever. See overlap.ts. A role opened DESPITE a shared file, because
+//    the only files it shares are mechanically mergeable, is reported in `exempted` — the guard never
+//    makes that judgement silently (OV-001-R1).
 //  - a role whose transcripts all live under ANOTHER cwd (it moved into its worktree) is not
 //    reopened here — that opens a blank tab (reopen.ts) — it is SPAWNED and bound, and the result
 //    says so, with the cwd its memory would resume from.
@@ -40,7 +42,7 @@ import * as path from "path";
 import { boardRoles } from "./registry";
 import { isOwnerRole, canonicalRole } from "./naming";
 import { freshestSession, strandedRoles, ReopenCandidate, Stranded } from "./reopen";
-import { overlapFor, overlapReason } from "./overlap";
+import { overlapFor, overlapReason, exemptionFor, exemptionReason } from "./overlap";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 
@@ -58,6 +60,12 @@ export interface Plan {
    *  the orchestrator knows the fresh tab carries no memory and where the old one would resume. */
   stranded: Stranded[];
   refused: Refusal[];
+  /** Roles OPENED (or spawned) despite a shared file, because every file they share is a mechanical
+   *  merge
+   *  (OV-001-R1 §1(3)). Not refusals — the opposite — but the same shape, because they are read the
+   *  same way: the orchestrator asked for a dispatch and is being told what the guard waved through.
+   *  A judgement made on its behalf that appeared nowhere was the defect this closes. */
+  exempted: Refusal[];
   /** True when a file was present and should now be replaced with the result. */
   consumed: boolean;
 }
@@ -81,10 +89,11 @@ export function readRequest(repo: string): OpenRequest | null {
 export function planOpen(repo: string, liveRoles: Set<string>, slots: number, now = Date.now(),
                          windowCwd: string | null = null): Plan {
   const req = readRequest(repo);
-  if (!req) return { open: [], spawn: [], stranded: [], refused: [], consumed: false };
+  if (!req) return { open: [], spawn: [], stranded: [], refused: [], exempted: [], consumed: false };
   const age = req.requestedAt ? now - Date.parse(req.requestedAt) : 0;
   if (req.requestedAt && (!Number.isFinite(age) || age > REQUEST_TTL_MS)) {
-    return { open: [], spawn: [], stranded: [], refused: req.roles.map((role) => ({ role, reason: `request is stale (older than ${REQUEST_TTL_MS / 60000}m)` })), consumed: true };
+    return { open: [], spawn: [], stranded: [], exempted: [],
+             refused: req.roles.map((role) => ({ role, reason: `request is stale (older than ${REQUEST_TTL_MS / 60000}m)` })), consumed: true };
   }
   const roster = new Set(boardRoles(repo));
   const strandedHere = strandedRoles(repo, liveRoles, windowCwd);
@@ -92,6 +101,7 @@ export function planOpen(repo: string, liveRoles: Set<string>, slots: number, no
   const spawn: string[] = [];
   const stranded: Stranded[] = [];
   const refused: Refusal[] = [];
+  const exempted: Refusal[] = [];
   for (const raw of req.roles) {
     const role = canonicalRole(repo, raw);
     if (isOwnerRole(role)) { refused.push({ role: raw, reason: "an orchestrator is never opened this way" }); continue; }
@@ -103,16 +113,24 @@ export function planOpen(repo: string, liveRoles: Set<string>, slots: number, no
     // cheapest moment to refuse it is before the tab exists. Roles accepted EARLIER IN THIS PLAN
     // count too — one request naming two colliding briefs is the case the rule is most about.
     // Absence of a `files:` line on either side is never an overlap; see overlap.ts.
-    const ov = overlapFor(repo, role, [...open.map((c) => c.role), ...spawn]);
+    const alsoLive = [...open.map((c) => c.role), ...spawn];
+    const ov = overlapFor(repo, role, alsoLive);
     if (ov) { refused.push({ role: raw, reason: overlapReason(ov) }); continue; }
     if (open.length + spawn.length >= slots) { refused.push({ role: raw, reason: "active-session cap reached" }); continue; }
+    // ...and when it does NOT refuse because of the exemption, say which file it let through. AFTER
+    // the cap check, and that order was wrong in the first draft: noted before it, a role held back
+    // for a slot appeared in `refused` AND in `exempted` in one result, and the note claimed a file
+    // two roles were about to edit unguarded when nobody had been dispatched at all. A judgement is
+    // only worth reporting once the dispatch it permitted actually happens.
+    const ex = exemptionFor(repo, role, alsoLive);
+    if (ex) exempted.push({ role: raw, reason: exemptionReason(ex) });
     const c = freshestSession(repo, role, windowCwd);
     if (c) { open.push(c); continue; }
     spawn.push(role);
     const st = strandedHere.find((x) => x.role === role);
     if (st) stranded.push(st);
   }
-  return { open, spawn, stranded, refused, consumed: true };
+  return { open, spawn, stranded, refused, exempted, consumed: true };
 }
 
 /** Replace the request with its outcome, so the orchestrator can read back what happened. */
@@ -131,12 +149,15 @@ export function strandedNote(s: Stranded): string {
     `hand it its memory by hand`;
 }
 
-export function writeResult(repo: string, opened: Opened[], refused: Refusal[]): void {
+/** `exempted` is written only when it has entries: an orchestrator reading this file back should see
+ *  a new key the day the guard waved something through, not an empty one on every dispatch. */
+export function writeResult(repo: string, opened: Opened[], refused: Refusal[], exempted: Refusal[] = []): void {
   try {
     fs.writeFileSync(file(repo), JSON.stringify({
       servedAt: new Date().toISOString(),
       opened,
       refused,
+      ...(exempted.length ? { exempted } : {}),
     }, null, 2));
   } catch { /* a result write must never break a tick */ }
 }

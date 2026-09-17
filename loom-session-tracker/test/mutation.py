@@ -2387,6 +2387,95 @@ MUTATIONS = [
   "return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs.filter((f) => !isMechanicalMerge(f)));",
   "return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs);"),
 
+ # ── OV-001-R1 · what is not a path, the list of four, and the end of the silence ──────────────
+ # Added by OV-001-R1 and NOT executed as a gate under it (the orchestrator owns the repo-wide runs,
+ # §23). Each was verified one at a time instead: the `find` string is unique in its file, the mutant
+ # COMPILES, and a named targeted suite that passed before it FAILS with it.
+
+ # THE MUTANT THE BRIEF NAMED: the sentinel swallows a real path. The whole narrowing rests on the
+ # test being on the WHOLE token; make it a substring test and `src/none-handler.ts` — and, via `-`,
+ # most hyphenated filenames in the repo — silently declare nothing, so the guard stops protecting
+ # the files it was handed. This is the expensive direction INVERTED: not a false refusal but a file
+ # two roles now edit unguarded. Killed by "OV-001-R1: the OTHER direction — a real path that merely
+ # CONTAINS one of these still refuses" — and by NOTHING ELSE, which is the point of spelling it on
+ # `none` alone: the same mutant written over the whole sentinel set matches `-` as a substring, wipes
+ # out every hyphenated path in the repo, and is killed by seventeen suites at once, proving only that
+ # the guard still works at all rather than that THIS assertion holds.
+ ("the sentinel is matched as a SUBSTRING — `src/none-handler.ts` declares nothing and goes unguarded",
+  "src/models.ts",
+  "if (PATH_SENTINELS.has(s.toLowerCase())) return \"\";",
+  "if (s.toLowerCase().includes(\"none\")) return \"\";"),
+
+ # The same defect on the annotation half: unanchor the bracket test and any path with a parenthesis
+ # inside it — `docs/(draft)-spec.md` — becomes an annotation and disappears. Killed by the same
+ # suite, whose T-4 declares exactly that path.
+ ("the annotation test is not anchored — a path with a bracket INSIDE it disappears",
+  "src/models.ts",
+  "if (/^\\([^()/.]*\\)$/.test(s)) return \"\";",
+  "if (/\\([^()/.]*\\)/.test(s)) return \"\";"),
+
+ # And the narrowing removed altogether: this is the LIVE tfg_ua failure restored — two standby roles
+ # refusing each other over the word `none`, and two annotated handoffs refusing each other on a
+ # parenthetical. Killed by "the two LIVE tfg_ua declarations that were refusing on a non-path".
+ ("a sentinel is a filename again — two standby roles refuse each other over the word `none`",
+  "src/models.ts",
+  "const PATH_SENTINELS = new Set([\"none\", \"n/a\", \"-\"]);",
+  "const PATH_SENTINELS = new Set<string>([]);"),
+
+ # The list of four goes back to two, and a pair sharing only a HANDOVER append is refused again.
+ # This is the cheap failure, not the dangerous one — but it is the one the block was asked for.
+ # Killed by "the exemption names FOUR files" and by "two blocks that share only a HANDOVER append".
+ ("the two docs are not exempt — an append to HANDOVER.md refuses a dispatch again",
+  "src/overlap.ts",
+  'const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md", "README.md"];',
+  'const MECHANICAL_MERGE = ["package.json", "test/mutation.py"];'),
+
+ # THE SILENCE RETURNS, at the source: a suppressed collision reports nothing, which is exactly the
+ # defect class OV-001-R1 §1(3) was raised about — a value computed and then never rendered. Killed
+ # by "exemptedShare names the file the guard let through".
+ ("the exemption goes quiet again — a collision it suppressed is reported nowhere",
+  "src/overlap.ts",
+  "  if (sharedFile(mine, theirs)) return null;         // it refuses on its own merits; nothing was let through",
+  "  return null;"),
+
+ # ...and the note names the WRONG side. `mine: ["*"]` against a version bump is suppressed by the
+ # OTHER side's manifest, so reporting mine's spelling would print `*` — a claim, not the file that is
+ # now unguarded, and useless to anyone reading it. Killed by the same suite's wildcard case.
+ ("the exemption note names the claim instead of the file it let through",
+  "src/overlap.ts",
+  "    return isMechanicalMerge(m) ? normalizeDeclaredPath(m) : normalizeDeclaredPath(t);",
+  "    return normalizeDeclaredPath(m);"),
+
+ # The judgement is made and then dropped at the CALL SITE, which is where this defect class actually
+ # lives: overlap.ts computes the note correctly and the spawn result never carries it, so the
+ # orchestrator reads an ordinary open and cannot tell a judgement was made for it. Killed by
+ # "requests: an overlapping role is REFUSED, and one waved through by the exemption is REPORTED".
+ ("the spawn result drops the exemption note — the guard judges and the orchestrator never hears",
+  "src/requests.ts",
+  "  return { open, spawn, stranded, refused, exempted, consumed: true };",
+  "  return { open, spawn, stranded, refused, exempted: [], consumed: true };"),
+
+ # THE SILENT ONE, and the only narrowing that can lose a guard with NOTHING said anywhere. Unanchor
+ # the inside of the bracket and a REAL path someone bracketed — `(src/shared.ts)` — is deleted, so
+ # the declaration becomes an absence: nothing refuses, and the exemption note does not fire either,
+ # because nothing was exempted. Two roles edit the file with no refusal and no note. A refutation
+ # pass found this in the shipped draft. Killed by "OV-001-R1: the OTHER direction — a real path that
+ # merely CONTAINS one of these still refuses" (its T-8 case).
+ ("a bracketed REAL path is deleted — the declaration becomes an absence and nothing is said at all",
+  "src/models.ts",
+  "if (/^\\([^()/.]*\\)$/.test(s)) return \"\";",
+  "if (/^\\(.*\\)$/.test(s)) return \"\";"),
+
+ # The warning tick dedupes per colliding PAIR. Share one key between the refusal and the exemption
+ # note and a pair waved through at 14:02 has its GENUINE collision at 14:40 swallowed for the life of
+ # the window — the cheap note eating the expensive warning, which is §1(3)'s failure reintroduced by
+ # the fix for it. Inboxes are rewritten while a pair is live; that is how every block starts. Killed
+ # by "OV-001-R1: a pair WAVED THROUGH is noted, and a later real collision still warns".
+ ("the exemption note shares the refusal's dedupe key — a waived pair can never warn again",
+  "src/extension.ts",
+  'const key = [role, other].sort().join("|") + (ov ? "|refused" : "|waived");',
+  'const key = [role, other].sort().join("|");'),
+
 ]
 
 def sh(cmd):

@@ -33,7 +33,7 @@ import { blankShells, closableShells } from "./blanks";
 import { frameWatcher, openAndIdentify } from "./newframe";
 import { rebindFrame, RebindLog, roleWorktree } from "./rebind";
 import { planOpen, writeResult, strandedNote, Opened } from "./requests";
-import { overlapFor, overlapReason } from "./overlap";
+import { overlapFor, overlapReason, exemptionFor, exemptionReason } from "./overlap";
 import { planFocus } from "./focus";
 import { readFrames, openWindowRoots } from "./cdp";
 import { isOwnerRole } from "./naming";
@@ -487,16 +487,30 @@ export function activate(context: vscode.ExtensionContext) {
       for (const role of boardRoles(repo)) {
         if (isOwnerRole(role)) continue;
         let ov = null;
-        try { ov = overlapFor(repo, role); } catch { continue; }   // a half-written bus is not a warning
-        if (!ov) continue;
+        let ex = null;
+        try { ov = overlapFor(repo, role); if (!ov) ex = exemptionFor(repo, role); }
+        catch { continue; }                                        // a half-written bus is not a warning
+        if (!ov && !ex) continue;
         // One warning per colliding PAIR, not per direction and not per tick: two working roles each
         // see the other, and the tick runs every 15 seconds.
-        const key = [role, ov.other].sort().join("|");
+        //
+        // KEYED BY KIND AS WELL AS BY PAIR, and that is not a detail. An inbox is rewritten while a
+        // pair is live — that is how every block on this bus starts — so a pair that was WAVED
+        // THROUGH at 14:02 can genuinely collide at 14:40. Sharing one key between the note and the
+        // refusal would let the cheap note swallow the expensive warning for the rest of the window,
+        // which is the exact failure §1(3) was raised about, introduced by the fix for it.
+        const other = ov ? ov.other : ex!.other;
+        const key = [role, other].sort().join("|") + (ov ? "|refused" : "|waived");
         if (overlapWarned.has(key)) continue;
         overlapWarned.add(key);
-        vscode.window.setStatusBarMessage(
-          `Loom: ${role}'s handoff ${overlapReason(ov)}, which is working — one handoff is one merge (§19)`, 15000);
-        notes.push(`${role} ${overlapReason(ov)}`);
+        // The exemption's half (OV-001-R1 §1(3)). It is reported HERE, beside the refusal, because
+        // this is where a refusal is reported: a judgement that suppresses a warning must not be
+        // quieter than the warning it suppressed. It is a note, not an alarm — these two roles are
+        // running, correctly, and the line only says which file nobody is guarding while they do.
+        const line = ov ? `${overlapReason(ov)}, which is working — one handoff is one merge (§19)`
+                        : `${exemptionReason(ex!)} (§19 waived)`;
+        vscode.window.setStatusBarMessage(`Loom: ${role}'s handoff ${line}`, 15000);
+        notes.push(`${role} ${ov ? overlapReason(ov) : exemptionReason(ex!)}`);
       }
       if (notes.length) { overlapNote = [...(overlapNote || []), ...notes]; debugLog({}); }
     };
@@ -1028,7 +1042,7 @@ export function activate(context: vscode.ExtensionContext) {
                               if (!ok) plan.refused.push({ role, reason: `opened but binding failed: ${note}` }); res(); }));
           } catch (e: any) { plan.refused.push({ role, reason: `spawn failed: ${String(e && e.message || e)}` }); }
         }
-        writeResult(repo, opened, plan.refused);
+        writeResult(repo, opened, plan.refused, plan.exempted);
         // The orchestrator just chose what the next block does. That is the decision the audit
         // exists to inform, so arm it here rather than on a timer.
         if (opened.length) briefPending = true;

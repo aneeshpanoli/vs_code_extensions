@@ -267,11 +267,68 @@ function listUnderKey(text: string | null | undefined, key: string): string {
   return items.join(" ");
 }
 
-/** One declared path, in the one spelling the collision test compares. */
+// ── what is not a path at all (OV-001-R1 §1(2)) ─────────────────────────────────────────────────
+//
+// TWO LIVE tfg_ua DECLARATIONS WERE BEING READ AS FILENAMES, and both produced the expensive failure
+// (§3): a REFUSAL on a word. `files: none` is how a standby role on that bus says it touches nothing,
+// and it parsed as a path named `none`, so its two standby roles refused each other. `files:
+// tools/cardmaker/** (NEW), docs/social/card-design.md (NEW)` annotates its paths by hand, and the
+// annotation parsed as a third path, so any second annotated handoff on that bus was refused on a
+// parenthetical shared with the first.
+//
+// WHY THIS IS ALLOWED WHERE A FORMAT CHANGE IS NOT (OV-001 decision (a) forbids changing what a valid
+// single-line list MEANS). Neither of these changes the reading of any path: they narrow what counts
+// as a path in the first place, and a declaration with fewer paths in it can only ever REMOVE
+// refusals, never create one. That is the safe direction for a guard that refuses.
+//
+// THE SPELLING CHOSEN, and its cost. A token is dropped only when the WHOLE declaration is one:
+//  - a SENTINEL — `none`, `n/a` or `-`, case-insensitively, and nothing else. Not `nil`, `todo`,
+//    `tbd` or `null`: those are not written on any bus measured today, and every word added here is
+//    a filename someone can no longer declare.
+//  - a PARENTHESISED annotation — `(NEW)`, `(rewrite)`: `(` to `)` around the entire token, AND a
+//    plain word inside it. Deliberately NOT brackets generally: `[...]` and `{...}` are not attested
+//    in any `files:` line on this machine, and inventing a rule for a spelling nobody writes only
+//    costs real paths.
+//
+// WHY THE INSIDE OF THE BRACKET IS TESTED TOO, which the first draft of this did not do. `^\(.*\)$`
+// also eats `(src/shared.ts)` — a REAL path someone bracketed — and that is the one narrowing case
+// that loses a guard SILENTLY: the declaration becomes an absence, so nothing refuses and the
+// exemption note does not fire either, because nothing was exempted. Two roles then edit the file
+// with no refusal and no note anywhere. A refutation pass found it. So the inner text must be a plain
+// word: no `/`, no `.`, no nested bracket. `(NEW)` is dropped; `(src/shared.ts)`, `(draft.md)` and
+// `(a)(b)` are kept and refuse as paths. Keeping is the safe direction — it can only refuse MORE.
+//
+// WHAT IT DOES NOT DO, found by the same pass and left alone deliberately: `files: src/a.ts (NEW)`
+// is space-separated, and `declaredFiles` splits on whitespace BEFORE it normalises, so a SPACED
+// annotation like `(new file)` arrives here as `(new` and `file)` and is not recognised. The live
+// tfg_ua declaration this was raised for is space-free, so the failure firing today is fixed; a
+// spaced annotation would still refuse on a fragment, and fixing that means changing the splitting
+// loop, which is a bigger change than this block was authorised to make (§24). Raised, not fixed.
+//
+// THE COST. A file genuinely NAMED `none`, `n/a` or `(NEW)` can no longer be declared, and the guard
+// would go quiet on it. Nothing named that exists in any repo here, and the writer's remedy is a path
+// with a directory in it. NORMALISATION RUNS FIRST, so `./none` and `none/` are sentinels too. A path
+// that merely CONTAINS one of these is untouched — `src/none-handler.ts` and `docs/(draft)-spec.md`
+// still refuse — because the test is on the whole token, which is the only reason this narrowing is
+// as small as it claims to be.
+//
+// AND IT SHRINKS THE §19 SIZE LEDGER, deliberately, unlike the exemption. `filesDeclared` counts what
+// `handoffFiles` returns, so a block declaring `files: none` now ledgers 0 files and one annotating
+// two paths ledgers 2 rather than 3. That is the OPPOSITE call from overlap.ts's exemption, which is
+// kept out of this function precisely so it cannot move that number — and the two are consistent:
+// "is this a file at all" belongs in the count, "is this file's merge mechanical" does not.
+const PATH_SENTINELS = new Set(["none", "n/a", "-"]);
+
+/** One declared path, in the one spelling the collision test compares. A sentinel or a bracketed
+ *  annotation is an ABSENCE and normalises to `""` — see above; `""` collides with nothing and is
+ *  dropped by `declaredFiles`, so it never becomes a file in any count either. */
 export function normalizeDeclaredPath(p: string | null | undefined): string {
   let s = String(p || "").trim();
   s = s.replace(/^["']+/, "").replace(/["']+$/, "").trim();
-  return s.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+  s = s.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+  if (PATH_SENTINELS.has(s.toLowerCase())) return "";       // a word meaning "no files", not a file
+  if (/^\([^()/.]*\)$/.test(s)) return "";                  // `(NEW)` — an annotation, not a path
+  return s;
 }
 
 function inboxFile(repo: string, role: string): string {
