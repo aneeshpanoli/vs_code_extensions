@@ -17,7 +17,10 @@ import { Notifier } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, desiredModel,
-         chipFor, detectModel, isPremium } from "./models";
+         chipFor, detectModel, isPremium, handoffId, lastDispatchAt } from "./models";
+import { supplyReachBack } from "./reachback";
+import { delegationTick, loadDelegation, saveDelegation, markReminded, delegationReminder,
+         DEFAULT_WORK_MINUTES } from "./delegation";
 
 /** What the spawn path's `/model` step actually did, recorded in spawn-debug.json (MS-001 R2b).
  *  `ok: false` means the tab is on the premium tier and must NOT be bound. */
@@ -35,7 +38,8 @@ import { planFocus } from "./focus";
 import { readFrames } from "./cdp";
 import { isOwnerRole } from "./naming";
 import { eligibleTargets, resolveOrchestrator } from "./dispatch";
-import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree } from "./health";
+import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees, removeWorktree,
+         isWorkingLike } from "./health";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
 import { injectTo, setSenderWindow } from "./inject";
@@ -123,6 +127,71 @@ export function activate(context: vscode.ExtensionContext) {
     // within a turn), short enough that 36 minutes of silence could not happen again.
     const PENDING_WAKE_MS = 10 * 60_000;
     const pendingWarned = new Set<string>();
+    /** A role's status.json, or an empty object. Only `status` is read here; health.ts owns the
+     *  richer reading and its stall clock. */
+    const readRoleStatus = (forRepo: string, role: string): any => {
+      try {
+        return JSON.parse(fs.readFileSync(
+          path.join(os.homedir(), ".claude", "loom", forRepo, role, "status.json"), "utf8")) || {};
+      } catch { return {}; }
+    };
+
+    // ── PB-001 · §11 REACH-BACK, SUPPLIED RATHER THAN REMINDED ──────────────────────────────────
+    //
+    // Rank 2 of the owner's ranking: the tool provides the thing, so nobody has to remember it. It
+    // produces NO message — which is the point, because a bus full of reminders is his own complaint
+    // moved off him and onto the agents. Run on every tick so a handoff written between ticks is
+    // still covered, and a no-op on every inbox that already carries one.
+    const runReachBack = () => {
+      if (!repo) return;
+      if (cfg().get<boolean>("supplyReachBack", true) !== true) return;
+      const tag = getOrchestrator(repo);
+      if (!tag) return;                       // no sender to name; supplying an address would invent one
+      for (const role of boardRoles(repo)) {
+        if (role === tag.role) continue;
+        const id = handoffId(repo, role);
+        if (!id) continue;
+        const r = supplyReachBack(repo, role, id, tag.role);
+        if (r.supplied) debugLog({ reachBack: { role, id, note: r.note } });
+      }
+    };
+
+    // ── PB-001 · §2 · THE ORCHESTRATOR IS DOING THE WORK ITSELF ──────────────────────────────────
+    //
+    // The owner: "If an orchestrator has been working for a while and it hasn't woken up any of its
+    // loom agents, then it's time to remind it." Everything that decides whether this fires lives in
+    // delegation.ts, pure and tested; this function only gathers the observation and delivers.
+    const runDelegation = () => {
+      if (!repo) return;
+      if (cfg().get<boolean>("delegationReminders", true) !== true) return;
+      const tag = getOrchestrator(repo);
+      // THE ORCHESTRATOR'S OWN FRAME, and `null` when it was not seen. Unknown is not idle: a tick
+      // that cannot see the frame must neither count work nor reset the stretch.
+      const own = tag && tag.webviewId
+        ? tracker.ownerView().find((o) => o.webviewId === tag.webviewId && o.liveness === "live")
+        : null;
+      const workers = (tag ? boardRoles(repo).filter((r) => r !== tag.role) : [])
+        .map((role) => ({ role, working: isWorkingLike(readRoleStatus(repo, role).status) }));
+      const prev = loadDelegation(repo);
+      const mins = Number(cfg().get("delegationMinutes", DEFAULT_WORK_MINUTES)) || DEFAULT_WORK_MINUTES;
+      const r = delegationTick(
+        { repo, orchestrator: tag ? tag.role : null, busy: own ? own.busy : null,
+          workers, lastDispatch: lastDispatchAt(repo) }, prev, mins);
+      if (!r.finding) { saveDelegation(repo, r.state); return; }
+      // Mid-turn is the normal state for a session that has been working for half an hour, so a
+      // refusal here is expected and costs nothing: the latch is untouched and the next idle tick
+      // delivers. LATCHED ONLY ON DELIVERY — see markReminded.
+      if (own && own.busy) { saveDelegation(repo, r.state); return; }
+      const f = r.finding;
+      injectTo({ role: f.orchestrator, webviewId: tag && tag.webviewId ? tag.webviewId : null, repo },
+               delegationReminder(f), "delegate-debug.json", (ok, note) => {
+        if (ok) saveDelegation(repo, markReminded(r.state));
+        debugLog({ delegation: { orchestrator: f.orchestrator, workedMinutes: f.workedMinutes,
+                                 idle: f.idle, busy: f.busyWorkers, ok, note } });
+      });
+      saveDelegation(repo, r.state);
+    };
+
     const runHealth = () => {
       const working = countWorking();
       publishWorking(working);
@@ -817,7 +886,27 @@ export function activate(context: vscode.ExtensionContext) {
         "Re-read your inbox, the board and each role's status.json, then continue the work where it stood. " +
         "If a role's tab did NOT come back, do not wait for a person and do not hold its lane: write " +
         "~/.claude/loom/<repo>/open-requests.json {\"roles\":[...],\"requestedAt\":\"<iso>\"} and the tab is " +
-        "opened for you within seconds, with its webviewId written back into the file (playbook §15).",
+        "opened for you within seconds, with its webviewId written back into the file (playbook §15). " +
+        // PB-001 §4 · THE ONE POINTER, AND IT RIDES A MESSAGE THAT WAS ALREADY GOING OUT.
+        //
+        // The owner's standing rules live in 22 sections of a file an orchestrator only obeys if it
+        // happens to have read it, and he has been the one reminding them it exists. But the fix for
+        // that is NOT to attach the playbook, a digest of it, or a rules list to every message: his
+        // two most recent complaints are "500 lines of garbage" and "just bullet points only", so a
+        // version of this feature that makes every message longer is the thing he objected to,
+        // shipped under a new name. Every other rule in this product reaches a session at the MOMENT
+        // IT APPLIES, on the message that is already about that rule — §12 on the clear reminder,
+        // §21 on the reporting contract, §8/§19 on the delegation reminder.
+        //
+        // What is worth its bytes exactly once is that the file EXISTS and where. This is the one
+        // moment an orchestrator begins a thread with no memory of the last one and re-reads
+        // everything anyway, and it is the only orchestrator-facing message the tool sends that is
+        // about starting rather than about a specific event. The `/loom <role>` bind cannot carry
+        // it — loom_cdp.py executes any line starting with "/" verbatim, so appended text would
+        // corrupt the command — and the context RESTORE, the other candidate, no longer fires at an
+        // orchestrator at all now that §22 has removed the automatic clear. So: here, once, 96
+        // characters, naming the path and nothing else from those 533 lines.
+        "Your standing rules are ~/.claude/loom/ORCHESTRATION-PLAYBOOK.md — read it once, now.",
         "restart-debug.json");
     };
 
@@ -909,6 +998,8 @@ export function activate(context: vscode.ExtensionContext) {
         runModelPolicy();
         runOverlapWarning();
         runHealth();
+        try { runReachBack(); } catch { /* a supply must never break a tick */ }
+        try { runDelegation(); } catch { /* a reminder must never break a tick */ }
         runContextMemory();
         try { runWorkLedger(); } catch { /* a measurement must never break a tick */ }
         try { computeMissing(); wakeOrchestrator(); deliverBriefing(); } catch { /* a reopen offer must never break a tick */ }

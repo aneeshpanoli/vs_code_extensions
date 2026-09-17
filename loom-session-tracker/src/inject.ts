@@ -146,6 +146,10 @@ export const REPLY_FOR: Record<string, string> = {
   // CL-001 · there is nothing to reply TO — the action is the next dispatch, not an answer. Saying
   // "reads no chat" alone would leave an orchestrator looking for something to respond to.
   "clear-debug.json":   "no reply — clear and re-bind the role named here on your next dispatch to it",
+  // PB-001 · the action is a DISPATCH, not an answer. "Ring the role named here" would be wrong in
+  // the same way the stall hint was wrong when it named the orchestrator itself: an instruction that
+  // cannot be carried out teaches the reader to stop reading.
+  "delegate-debug.json": "no reply — write a handoff into the idle role's inbox.md and dispatch it",
   "resume":             "keep status.json current; nothing else is read",
   "model":              "none needed — your footer is re-read every tick",
   // MC-001 · the context-memory subsystem (memory.ts) sends THREE different messages down the SAME
@@ -199,6 +203,7 @@ export const ORCHESTRATOR_KINDS: ReadonlySet<string> = new Set([
   "restart-debug.json",  // extension.ts  — the editor restarted; pick the work back up
   "ledger-debug.json",   // extension.ts  — the once-a-day work-ledger alert
   "brief-debug.json",    // extension.ts  — the work-ledger briefing at a dispatch point
+  "delegate-debug.json", // delegation.ts — you have been working alone while a role sat idle
   "context-save",        // memory.ts     — write your working memory before the clear
   "context-restore",     // memory.ts     — fresh context; here is who you are and what to read
   // "context-clear" is UNREACHABLE as of CX-001 — memory.ts produces no clear step, and a clear

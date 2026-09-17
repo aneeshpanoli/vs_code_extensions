@@ -23,6 +23,7 @@ import { execFileSync } from "child_process";
 import { boardRoles, busRepos } from "./registry";
 import { injectTo } from "./inject";
 import { getOrchestrator } from "./orchestrator";
+import { isOwnerRole } from "./naming";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
 const WORKING_FILE = path.join(LOOM_ROOT, "working-sessions.json");
@@ -233,6 +234,58 @@ export function handoffIds(obj: any): string[] {
 
 /** The session id the board declares for a role — the thing a `/clear` changes. Both board shapes
  *  (flat, and wrapped in `roles`) are read, because both exist on the live buses. */
+/**
+ * PB-001 · The session id a role's OWN status.json claims, if it claims one.
+ *
+ * It exists to be compared with the board's, and the comparison is the fix for a detector that cried
+ * wolf twice in one day. See `sessionAgreement` below.
+ */
+export function statusSessionId(obj: any): string | null {
+  const sid = obj && typeof obj === "object" ? (obj.session_id || obj.sessionId) : null;
+  return typeof sid === "string" && sid.trim() ? sid.trim() : null;
+}
+
+/**
+ * PB-001 · DO THE IDENTITY RECORDS AGREE ABOUT WHICH SESSION THIS ROLE IS?
+ *
+ * MEASURED, twice on 2026-09-17, both false: the clear-detector told the orchestrator that
+ * `developer2` "has now carried at least 2 handoff ids in ONE session (PB-001, PD-001) — nothing has
+ * cleared it since 15:50:12Z", when that tab had DIED and been respawned as a brand-new session
+ * minutes earlier. It did the same to `developer1` at 06:53Z.
+ *
+ * THE MECHANISM, and it is a race rather than a missing rule. A clear is detected by comparing the
+ * board's `session_id` against the one remembered from last tick, and `scanClears` already
+ * re-baselines correctly when that changes. But the board is written by TWO parties — the role
+ * itself when it binds, and the tracker when it rebinds by session id — and playbook §12 requires
+ * the inbox be rewritten BEFORE the new tab exists. So there is a window in which the NEW handoff id
+ * is already visible while the board still names the DEAD session, and in that window the arrival is
+ * judged against the wrong session and reads as a §12 violation. The trigger is met on every correct
+ * respawn by construction, which is the worst possible property for a rule-enforcement message.
+ *
+ * THE FIX: session identity is the AND of the records that name it, not the board's alone. When the
+ * role's own status.json names a session and it differs from the board's, a transition is in flight
+ * — and a transition is precisely the clear this detector must not report against. That is not a
+ * clean bill of health and it is not a violation either: it is UNKNOWN, which this module already
+ * has a state for, and unknown is never counted and never re-baselined.
+ *
+ * A respawn is the strongest clear there is — the transcript is gone, not merely reset — so a
+ * detector that reports one as a violation is not slightly wrong, it is inverted. And a reminder
+ * that fires on correct behaviour trains its reader to ignore every reminder from the same tool,
+ * which in a product whose whole job is keeping directives from falling through the cracks is not a
+ * cosmetic defect but the defect itself.
+ *
+ * Absent is not disagreement: a status.json with no `session_id` (the protocol in playbook §2 does
+ * not require one) leaves the board unchallenged and behaviour exactly as before.
+ */
+export function sessionAgreement(boardSid: string | null, statusSid: string | null):
+    { agree: boolean; note: string | null } {
+  if (!boardSid || !statusSid) return { agree: true, note: null };
+  if (boardSid === statusSid) return { agree: true, note: null };
+  return { agree: false,
+           note: `identity records disagree (board ${boardSid.slice(0, 8)}…, status ` +
+                 `${statusSid.slice(0, 8)}…) — a session transition is in flight` };
+}
+
 export function boardSessionId(repo: string, role: string): string | null {
   try {
     const data = JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, repo, "board.json"), "utf8"));
@@ -266,6 +319,31 @@ export function isWorkingLike(status: any): boolean {
  * Stalled roles (working-like but not writing status any more) and protocol violations.
  * `stallMinutes` is how long a working role may go quiet before we call it stuck.
  */
+/**
+ * PB-001 · Is this role the bus's tagged orchestrator?
+ *
+ * WHY THE STALL CHECK SKIPS IT, and this is a correction rather than an exemption. The stall clock
+ * is the mtime of a role's `status.json`, and that file is a WORKER's heartbeat: a worker is bound,
+ * works a block, and keeps the file current because the orchestrator reads it to know where the
+ * block stands. An orchestrator's entry is written when it binds and then largely left alone — its
+ * `status` sits at "working" for days, which is true — so the stall clock on it measures nothing but
+ * how long ago somebody last touched a file nobody is required to touch.
+ *
+ * MEASURED on this bus: the alarm fired at the orchestrator four times in one day, and its
+ * instruction ("check whether it is stuck, blocked, or finished without saying so" — with the reply
+ * hint "ring the role named here") named the orchestrator itself. Ringing yourself is the one action
+ * that cannot help, so this was a diagnosis that was wrong and a prescription that was empty.
+ *
+ * Nothing is lost by the skip: an orchestrator's liveness is observed DIRECTLY from its frame every
+ * tick (`OwnerView.busy`, `liveness`), which is a live signal rather than a file's age, and PB-001's
+ * delegation detector is built on exactly that. An untagged bus has no orchestrator to skip and
+ * every role is checked as before.
+ */
+export function isTaggedOrchestrator(repo: string, role: string): boolean {
+  const tag = getOrchestrator(repo);
+  return !!(tag && tag.role && tag.role === role) || isOwnerRole(role);
+}
+
 export function checkHealth(repo: string | null,
                             opts: { now?: number; stallMinutes?: number } = {}): HealthReport | null {
   if (!repo) return null;
@@ -284,9 +362,12 @@ export function checkHealth(repo: string | null,
                         unknown: "no readable status.json — cannot tell which block it is on" });
     } else {
       const ids = handoffIds(s.obj);
+      // PB-001 · the board's word is checked against the role's own before anything is judged.
+      const agree = sessionAgreement(sessionId, statusSessionId(s.obj));
       out.clears.push({
         role, sessionId, ids,
         unknown: !sessionId ? "board.json declares no session_id for this role — a clear is undetectable"
+               : !agree.agree ? agree.note
                : ids.length === 0 ? "status.json names no handoff id (no `current`, no `last_handled`)"
                : null,
       });
@@ -327,7 +408,7 @@ export function checkHealth(repo: string | null,
       // stall either — the worker is not stuck, it is asleep with an answer waiting.
       out.gateExited.push({ role, status, pid: decl.pid, log: decl.log, launchedAt: decl.launchedAt,
                             mutants: decl.mutants, staleHours: (now - s.mtimeMs) / HOUR_MS });
-    } else if (isWorkingLike(status) && now - s.mtimeMs > stallMs) {
+    } else if (isWorkingLike(status) && now - s.mtimeMs > stallMs && !isTaggedOrchestrator(repo, role)) {
       // THE THIRD STATE, named rather than folded in. WL-006's wake fires on a gate that EXITED;
       // a role that never launched one is a different thing and was previously indistinguishable.
       // It is NOT auto-woken, and that is a decision, not an omission: a finished gate is PROOF

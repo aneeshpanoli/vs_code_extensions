@@ -345,3 +345,58 @@ suite("CX-001: everything that is NOT a clear reaches the orchestrator exactly a
     eq(dbg.contract, true, "still carrying the reporting contract it is supposed to carry");
   });
 });
+
+// ── PB-001 · THE NEW MESSAGE SITS ON THE ORCHESTRATOR SIDE, AND THE BOUNDARY IS ASSERTED BOTH WAYS ──
+
+suite("inject: the delegation reminder is an ORCHESTRATOR message and carries the contract", () => {
+  const { ORCHESTRATOR_KINDS, WORKER_KINDS, withContract, REPORTING_CONTRACT, REPLY_FOR } =
+    load("inject.js");
+  ok(ORCHESTRATOR_KINDS.has("delegate-debug.json"), "classified upward");
+  ok(!WORKER_KINDS.has("delegate-debug.json"), "and not as a worker message");
+  ok(withContract("delegate-debug.json", "you are working alone").includes(REPORTING_CONTRACT),
+     "so it carries the §21 reporting contract like every other orchestrator message");
+  ok(REPLY_FOR["delegate-debug.json"], "and it has a reply hint");
+  ok(!/ring the role/i.test(REPLY_FOR["delegate-debug.json"]),
+     "which is NOT 'ring the role named here' — the action is a dispatch, not an answer");
+});
+
+suite("inject: NO WORKER MESSAGE PICKS UP ANY OF PB-001 (both directions)", () => {
+  // Same boundary PD-001 established. A worker owes its orchestrator counts and measurements; the
+  // contract would suppress exactly the evidence this bus banks a block on.
+  const { WORKER_KINDS, withContract, REPORTING_CONTRACT } = load("inject.js");
+  for (const kind of WORKER_KINDS) {
+    eq(withContract(kind, "a worker message"), "a worker message", `${kind} is untouched`);
+    ok(!withContract(kind, "a worker message").includes(REPORTING_CONTRACT),
+       `${kind} carries no contract`);
+  }
+  // The gate wake is the load-bearing one: it is the message that ASKS a worker for its counts.
+  ok(WORKER_KINDS.has("gate-debug.json"), "the gate wake is still named as a worker kind");
+});
+
+suite("inject: the delegation reminder is never appended to a command", () => {
+  const { withContract, REPORTING_CONTRACT } = load("inject.js");
+  for (const cmd of ["/clear", "/loom developer1", "/model claude-opus-5"]) {
+    eq(withContract("delegate-debug.json", cmd), cmd, `${cmd} is returned verbatim`);
+    ok(!withContract("delegate-debug.json", cmd).includes(REPORTING_CONTRACT), "no contract on it");
+  }
+});
+
+suite("inject: the playbook pointer exists EXACTLY ONCE across every message the tool sends", () => {
+  // PB-001 §4: "the playbook pointer exists exactly once, at the start of an orchestrator's life."
+  // A version of this feature that attaches the playbook to every message is the "500 lines of
+  // garbage" complaint shipped under a new name, so this counts the actual sources.
+  const fs2 = require("fs");
+  const path2 = require("path");
+  const srcDir = path2.join(__dirname, "..", "src");
+  let hits = [];
+  for (const f of fs2.readdirSync(srcDir).filter((n) => n.endsWith(".ts"))) {
+    const text = fs2.readFileSync(path2.join(srcDir, f), "utf8");
+    // Only STRING LITERALS count — a comment naming the file is documentation, not bytes typed.
+    for (const line of text.split("\n")) {
+      if (/^\s*\/\//.test(line) || /^\s*\*/.test(line)) continue;
+      if (line.includes("ORCHESTRATION-PLAYBOOK.md")) hits.push(`${f}: ${line.trim()}`);
+    }
+  }
+  eq(hits.length, 1, `exactly one message names the playbook file (found: ${hits.join(" | ")})`);
+  ok(/extension\.ts/.test(hits[0]), "and it is the restart wake, the one moment an orchestrator begins");
+});

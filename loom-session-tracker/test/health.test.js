@@ -613,3 +613,72 @@ suite("CL-001 on the real tick: clearReminders=false silences it entirely", asyn
     delete vscode._config["loomSessionTracker.clearReminders"];
   }
 });
+
+// ── PB-001 · TWO DETECTORS THAT CRIED WOLF, BOTH MEASURED ON THE LIVE BUS 2026-09-17 ───────────
+
+suite("health: a respawned worker is NOT reported as an unclear session (PB-001)", () => {
+  // MEASURED: the clear-detector told the orchestrator "developer2 has now carried at least 2
+  // handoff ids in ONE session (PB-001, PD-001)" when that tab had DIED and been respawned as a
+  // brand-new session minutes earlier. A respawn is the strongest clear there is — the transcript is
+  // gone, not merely reset — so the reminder was not slightly wrong, it was inverted.
+  //
+  // THE RACE: the board is written by two parties (the role on bind, the tracker on rebind) and §12
+  // requires the inbox be rewritten BEFORE the new tab exists. So there is a window where the NEW
+  // handoff id is visible while the board still names the DEAD session. The trigger is met on every
+  // correct respawn by construction.
+  const { sessionAgreement } = load("health.js");
+  const repo = makeRepo({ po: { session_id: "po-1" },
+                          dev1: { session_id: "OLD-session", branch: "worktree-dev1" } });
+  status(repo, "dev1", { status: "working", current: "PB-001", last_handled: "PD-001",
+                         session_id: "NEW-session", updated_at: new Date().toISOString() });
+  const snap = checkHealth(repo).clears.find((c) => c.role === "dev1");
+  ok(snap.unknown, "the role is UNKNOWN this tick, not clean and not in violation");
+  ok(/transition is in flight/.test(snap.unknown), `and says why: ${snap.unknown}`);
+
+  // Unknown is never counted — so no event, and therefore no message.
+  const w = new HealthWatcher(repo);
+  eq(w.scanClears(checkHealth(repo)).length, 0, "no clear reminder is raised during the transition");
+});
+
+suite("health: once the records AGREE, the clear detector works exactly as before (PB-001)", () => {
+  // The other direction, which is what stops the fix above from being a blanket suppression: the
+  // identical bus with one field changed still reports a genuine §12 violation.
+  const repo = makeRepo({ po: { session_id: "po-1" },
+                          dev1: { session_id: "S1", branch: "worktree-dev1" } });
+  status(repo, "dev1", { status: "working", current: "AA-001", session_id: "S1",
+                         updated_at: new Date().toISOString() });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo));                       // baseline this session
+  status(repo, "dev1", { status: "working", current: "AA-002", last_handled: "AA-001",
+                         session_id: "S1", updated_at: new Date().toISOString() });
+  const evs = w.scanClears(checkHealth(repo));
+  eq(evs.length, 1, "a second block in the SAME session is still reported");
+  eq(evs[0].newId, "AA-002", "naming the block that arrived");
+});
+
+suite("health: a status.json with no session_id leaves the board unchallenged (PB-001)", () => {
+  // playbook §2's status schema does not require the field, so its absence must change nothing.
+  const { sessionAgreement } = load("health.js");
+  eq(sessionAgreement("S1", null).agree, true, "absent is not disagreement");
+  eq(sessionAgreement(null, "S2").agree, true, "nor is an absent board id");
+  eq(sessionAgreement("S1", "S1").agree, true, "agreement agrees");
+  eq(sessionAgreement("S1", "S2").agree, false, "and a real disagreement is caught");
+});
+
+suite("health: THE ORCHESTRATOR IS NEVER STALL-ALERTED ABOUT ITSELF (PB-001)", () => {
+  // MEASURED: the stall alarm fired at the orchestrator four times in one day. Its diagnosis was
+  // meaningless — the stall clock is the mtime of status.json, which is a WORKER's heartbeat and
+  // which an orchestrator is not required to maintain — and its prescription ("ring the role named
+  // here") named the orchestrator itself, which is the one action that cannot help.
+  const { setOrchestrator } = load("orchestrator.js");
+  const old = new Date(Date.now() - 6 * 3600_000).toISOString();
+  const repo = makeRepo({ po: { session_id: "po-1" }, dev1: { session_id: "d1" } });
+  setOrchestrator(repo, "po", "frame-1");
+  // Both files identical and equally stale, so the ONLY difference is which role is tagged.
+  const stale = { status: "working", current: "AA-001", session_id: "x", updated_at: old };
+  status(repo, "po", stale, 6);
+  status(repo, "dev1", stale, 6);
+  const stalled = checkHealth(repo).stalled.map((s) => s.role);
+  ok(!stalled.includes("po"), "the orchestrator is not reported stalled on its own file's age");
+  ok(stalled.includes("dev1"), "while a WORKER with the identical file still is");
+});

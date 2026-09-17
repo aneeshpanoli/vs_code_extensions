@@ -828,3 +828,30 @@ export class ModelPolicy {
       });
   }
 }
+
+/**
+ * PB-001 · The most recent instant a handoff was OPENED on this bus — the dispatch watermark.
+ *
+ * This is the fact the delegation detector is built on, and it is deliberately read from the ledger
+ * rather than recomputed: `openedAt` is the tick that FIRST SAW a new handoff id in a role's inbox,
+ * which is this process's own observation of the orchestrator handing work over. See WL-005's note
+ * above for why the worker's own stamp is never used for arithmetic — it belongs to the block
+ * before. Records with no `openedAt` (opened before WL-005) are skipped rather than guessed at.
+ *
+ * Only OPEN records are in `model-policy.json`; a closed one is appended to `model-ledger.jsonl` and
+ * dropped here when the next handoff lands over it. That is correct for this purpose: a bus whose
+ * last block closed and whose next has not been written has no dispatch newer than the one still
+ * recorded, and a bus that has genuinely never dispatched returns null — which the caller renders as
+ * "no handoff to any role has been seen", never as "long ago".
+ */
+export function lastDispatchAt(repo: string | null): string | null {
+  if (!repo) return null;
+  const led = loadState(repo).ledger || {};
+  let best: string | null = null;
+  for (const rec of Object.values(led)) {
+    const at = rec && typeof (rec as any).openedAt === "string" ? String((rec as any).openedAt) : null;
+    if (!at || !Number.isFinite(Date.parse(at))) continue;
+    if (best === null || Date.parse(at) > Date.parse(best)) best = at;
+  }
+  return best;
+}

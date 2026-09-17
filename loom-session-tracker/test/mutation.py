@@ -1507,7 +1507,11 @@ MUTATIONS = [
  # with zero blocks, and rendering it as judgeable is one state standing in for another.
  ("a role that cannot be judged is marked judgeable — 'cannot tell' renders as clean",
   "src/health.ts",
+  # PB-001 re-anchored: the ternary gained an identity-agreement arm, so the old literal no longer
+  # matched and this mutant was silently unbuildable. The claim is unchanged — every "cannot tell"
+  # arm collapses to a clean bill of health.
   '        unknown: !sessionId ? "board.json declares no session_id for this role — a clear is undetectable"\n'
+  "               : !agree.agree ? agree.note\n"
   '               : ids.length === 0 ? "status.json names no handoff id (no `current`, no `last_handled`)"\n'
   "               : null,",
   "        unknown: null,"),
@@ -1797,6 +1801,106 @@ MUTATIONS = [
   "src/memory.ts",
   "    const wasFull = state.bankedChars === undefined ||\n      (state.bankedChars !== null && state.bankedChars >= CLEARED_PANEL_CHARS);",
   "    const wasFull = true;"),
+
+
+ # ── PB-001 · the delegation detector, the reach-back supply, and two false alarms ──────────────
+
+ # (a) THE FIRST FALSE-POSITIVE EXCLUSION. A bus with no workers bound has nobody to delegate to,
+ # and nudging a solo orchestrator is the noise that makes a reminder ignorable. Killed by
+ # "delegation: A BUS WITH NO WORKERS BOUND NEVER FIRES, however long the orchestrator works".
+ ("a solo orchestrator with no roles on its board is nudged to delegate",
+  "src/delegation.ts",
+  '  if (input.workers.length === 0) {',
+  "  if (false) {"),
+
+ # (b) THE SECOND, AND THE ONE THAT DECIDES WHETHER THE REMINDER IS BELIEVED. An orchestrator
+ # waiting on running workers is obeying §8's concurrency cap; nudging it punishes correct
+ # behaviour. Killed by "delegation: AN ORCHESTRATOR WAITING ON BUSY WORKERS IS NEVER NUDGED".
+ ("an orchestrator waiting on three running workers is told it has not delegated",
+  "src/delegation.ts",
+  "  if (idle.length === 0) {",
+  "  if (false) {"),
+
+ # The suppression latch. Without it the reminder repeats every tick for as long as the stretch
+ # runs, which is how a reminder becomes a thing people turn off — the stall alarm's own defect,
+ # four alerts in one day. Killed by "delegation: reminded ONCE per undelegated stretch".
+ ("the delegation reminder repeats every tick instead of once per undelegated stretch",
+  "src/delegation.ts",
+  "  if (st.remindedAt !== null && st.remindedAt === (st.since ?? null)) {",
+  "  if (false) {"),
+
+ # The re-arm. Keyed on the dispatch watermark so that ONLY delegating clears it; leave the latch
+ # set and no dispatch can ever re-arm the reminder, so it fires exactly once in the life of a bus.
+ # Killed by "delegation: ONLY A NEW DISPATCH RE-ARMS IT — and it resets the stretch too".
+ ("a dispatch no longer re-arms the delegation reminder",
+  "src/delegation.ts",
+  "    st.busyTicks = 0;\n    st.remindedAt = null;",
+  "    st.busyTicks = 0;"),
+
+ # UNKNOWN IS NOT IDLE. A tick that could not see the orchestrator's frame must neither count work
+ # nor reset the stretch; counting it credits work to a session that may have been closed. Killed
+ # by "delegation: a frame not seen this tick is UNKNOWN — it neither counts nor resets".
+ ("a frame that was not seen this tick is counted as working",
+  "src/delegation.ts",
+  "  if (input.busy === null) {",
+  "  if (false) {"),
+
+ # WALL-CLOCK, the signal delegation.ts rejects by name: an orchestrator whose human went to bed
+ # would be reminded at breakfast for having done nothing. Killed by "delegation: IDLE TICKS ARE
+ # NOT WORK — a quiet orchestrator never accumulates".
+ ("idle ticks count as work — the rejected wall-clock signal, restored",
+  "src/delegation.ts",
+  "  if (input.busy) st.busyTicks += 1;",
+  "  st.busyTicks += 1;"),
+
+ # The reach-back supply stops checking whether one is already there, so every tick appends another
+ # block and a worker's inbox grows without bound. Killed by "reachback: it never appends twice".
+ ("a reach-back block is appended on every tick, forever",
+  "src/reachback.ts",
+  '  if (hasReachBack(text)) return { supplied: false, note: "already carries a reach-back" };',
+  "  if (false) return { supplied: false, note: \"already carries a reach-back\" };"),
+
+ # THE ID RE-CHECK. §12 step 2 has the orchestrator overwrite inbox.md as its first move after
+ # banking, and a tick can land inside that window: the block would then name the PREVIOUS block's
+ # `# RESPONSE` heading, which no watcher greps for. Killed by "reachback: THE ID IS RE-CHECKED".
+ ("a reach-back block is appended to a brief that has already been replaced",
+  "src/reachback.ts",
+  '  if (String(frontmatter(text)["id"] || "") !== expectId) {',
+  "  if (false) {"),
+
+ # An untagged bus gets an invented return address instead of nothing — the fingerprint route §13
+ # bans, which sent two funisland rings into another project's tab. Killed by "reachback: an
+ # untagged bus gets nothing — an invented return address is worse than none".
+ # (Anchored on the RESOLUTION rather than on the null guard: deleting the guard does not compile,
+ # because the narrowing it performs is load-bearing two lines down. This is the truer defect anyway
+ # — it is the fingerprint-style GUESS §13 bans, rather than a missing check.)
+ ("an untagged bus has a return address invented for it by guessing the usual role name",
+  "src/reachback.ts",
+  "  const tag = senderRole ? { role: senderRole } : getOrchestrator(repo);",
+  '  const tag = senderRole ? { role: senderRole } : (getOrchestrator(repo) || { role: "productowner" });'),
+
+ # PB-001 · the respawn false alarm, restored: the identity check is inverted, so agreement reads as
+ # a transition and disagreement reads as settled — every correct respawn is reported as a §12
+ # violation. Killed by "health: a respawned worker is NOT reported as an unclear session (PB-001)".
+ ("a respawned worker is reported as a session that was never cleared",
+  "src/health.ts",
+  "  if (boardSid === statusSid) return { agree: true, note: null };",
+  "  if (boardSid !== statusSid) return { agree: true, note: null };"),
+
+ # …and the other half: the disagreement is computed and then never consulted, so the snapshot is
+ # judged exactly as it was before the fix. Killed by the same test.
+ ("the identity disagreement is computed and then ignored",
+  "src/health.ts",
+  "               : !agree.agree ? agree.note\n",
+  ""),
+
+ # PB-001 · the orchestrator is stall-alerted about itself again, and told to ring itself — the one
+ # action that cannot help. Its status.json is a worker's heartbeat, which an orchestrator is not
+ # required to maintain. Killed by "health: THE ORCHESTRATOR IS NEVER STALL-ALERTED ABOUT ITSELF".
+ ("the orchestrator is alerted that it has stalled, and told to ring itself",
+  "src/health.ts",
+  " && !isTaggedOrchestrator(repo, role)) {",
+  ") {"),
 
 ]
 
