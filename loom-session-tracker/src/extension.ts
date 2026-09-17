@@ -42,6 +42,9 @@ import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees
          isWorkingLike, boardSessionId, statusSessionId, sessionAgreement } from "./health";
 import { watcherTick, loadWatchers, saveWatchers, markWatcherReminded,
          watcherReminder } from "./watchers";
+import { quietTick, gatherSignals, loadQuiet, saveQuiet, markNotified, quietMessage,
+         DEFAULT_QUIET_MINUTES, FrameSeen } from "./quiet";
+import { sendPush, preflight, pushKey, DEFAULT_CONTAINER, DEFAULT_TIMEOUT_SEC } from "./push";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
 import { injectTo, setSenderWindow } from "./inject";
@@ -110,12 +113,16 @@ export function activate(context: vscode.ExtensionContext) {
     // blank-shell note all debugLog AFTER it. A collision recorded on its own call is overwritten
     // within the tick that found it — the third time this file has learned that.
     let overlapNote: string[] | undefined;
+    // NT-001 · what the stop notifier is doing, for the panel. The handoff requires that when the
+    // transport is unavailable the feature is OFF AND SAYS SO rather than inventing another door.
+    let quietNote: string | undefined;
     const debugLog = (obj: any) => {
       try {
         fs.writeFileSync(path.join(os.homedir(), ".claude", "loom", "tracker-debug.json"),
           JSON.stringify({ repo, ...(stampNote ? { stamp: stampNote } : {}),
                            ...(modelNote ? { model: modelNote } : {}),
-                           ...(overlapNote ? { handoffOverlap: overlapNote } : {}), ...obj }, null, 2));
+                           ...(overlapNote ? { handoffOverlap: overlapNote } : {}),
+                           ...(quietNote ? { quietNotifier: quietNote } : {}), ...obj }, null, 2));
       } catch { /* ignore */ }
     };
     const notifier = new Notifier(repo);
@@ -192,6 +199,73 @@ export function activate(context: vscode.ExtensionContext) {
                                  idle: f.idle, busy: f.busyWorkers, ok, note } });
       });
       saveDelegation(repo, r.state);
+    };
+
+    // ── NT-001 · TELL HIM WHEN A PROJECT GOES QUIET ─────────────────────────────────────────────
+    //
+    // The owner: "Any time activity stops completely in any of the windows I want to know which
+    // project it is, and when it stopped … if I am away from my desk I should be able to come back
+    // and check what's done." Everything that DECIDES lives in quiet.ts, pure and tested; everything
+    // that SENDS lives in push.ts. This function only gathers the observation and delivers it.
+    //
+    // WHICH TABLE THIS MESSAGE BELONGS TO (0.43.0 reporting contract): NEITHER. `withContract` splits
+    // messages into ORCHESTRATOR_KINDS and WORKER_KINDS, and both are things typed into a COMPOSER by
+    // injectTo. This one goes to a phone. It is not injected, it reaches no session, and it must not
+    // carry the reporting contract — appending "the decision the owner must make" to a push
+    // notification would be nonsense. It is a third kind: extension -> human, out of band.
+    //
+    // OFF BY DEFAULT and opt-in. Nothing below can send anything while the setting is false, and the
+    // setting's own description says plainly that it leaves the machine.
+    const runQuiet = () => {
+      if (cfg().get<boolean>("quietPushEnabled", false) !== true) return;
+      const now = Date.now();
+      // Every frame this window can see, reduced to (project, mid-turn?). A window sees the whole
+      // editor, so one window's view covers every project open in it.
+      const frames: FrameSeen[] = [
+        ...tracker.view().filter((a: any) => a.liveness === "live")
+                 .map((a: any) => ({ repo: a.repo ?? null, busy: tracker.busyRoles.has(a.role) })),
+        ...tracker.ownerView().filter((o) => o.liveness === "live")
+                 .map((o) => ({ repo: o.repo ?? null, busy: o.busy })),
+      ];
+      const mins = Number(cfg().get("quietMinutes", DEFAULT_QUIET_MINUTES)) || DEFAULT_QUIET_MINUTES;
+      const pcfg = { container: String(cfg().get("quietPushContainer", DEFAULT_CONTAINER) || DEFAULT_CONTAINER),
+                     timeoutSec: DEFAULT_TIMEOUT_SEC };
+      const st = loadQuiet();
+      const findings: { repo: string; title: string; body: string; key: string }[] = [];
+      for (const sig of gatherSignals(frames, now)) {
+        const r = quietTick(sig, st.projects[sig.repo], now, mins);
+        st.projects[sig.repo] = r.state;
+        if (r.finding) {
+          const m = quietMessage(r.finding);
+          findings.push({ repo: sig.repo, title: m.title, body: m.body,
+                          key: pushKey(sig.repo, r.finding.stoppedAt) });
+        }
+      }
+      saveQuiet(st);                       // watermarks advance whether or not anything is sent
+      if (findings.length === 0) return;
+      // DELIVERY IS ASYNC so a dead container cannot hang a tick, and LATCHES ONLY ON DELIVERY: a
+      // send that failed is a notification nobody received, and latching it would mean "told" for a
+      // phone that was never told (WL-006/WL-008/CL-001, and delegation.markReminded for the same).
+      void (async () => {
+        const ready = await preflight(pcfg, undefined);
+        if (!ready.delivered) {
+          quietNote = `stop notifier ${ready.note}`;
+          debugLog({ quiet: { skipped: findings.map((f) => f.repo), why: ready.note } });
+          return;                          // NOT latched — it will be reported when the door works
+        }
+        for (const f of findings) {
+          const res = await sendPush(pcfg, f.title, f.body, f.key, undefined);
+          if (res.delivered) {
+            const cur = loadQuiet();       // re-read: other projects' ticks may have written since
+            if (cur.projects[f.repo]) {
+              cur.projects[f.repo] = markNotified(cur.projects[f.repo]);
+              saveQuiet(cur);
+            }
+          }
+          quietNote = `${f.repo}: ${res.note}`;
+          debugLog({ quiet: { repo: f.repo, title: f.title, delivered: res.delivered, note: res.note } });
+        }
+      })();
     };
 
     // ── WC-001 · §17 — THIS SESSION ARMED A WATCHER ─────────────────────────────────────────────
@@ -1043,6 +1117,7 @@ export function activate(context: vscode.ExtensionContext) {
         try { runReachBack(); } catch { /* a supply must never break a tick */ }
         try { runDelegation(); } catch { /* a reminder must never break a tick */ }
         try { runWatchers(); } catch { /* a reminder must never break a tick */ }
+        try { runQuiet(); } catch { /* a notifier must never break a tick */ }
         runContextMemory();
         try { runWorkLedger(); } catch { /* a measurement must never break a tick */ }
         try { computeMissing(); wakeOrchestrator(); deliverBriefing(); } catch { /* a reopen offer must never break a tick */ }

@@ -30,6 +30,37 @@ TSC = f'ELECTRON_RUN_AS_NODE=1 {CODIUM} node_modules/typescript/bin/tsc -p ./'
 
 # (name, file, find, replace) — `find` must be unique in the file, or the mutation is reported stale.
 MUTATIONS = [
+ # ── NT-001 · the stop notifier ────────────────────────────────────────────────────────────────
+ ("the latch re-arms on the CONDITION, not the event — the stall alarm's four-fires-a-day bug",
+  "src/quiet.ts",
+  "if (at !== false && at > st.lastActivityAt) {",
+  "if (at !== false) {"),
+
+ ("the notification reports when we NOTICED instead of when the work stopped",
+  "src/quiet.ts",
+  "stoppedAt: st.lastActivityAt,",
+  "stoppedAt: now,"),
+
+ ("a project never seen working is reported anyway — every dormant repo announces itself",
+  "src/quiet.ts",
+  "if (!st.seenActive) {",
+  "if (false) {"),
+
+ ("a live mutation gate stops counting as work — an 18-minute gate reads as a dead project",
+  "src/quiet.ts",
+  "if (s.gateRunning) return now;",
+  "if (false) return now;"),
+
+ ("a backend dedupe is counted as a delivery — a stop is latched that never reached the phone",
+  "src/push.ts",
+  "if (/LOOMPUSH:DEDUPED/.test(r.stdout)) {",
+  "if (false) {"),
+
+ ("push claims ready with no service account — the silent failure the preflight exists to catch",
+  "src/push.ts",
+  'if (m[2] !== "True") return { delivered: false, note: "off — FCM service account not present in the backend" };',
+  'if (false) return { delivered: false, note: "off — FCM service account not present in the backend" };'),
+
  ("`po` is not an owner role — the Gita PO could not be found at all",
   "src/naming.ts",
   'OWNER_CANONICAL, "productowner", "product_owner", "po", "owner", "orchestrator", "pm",',

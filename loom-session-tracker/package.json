@@ -2,7 +2,7 @@
   "name": "loom-session-tracker",
   "displayName": "Loom Session Tracker",
   "description": "Live per-project map of Loom session agents (role ↔ webviewId) over CDP. Shows the orchestrator session so you can tag it in one click; tagged, it is auto-notified whenever a worker finishes.",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.85.0"
@@ -537,6 +537,22 @@
           "default": 30,
           "minimum": 5,
           "description": "Minutes of OBSERVED mid-turn time — ticks on which the orchestrator's own frame was mid-turn, not wall-clock — before the delegation reminder is due. Measured this way on purpose: wall-clock would fire on an orchestrator that spent the night doing nothing."
+        },
+        "loomSessionTracker.quietPushEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "SENDS TO AN EXTERNAL SERVICE. When a project stops completely, push one notification to your phone naming the project, when it stopped, and what was last done. The message leaves this machine: it goes to the shwab_docker backend container, which files it as a SYSTEM alert and forwards it to your Android app over Firebase Cloud Messaging. Off by default; nothing is ever sent while this is off. No credential is read, copied or stored by this extension — the service account and device tokens stay inside that container."
+        },
+        "loomSessionTracker.quietMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 3,
+          "description": "Minutes a project must be COMPLETELY quiet — no frame of it mid-turn, no live gate, no role writing status.json — before it counts as stopped. Measured over 36h of real transcripts: 99.5% of natural within-session pauses are under 10 minutes, and the false-stop curve flattens above 15, so 15 sits at the elbow. The time reported to you is when activity actually ENDED, not when this noticed."
+        },
+        "loomSessionTracker.quietPushContainer": {
+          "type": "string",
+          "default": "shwab_docker-backend-1",
+          "description": "The running backend container the stop notification is handed to. It must already have Firebase push configured; if it is not running, or push is not configured in it, the feature reports itself off in the panel and sends nothing rather than inventing another transport."
         }
       }
     }
