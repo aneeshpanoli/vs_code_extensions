@@ -1765,6 +1765,29 @@ MUTATIONS = [
   "const kind = replyKind ?? debugName;",
   "const kind = debugName;"),
 
+ # ── MOD-001 §5 · WHICH BUILD SAID THIS ─────────────────────────────────────────────────────────
+ # The defect these restore is not a crash: it is an alarm that cannot be checked against the tree.
+ # A live [loom-clears] was once read as a statement about main, and establishing that it had come
+ # from a stale 0.44.0 window cost a block's attention. A stamp that is absent, or that names a
+ # version nobody can act on, puts that cost straight back.
+
+ ("no injected message names its build — every alarm is unfalsifiable evidence again",
+  "src/inject.ts",
+  "  const stamped = `${msg}\\n\\n${buildStamp()}`;",
+  "  const stamped = msg;"),
+
+ ("a blank version stamps an empty build instead of saying 'unknown' — the reminder looks stamped "
+  "and names nothing",
+  "src/inject.ts",
+  'buildVersion = String(v || "").trim() || "unknown";',
+  'buildVersion = String(v || "");'),
+
+ ("the extension stops telling inject.ts which build it is — every message reports 'unknown' from a "
+  "window that knows its own version",
+  "src/extension.ts",
+  "    setBuildVersion(VERSION);",
+  "    void setBuildVersion;"),
+
  # ── PD-001 · the reporting contract (owner: orchestrators talk PRODUCT, not statistics) ────────
  # Each of these is a way the boundary can silently stop being a boundary. The two that matter most
  # are the second and third: they do not remove the feature, they point it at the WRONG session, and
@@ -1772,13 +1795,13 @@ MUTATIONS = [
 
  ("the contract is never attached — the feature is inert and every orchestrator message is unchanged",
   "src/inject.ts",
-  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;\n  return `${msg}\\n\\n${REPORTING_CONTRACT}`;",
-  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;\n  return msg;"),
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return stamped;\n  return `${stamped}\\n\\n${REPORTING_CONTRACT}`;",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return stamped;\n  return stamped;"),
 
  ("the contract goes to EVERYONE — a worker is told to drop the counts its orchestrator banks on",
   "src/inject.ts",
-  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;",
-  "  if (false) return msg;"),
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return stamped;",
+  "  if (false) return stamped;"),
 
  ("the gate wake is reclassified as orchestrator-facing — the one message that ASKS for grade counts "
   "is told not to report figures",
@@ -1798,7 +1821,7 @@ MUTATIONS = [
 
  ("the debug log claims a contract was attached whichever way it went — the record stops being evidence",
   "src/inject.ts",
-  "        contract: outgoing !== message,",
+  "        contract: outgoing.includes(REPORTING_CONTRACT),",
   "        contract: true,"),
 
  # §2(b) · the briefing's purpose line. Reverting it to the bare header is exactly the state the

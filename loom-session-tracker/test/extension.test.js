@@ -1658,3 +1658,41 @@ suite("quiet wiring: the notifier stays OFF BY DEFAULT — the setting alone arm
     finally { off(); }
   } finally { push.preflight = realPre; push.sendPush = realSend; }
 });
+
+// ── MOD-001 §5 · THE WIRING, DRIVEN THROUGH THE REAL activate() ────────────────────────────────
+//
+// inject.test.js proves the stamp at the boundary: given a version, every non-command message
+// carries it. That is not the same claim as "this extension tells it the version", and the
+// difference is not hypothetical — the mutant `setBuildVersion(VERSION)` -> `void setBuildVersion`
+// COMPILED and SURVIVED the whole suite until this test existed. Every message would have read
+// "[loom-session-tracker unknown]" out of a window that knew its own version perfectly well, which
+// is the exact failure this block exists to fix, shipped silently.
+//
+// So this drives ext.activate() with a REAL extensionPath and reads the version back out of the
+// module the extension actually configured — no stub in between.
+suite("MOD-001: activate() tells the injector which build this is, read from its own package.json", async () => {
+  const inject = load("inject.js");
+  const root = path.join(__dirname, "..");
+  const real = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
+
+  inject.setBuildVersion("not-the-real-version");        // poison it, so a no-op wiring is visible
+  cdp.readFrames = async () => [];
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
+  const context = { subscriptions: [], extensionPath: root };
+  ext.activate(context);
+  try {
+    eq(inject.buildStamp(), `[loom-session-tracker ${real}]`,
+       "the stamp names the version in package.json — the extension's own, not a constant in inject.ts");
+    ok(!inject.buildStamp().includes("unknown"),
+       "a window that can read its own package.json never reports 'unknown'");
+    ok(!inject.buildStamp().includes("not-the-real-version"),
+       "and activation really did set it — the poisoned value is gone");
+    // The point of all of it: a reminder that can be checked against the tree.
+    ok(inject.withContract("clear-debug.json", "[loom-clears] developer2 has carried 3 handoff ids")
+         .includes(`[loom-session-tracker ${real}]`),
+       "so the [loom-clears] alarm that started this block now names the build that sent it");
+  } finally {
+    ext.deactivate();
+    for (const d of context.subscriptions) { try { d.dispose && d.dispose(); } catch {} }
+  }
+});

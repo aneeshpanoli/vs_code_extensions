@@ -139,6 +139,29 @@ let senderWindow: string | null = null;
 /** The workspace folder this window is scoped to; set once at activation. */
 export function setSenderWindow(root: string | null): void { senderWindow = root || null; }
 
+// ── WHICH BUILD SAID THIS (MOD-001 §5, from CL-002 §6) ────────────────────────────────────────
+//
+// An alarm in the owner's window used to be unfalsifiable evidence. A live `[loom-clears]` was read
+// as a statement about `main`, and establishing that it had actually come from 0.44.0 — a stale
+// build in one window, already fixed on main — cost a whole block's attention. A reminder that
+// cannot name its own build cannot be checked against the tree, so a fixed defect goes on arguing
+// for itself out of a window nobody reloaded.
+//
+// STAMPED HERE, not in the nine message builders, for the same reason the reporting contract is
+// (see `withContract`): every injected message passes through this one point, so no reminder can be
+// ADDED without provenance and none can drift out of it. It also reaches the reminders this block
+// may not edit — `watchers.ts` is owned by another live handoff — without touching their files.
+//
+// It is a SUFFIX and it leaves the `[loom-…]` tag alone: the tag is matched literally by tests and
+// by readers, and widening it to `[loom-clears 0.52.0]` would break those matches to say the same
+// thing in a place with less room. One short line, for the reason the contract is one line.
+let buildVersion = "unknown";
+/** This build's version, read from the extension's own package.json; set once at activation. */
+export function setBuildVersion(v: string | null): void { buildVersion = String(v || "").trim() || "unknown"; }
+
+/** The provenance footer every non-command injection carries. Exported so the claim is testable. */
+export function buildStamp(): string { return `[loom-session-tracker ${buildVersion}]`; }
+
 export const REPLY_FOR: Record<string, string> = {
   "notify-debug.json":  "act on the outbox named here; this tool reads no chat",
   "stall-debug.json":   "ring the role named here; this tool reads no chat",
@@ -241,8 +264,12 @@ export const WORKER_KINDS: ReadonlySet<string> = new Set([
 export function withContract(kind: string, message: string): string {
   const msg = String(message || "");
   if (!msg.trim() || msg.trimStart().startsWith("/")) return msg;
-  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;
-  return `${msg}\n\n${REPORTING_CONTRACT}`;
+  // The build stamp goes on EVERY non-command message, worker-facing ones included: a worker reading
+  // "[loom-gate] your gate exited" needs to know which build watched it exactly as much as the
+  // orchestrator does. The contract stays orchestrator-only — that exclusion is load-bearing.
+  const stamped = `${msg}\n\n${buildStamp()}`;
+  if (!ORCHESTRATOR_KINDS.has(kind)) return stamped;
+  return `${stamped}\n\n${REPORTING_CONTRACT}`;
 }
 
 /** argv fragment naming the sender and the reply channel, for every inject the extension makes. */
@@ -320,7 +347,16 @@ export function injectTo(target: InjectTarget, message: string, debugName: strin
         // …and the contract sits at the END, so on any body over ~300 chars (the briefing is 517)
         // the truncation above would hide it and the log would read as though it never went. This
         // flag is the claim itself, and it does not grow with the message.
-        contract: outgoing !== message,
+        //
+        // MOD-001 §5: this used to read `outgoing !== message`, which meant "something was appended"
+        // and was only ever TRUE of the contract because the contract was the only thing that
+        // appended. The build stamp appends to every non-command message, so that proxy would now
+        // report a worker's gate wake as carrying the contract — the exact claim PD-001 exists to
+        // deny. Keyed on the contract's own text instead, which cannot drift from what was typed.
+        contract: outgoing.includes(REPORTING_CONTRACT),
+        /** Which build sent it, in the log as well as in the composer — the debug file is what gets
+         *  read when a reminder is disputed, and it is usually read instead of the message. */
+        build: buildVersion,
         // PD-001 · 400 was enough while the longest message was short. The contract now occupies
         // ~190 chars of any tail, which pushed the subcommand and the role — the part that says
         // WHAT WAS RUN — out of the window, in the one file that exists to diagnose a silent

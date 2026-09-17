@@ -47,7 +47,7 @@ import { quietTick, gatherSignals, loadQuiet, saveQuiet, markNotified, markDropp
 import { sendPush, preflight, pushKey, DEFAULT_CONTAINER, DEFAULT_TIMEOUT_SEC } from "./push";
 import { decide, loadState, saveState, defaultMemoryFile, statMemory, readOrchestratorContext,
          MemoryConfig, Step } from "./memory";
-import { injectTo, setSenderWindow } from "./inject";
+import { injectTo, setSenderWindow, setBuildVersion } from "./inject";
 import { DEFAULT_WINDOW_TOKENS, pct, transcriptFor } from "./context";
 import { planGc, applyGc, renderGc, gcSummary, fmtBytes, loadGcState, saveGcState, dueForAuto,
          finishAuto, refreshLease, liveSessionIdsOf, busLiveRoles, GcConfig, GcPlan, ApplyOptions,
@@ -79,6 +79,10 @@ export function activate(context: vscode.ExtensionContext) {
     tracker.setWindowRoot(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
     tracker.setWindowCwd(windowCwd);
     setSenderWindow(vscode.workspace.workspaceFolders?.[0]?.name ?? null);
+    // MOD-001 §5 · every reminder this extension injects names the build that sent it. VERSION is
+    // read from the extension's own package.json above — the only honest source — so a stale window
+    // stamps its OWN number rather than the tree's, which is the entire point.
+    setBuildVersion(VERSION);
     const maxActive = () => Number(cfg().get("maxActiveSessions", MAX_ACTIVE_TOTAL)) || MAX_ACTIVE_TOTAL;
     const coord = new Coordinator(tracker, repo, maxActive());
     // THIS project's roster, read from ITS board — not from the global {role: repo} map, which is
