@@ -2329,6 +2329,63 @@ MUTATIONS = [
   "src/duties.ts",
   "      if (a.role === b.role) continue;",
   "      if (false) continue;"),
+ # ── OV-001 · the overlap guard, which REFUSES rather than reminds ─────────────────────────────
+ # The direction of failure is inverted here. Every other detector above warns, so its mutants are
+ # about a warning that stops arriving; these are about a DISPATCH that stops happening, or about a
+ # guard that silently goes back to refusing nothing at all — which is what it had been doing on this
+ # bus since CH-001 shipped, with every unit test green.
+
+ # THE DEFECT OV-001 EXISTS TO FIX. `declaredFiles` read `files:` as one line; this bus writes an
+ # indented list; so `handoffFiles` was [] for every role and the guard had NEVER refused anything
+ # here. Killed by "OV-001: THE GUARD NOW ACTUALLY REFUSES on the spelling this bus writes" and by
+ # C-10 in handoff-model.test.js, whose assertion this block deliberately reversed.
+ ("the list form is not read — the guard silently returns to refusing nothing on this bus",
+  "src/models.ts",
+  'if (!raw) raw = listUnderKey(text, "files");',
+  'if (false) raw = listUnderKey(text, "files");'),
+
+ # The list must END at the first line that is not an `- item`, or it annexes whatever follows it —
+ # the next key, or a second group after a blank line. Killed by "OV-001: collection STOPS at the
+ # first non-item line", whose O-12 puts a blank line between two groups.
+ ("the list never ends — collection runs past the first non-item line and annexes what follows",
+  "src/models.ts",
+  "if (!it) break;",
+  "if (!it) continue;"),
+
+ # Only the FRONTMATTER block is searched. ReciEats writes `files:` lines in a brief's prose, and
+ # CH-001 already pinned that a body `files:` is not a declaration; reading the whole document would
+ # turn a paragraph into a refusal. Killed by "an indented CONTINUATION under another key is not a
+ # list" (its O-65 case: frontmatter present, list in the body).
+ ("the list is searched for in the whole document — prose in the body becomes a declaration",
+  "src/models.ts",
+  "const lines = m[1].split(/\\r?\\n/);",
+  'const lines = String(text || "").split(/\\r?\\n/);'),
+
+ # THE MUTANT §6 NAMES: a guard that refuses on DOUBT. An undeclared handoff is one we cannot judge,
+ # not one that touches nothing, and refusing on the silence makes the `files:` line compulsory by
+ # stealth — measured, most buses on this machine do not write one. This is the failure that stalls a
+ # bus. Killed by both "OV-001 §3: ABSENCE never refuses" and "§3: DOUBT never refuses".
+ ("the guard refuses when NOTHING was declared — every bus without a `files:` line stalls",
+  "src/overlap.ts",
+  "if (!mine.length) return null;",
+  'if (!mine.length) return { role, other: "?", file: "?" };'),
+
+ # The exemption is LITERAL on the declared path. Run it through `pathsCollide` instead and a glob
+ # exempts itself — `*` matches `package.json`, so `files: *`, a claim on every file, would be
+ # dropped entirely and refuse nothing. Killed by "a WILDCARD is never exempted away".
+ ("the exemption expands wildcards — a `files: *` claim on everything exempts ITSELF",
+  "src/overlap.ts",
+  "export function isMechanicalMerge(p: string | null | undefined): boolean {",
+  "export function isMechanicalMerge(p: string | null | undefined): boolean {\n"
+  "  return MECHANICAL_MERGE.some((n) => pathsCollide(p, n));"),
+
+ # Both declarations are shrunk, not just the one being judged. Exempt only `mine` and a glob on this
+ # side is still refused by a registry-only block on the other — a false refusal, the expensive
+ # direction. Killed by "a WILDCARD is never exempted away" (its `test/*` vs `test/mutation.py` pair).
+ ("the exemption is applied to one side only — the other side's version bump still refuses",
+  "src/overlap.ts",
+  "return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs.filter((f) => !isMechanicalMerge(f)));",
+  "return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs);"),
 
 ]
 

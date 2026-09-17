@@ -447,10 +447,62 @@ suite("CH-001 R1: an ABSENT `files:` line is an empty list, never a claim (princ
      "a malformed block declares nothing");
   eq(declaredFiles(null), [], "no text at all");
   eq(declaredFiles(withFiles("C-9", "")), [], "an EMPTY `files:` line is an absence too");
-  // The one bound worth stating: a multi-line YAML list parses as an empty value, so it declares
-  // nothing — the SAFE direction (no refusals), not a silently wrong answer.
-  eq(declaredFiles("---\nid: C-10\nfiles:\n  - src/a.ts\n  - src/b.ts\n---\n# brief\n"), [],
-     "a multi-line list is not read, and declares nothing rather than something wrong");
+  // C-10 USED TO ASSERT THE OPPOSITE OF THE LINE BELOW, and it is worth saying why it moved rather
+  // than just moving it. CH-001 read `files:` as one line and stated the bound honestly: a multi-line
+  // list parsed as an empty value and therefore "declares nothing rather than something wrong" — the
+  // safe direction, no refusals. That was a correct reading of the risk and a wrong reading of the
+  // cost, because OV-001 measured what the bound actually bought: this bus writes EVERY handoff's
+  // `files:` as an indented list, so the guard had never refused anything here and the one-worker-
+  // per-file rule was being kept by hand. An empty value with a list under it is no longer a doubt to
+  // be safe about — it is a declaration in the other YAML spelling, and it is now read as one.
+  eq(declaredFiles("---\nid: C-10\nfiles:\n  - src/a.ts\n  - src/b.ts\n---\n# brief\n"),
+     ["src/a.ts", "src/b.ts"],
+     "a multi-line list IS read now (OV-001) — the empty value was never the declaration, the list is");
+  // What survives from C-10 unchanged: an empty `files:` with NO list under it is still an absence.
+  eq(declaredFiles("---\nid: C-10b\nfiles:\nversion: 0.53.0\n---\n# brief\n"), [],
+     "an empty `files:` followed by another KEY is still a declaration of nothing");
+});
+
+// ── R1 · OV-001 · the multi-line list form ──────────────────────────────────────────────────────
+
+suite("OV-001: the ONE-LINE form is untouched — three other buses depend on it", () => {
+  // The list is only looked for when the key's own value is EMPTY, so nothing a one-line `files:`
+  // did can change. pleodo, hackomics and tfg_ua write this spelling and must not move.
+  eq(declaredFiles(withFiles("O-1", "src/a.ts, src/b.ts")), ["src/a.ts", "src/b.ts"], "commas");
+  eq(declaredFiles(withFiles("O-2", "src/a.ts src/b.ts")), ["src/a.ts", "src/b.ts"], "spaces");
+  eq(declaredFiles(withFiles("O-3", "src/*.ts")), ["src/*.ts"], "a glob is still kept verbatim");
+  // The decisive one: a value AND indented lines under it. The value wins and the lines are ignored,
+  // exactly as they were ignored before this change existed.
+  eq(declaredFiles("---\nid: O-4\nfiles: src/a.ts\n  - src/b.ts\n---\n# brief\n"), ["src/a.ts"],
+     "an inline value is the whole declaration; lines under it are not appended to it");
+});
+
+suite("OV-001: the list form parses, and converges on the one-line form's own rules", () => {
+  const list = (id, body) => declaredFiles(`---\nid: ${id}\nfiles:\n${body}---\n# brief\n`);
+  eq(list("O-5", "  - src/a.ts\n  - src/b.ts\n"), ["src/a.ts", "src/b.ts"], "the form this bus writes");
+  eq(list("O-6", "- src/a.ts\n- src/b.ts\n"), ["src/a.ts", "src/b.ts"], "unindented is a YAML list too");
+  eq(list("O-7", "  - ./src/a.ts\n  - src//b/\n  - src/a.ts\n"), ["src/a.ts", "src/b"],
+     "`./`, doubled and trailing slashes normalised and the duplicate collapsed — the SAME loop");
+  eq(list("O-8", '  - "src/a.ts"  # why\n  - \'src/b.ts\'\n'), ["src/a.ts", "src/b.ts"],
+     "quotes and a trailing comment dropped, as on one line");
+  eq(list("O-9", "  - src/*.ts\n  - test/*\n"), ["src/*.ts", "test/*"], "globs survive the list form");
+  eq(list("O-10", "  - src/a.ts, src/b.ts\n"), ["src/a.ts", "src/b.ts"],
+     "and one item carrying two paths still splits — there is only one splitting loop");
+});
+
+suite("OV-001: collection STOPS at the first non-item line, so doubt still declares nothing extra", () => {
+  eq(declaredFiles("---\nid: O-11\nfiles:\n  - src/a.ts\nversion: 0.53.0\nmodel: claude-opus-5\n---\n"),
+     ["src/a.ts"], "the next KEY ends the list and is never swallowed into it");
+  eq(declaredFiles("---\nid: O-12\nfiles:\n  - src/a.ts\n\n  - src/b.ts\n---\n"), ["src/a.ts"],
+     "a BLANK line ends it — the second group is not silently annexed");
+  eq(declaredFiles("---\nid: O-13\nfiles:\n\n  - src/a.ts\n---\n"), [],
+     "and a list that does not start on the very next line is not found at all");
+  eq(declaredFiles("# brief\n\nfiles:\n  - src/a.ts\n"), [],
+     "a list in the BODY is not a declaration, any more than a one-line `files:` there was");
+  eq(declaredFiles("---\nid: O-14\nfiles:\n  - src/a.ts\n# never closed\n"), [],
+     "an unclosed block declares nothing — there is no frontmatter to read a list out of");
+  eq(declaredFiles("---\nid: O-15\nmodel: claude-opus-5\n---\n"), [],
+     "and an absent `files:` is still an absence, never a claim (principle 16)");
 });
 
 suite("CH-001 R1: handoffFiles reads it off a role's real inbox, and never throws", () => {

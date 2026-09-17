@@ -58,6 +58,72 @@ export function firstShared(mine: string[], theirs: string[]): string | null {
   return null;
 }
 
+// ── the mechanical-merge exemption (OV-001) ─────────────────────────────────────────────────────
+//
+// TWO FILES IN THIS REPO ARE TOUCHED BY ALMOST EVERY HANDOFF AND CONFLICT IN NEITHER. `package.json`
+// churns by a one-line `version` bump; `test/mutation.py` churns by APPENDING to its `MUTATIONS`
+// table. The orchestrator has resolved both by union repeatedly, mechanically, with no judgement.
+// Measured over this repo's last 30 non-merge commits, all 435 pairs: 288 collide, and 253 of those
+// are `test/mutation.py` or `package.json` alone. Exempt the two and it is 88 — so roughly four
+// pairs in five could have run in parallel and were refused for a version line.
+//
+// WHY THE BLUNT FORM AND NOT THE PRINCIPLED ONE. The principled rule everyone wants is about the KIND
+// of change — "a manifest whose only churn is a version line", "an append-only table". It is not
+// derivable from what this function is given: a declared path STRING, judged before either handoff
+// has been done. Whether a `package.json` is about to take a version bump or a dependency rewrite is
+// a fact about an edit that does not exist yet, and the file on disk shows only its current state.
+//
+// An adversarial pass refused the stronger version of that claim, and it was right to. The intent is
+// not unknowable — it is written in the brief's PROSE two lines away ("`0.53.0` is TAKEN by OV-001,
+// this block is `0.54.0`"), and the `files:` list is itself a trusted statement about edits that have
+// not happened, so a `files-append:` key would be the same trust at the same cost. tfg_ua already
+// annotates its paths by hand (`files: tools/cardmaker/** (NEW)`). So the honest claim is narrower
+// than "impossible": the KIND of a file is not expressible in the declaration format we have, and
+// making it expressible means changing what every bus on the machine writes. That is a bigger change
+// than this one and belongs to whoever decides the handoff format, not to the guard reading it.
+// Until then §2 governs: a correct blunt rule beats a clever wrong one.
+//
+// WHY NOT CONFIGURABLE — and the honest cost of that. Both forms have the SAME misuse mode: name a
+// real source file and the guard goes quiet for the file it exists to protect, saying nothing when it
+// does. Hardcoding does not prevent that mistake; it makes the mistake arrive as a DIFF, reviewable,
+// with this comment attached, instead of as a config edit nobody sees. The price is real and is paid
+// by other buses: a `package.json` where two lanes rewrite dependencies IS the collision this module
+// exists for, and on such a bus this exemption is wrong and unconfigurable. Measured today, no other
+// bus collides at all, so the price is currently zero — but it is a bill that can arrive, and the
+// remedy when it does is a per-bus list, not a cleverer rule.
+//
+// WHAT NEITHER FORM DOES, and it is the real gap: a refusal prints `overlaps X on Y`, while a
+// NON-refusal caused by this exemption prints nothing anywhere. The guard is silent about the
+// judgement it just made on the orchestrator's behalf.
+//
+// THE DIRECTION OF FAILURE. Unlike everything else on this bus, this guard REFUSES, so a false
+// positive stalls a dispatch (§3). The exemption can only ever REMOVE a refusal, never create one —
+// it strictly shrinks both declarations before they are compared — so its worst case is a missed
+// collision on two files whose merge is the cheapest in the repo, and it cannot stall anything.
+//
+// A WILDCARD IS NEVER EXEMPTED AWAY. The test below is literal on the declared path: `*` is not
+// expanded, so a handoff declaring `test/*` or `*` keeps that declaration in full and still collides
+// with every real file the other side names. Only a declaration that IS one of these two files is
+// dropped. Expanding the wildcard here would have been the dangerous reading — `*` matches
+// `package.json`, so a sloppy `files: *` would have exempted ITSELF and refused nothing at all.
+
+const MECHANICAL_MERGE = ["package.json", "test/mutation.py"];
+
+/** Is this declared path one of the two files whose merge is a mechanical union (see above)?
+ *  Segment-anchored like the collision test, so `loom-session-tracker/package.json` counts, but
+ *  LITERAL — a declared `*` or `test/*` is a claim on more than the file and is never exempt. */
+export function isMechanicalMerge(p: string | null | undefined): boolean {
+  const s = normalizeDeclaredPath(p);
+  if (!s) return false;
+  return MECHANICAL_MERGE.some((n) => new RegExp(`(?:^|/)${n.replace(/[.+?^${}()|[\]\\*]/g, "\\$&")}$`).test(s));
+}
+
+/** The whole refusal decision, pure and testable without a bus: the first genuinely shared file of
+ *  two declarations, with the mechanically-mergeable ones dropped from BOTH sides first. */
+export function sharedFile(mine: string[], theirs: string[]): string | null {
+  return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs.filter((f) => !isMechanicalMerge(f)));
+}
+
 /** A role's status.json `status`, lowercased, or null when it is absent or unreadable. */
 function statusOf(repo: string, role: string): string | null {
   try {
@@ -100,7 +166,7 @@ export function overlapFor(repo: string | null, role: string, alsoLive: string[]
   for (const r of workingRoles(repo)) others.add(r);
   others.delete(role);                               // a role never overlaps itself
   for (const other of Array.from(others).sort()) {
-    const file = firstShared(mine, handoffFiles(repo, other));
+    const file = sharedFile(mine, handoffFiles(repo, other));
     if (file) return { role, other, file };
   }
   return null;

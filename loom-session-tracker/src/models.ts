@@ -205,12 +205,31 @@ export function frontmatter(text: string | null | undefined): Record<string, str
  * nothing, so the overlap guard must have no opinion there rather than read the silence as licence
  * to refuse. Every refusal below needs a `files:` line on BOTH sides.
  *
- * Known bound, stated rather than half-handled: this reads ONE line. A multi-line YAML list
- * (`files:` then `  - src/a.ts`) parses as a `files:` with an empty value and therefore declares
- * nothing — which is the safe direction (no refusals), not a silent wrong answer.
+ * BOTH YAML SPELLINGS ARE READ (OV-001). CH-001 shipped the one-line form and stated the bound
+ * honestly: a multi-line list parsed as an empty value and declared nothing. That was the safe
+ * direction, and it was also — measured on the real bus with the compiled build — the reason this
+ * guard had NEVER REFUSED ANYTHING HERE. This bus writes every handoff's `files:` as an indented
+ * list, so `handoffFiles()` returned `[]` for all three roles and `overlapFor()` was always null.
+ * The one-worker-per-file rule was being kept by hand, by the orchestrator, with nothing checking it.
+ *
+ *     files: src/a.ts, src/b.ts        <- the one-line form. Three other buses write this.
+ *     files:                           <- the list form. This bus writes this.
+ *       - src/a.ts
+ *       - src/b.ts
+ *
+ * THE ONE-LINE FORM'S BEHAVIOUR IS UNCHANGED, deliberately and by construction: the list is only
+ * looked for when the `files:` key's own value is EMPTY, so a `files:` that carries paths is read
+ * exactly as it was and indented lines under it are ignored as they always were. pleodo, hackomics
+ * and tfg_ua depend on that and must not move. Both spellings then converge on ONE splitting loop
+ * below, so there is no second set of rules for quoting, commas, globs or duplicates to drift.
+ *
+ * Doubt still declares NOTHING. Collection stops at the first line under `files:` that is not a
+ * `- item`, so a malformed or half-written block yields the entries it could read and no guess about
+ * the rest — and where it can read none, an empty list, which the guard has no opinion about.
  */
 export function declaredFiles(text: string | null | undefined): string[] {
-  const raw = frontmatter(text)["files"];
+  let raw = frontmatter(text)["files"];
+  if (!raw) raw = listUnderKey(text, "files");   // empty inline value -> the `- item` form, if there is one
   if (!raw) return [];
   const out: string[] = [];
   for (const piece of raw.split(/[,\s]+/)) {
@@ -218,6 +237,34 @@ export function declaredFiles(text: string | null | undefined): string[] {
     if (p && !out.includes(p)) out.push(p);
   }
   return out;
+}
+
+/**
+ * The `- item` lines directly under `key:` in the SAME frontmatter block, joined into the one-line
+ * spelling so `declaredFiles` has a single splitting loop for both forms. `""` when the key is
+ * absent, carries its own value, or has no list under it.
+ *
+ * Only the frontmatter block is searched — the regex is `frontmatter()`'s own, so a `---` further
+ * down a document stays a horizontal rule — and collection STOPS at the first line that is not an
+ * `- item`, which is what keeps the next key (`version:`, `---`) from being swallowed.
+ */
+function listUnderKey(text: string | null | undefined, key: string): string {
+  const m = /^\uFEFF?[ \t]*---[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*---[ \t]*(?:\r?\n|$)/.exec(String(text || ""));
+  if (!m) return "";
+  const lines = m[1].split(/\r?\n/);
+  const at = lines.findIndex((l) => {
+    const kv = /^[ \t]*([A-Za-z0-9_-]+)[ \t]*:[ \t]*(.*)$/.exec(l);
+    return !!kv && kv[1].toLowerCase() === key && !kv[2].replace(/\s+#.*$/, "").trim();
+  });
+  if (at < 0) return "";
+  const items: string[] = [];
+  for (let i = at + 1; i < lines.length; i++) {
+    const it = /^[ \t]*-[ \t]+(.*)$/.exec(lines[i]);
+    if (!it) break;                                    // the list ended; never read past it
+    const v = it[1].replace(/\s+#.*$/, "").trim();
+    if (v) items.push(v);
+  }
+  return items.join(" ");
 }
 
 /** One declared path, in the one spelling the collision test compares. */
