@@ -60,20 +60,23 @@ export function firstShared(mine: string[], theirs: string[]): string | null {
 
 // ── the mechanical-merge exemption (OV-001) ─────────────────────────────────────────────────────
 //
-// FOUR FILES IN THIS REPO ARE TOUCHED BY ALMOST EVERY HANDOFF AND CONFLICT IN NONE OF THEM.
+// THREE FILES IN THIS REPO ARE TOUCHED BY ALMOST EVERY HANDOFF AND CONFLICT IN NONE OF THEM.
 // `package.json` churns by a one-line `version` bump; `test/mutation.py` churns by APPENDING to its
-// `MUTATIONS` table; `HANDOVER.md` and `README.md` churn by appending a section or a line. The
-// orchestrator has resolved all four by union repeatedly, mechanically, with no judgement.
+// `MUTATIONS` table; `HANDOVER.md` churns by appending a dated section. The orchestrator has resolved
+// all three by union repeatedly, mechanically, with no judgement.
 //
-// THE MEASUREMENT, AND ITS WINDOW. Over this repo's last 30 non-merge commits, all 435 pairs: 307
-// collide, 86 with the manifest and the registry exempted, 83 with all four. So roughly THREE pairs
-// in five were refused over a version line and could have run in parallel. The digit moves: the same
-// script read 288/88 when OV-001 was written two days ago, and 87-98 across six adjacent windows, so
-// the finding is robust and the number is not — quote the ratio, never the count.
+// THE MEASUREMENT, AND ITS WINDOW. Over this repo's last 30 non-merge commits, all 435 pairs: 285
+// collide, 103 with the manifest and the registry exempted, 100 with the three. So roughly TWO pairs
+// in three were refused over a version line and could have run in parallel. The digit moves: the same
+// script read 307/86/83 one block ago and 288/88 when OV-001 was written, and across ten 30-commit
+// windows (offsets 0-6, 9, 12, 15) the two-file figure ranged 86-103 and the three-file figure 79-100.
+// So the finding is robust and the number is not — quote the ratio, never the count, and SAY WHICH
+// WINDOW, because a range quoted without its offsets is how the R2 draft of this comment managed to
+// cite a figure from one window as if it came from another.
 //
-// THE TWO DOCS BUY ALMOST NOTHING TODAY (86 -> 83, three pairs), and they are in the list anyway,
-// because the argument for them is the argument for `test/mutation.py` and a list that holds one and
-// not the others is a list that will be re-litigated. Their throughput case is weaker than the
+// THE HANDOVER BUYS ALMOST NOTHING TODAY (103 -> 100, three pairs), and it is in the list anyway,
+// because the argument for it is the argument for `test/mutation.py` and a list that holds one and
+// not the other is a list that will be re-litigated. Its throughput case is weaker than the
 // manifest's by an order of magnitude and should not be claimed otherwise.
 //
 // WHY THE BLUNT FORM AND NOT THE PRINCIPLED ONE. The principled rule everyone wants is about the KIND
@@ -111,41 +114,61 @@ export function firstShared(mine: string[], theirs: string[]): string | null {
 // THE DIRECTION OF FAILURE. Unlike everything else on this bus, this guard REFUSES, so a false
 // positive stalls a dispatch (§3). The exemption can only ever REMOVE a refusal, never create one —
 // it strictly shrinks both declarations before they are compared — so its worst case is a missed
-// collision on two files whose merge is the cheapest in the repo, and it cannot stall anything.
+// collision on three files whose merge is the cheapest in the repo, and it cannot stall anything.
 //
 // A WILDCARD IS NEVER EXEMPTED AWAY. The test below is literal on the declared path: `*` is not
 // expanded, so a handoff declaring `test/*` or `*` keeps that declaration in full and still collides
-// with every real file the other side names. Only a declaration that IS one of these two files is
+// with every real file the other side names. Only a declaration that IS one of these three files is
 // dropped. Expanding the wildcard here would have been the dangerous reading — `*` matches
 // `package.json`, so a sloppy `files: *` would have exempted ITSELF and refused nothing at all.
 
-// FOUR FILES, NOT TWO (OV-001-R1 §2). The principle that exempts the first two reaches the two docs
-// as well, and the orchestrator agreed it did. `HANDOVER.md` collides in 6 of this repo's last 435
-// commit pairs and `README.md` in 3, and both churn the way `test/mutation.py` does: an APPEND — a
-// new dated section at the end of the handover, a new line in a feature list. A doc merge here is as
-// mechanical as a version bump, and nobody has ever had to think about one.
+// THREE FILES, NOT TWO (OV-001-R1 §2). The principle that exempts the first two reaches the handover
+// as well, and the orchestrator agreed it did. `HANDOVER.md` collides in 3 of this repo's last 435
+// commit pairs, and it churns the way `test/mutation.py` does: an APPEND — a new dated section at the
+// end. A handover merge here is as mechanical as a version bump, and nobody has ever had to think
+// about one. On this bus only the orchestrator writes it, and no bus on this machine declares it as
+// product.
 //
-// AND IT STOPS AT FOUR. The next candidate is a judgement about a specific bus's habits rather than
+// ── `README.md` WAS THE FOURTH AND IS NOT (OV-001-R2 §1, the orchestrator reversing its own call) ──
+//
+// R1 added `README.md` on the same append-shaped argument, and recorded, unhedged, the measured
+// counter-example that made it wrong: `~/.claude/loom/hackomics/developer1/inbox.md` declares
+// `files: public/index.html, public/styles.css, README.md`. ON THAT BUS THE README IS THE PRODUCT —
+// landing-page copy, edited in earnest by whoever owns the page, not a feature list that grows a
+// line. R1 shipped it anyway, under orders, with the counter-example in this comment. The
+// orchestrator read the report and took the instruction back. This is the record it asked for, so
+// that the next person to propose a docs exemption MEETS the hackomics case instead of re-deriving it.
+//
+// WHY THE REVERSAL IS RIGHT WITHOUT NEEDING A PER-BUS LIST TO SETTLE IT. This extension is ONE build
+// serving every bus on the machine, so the list is not a judgement about this repo's README — it is a
+// judgement about every README every bus declares. Measured over ten 30-commit windows, stated with
+// their offsets because a refutation pass re-measured only offsets 0-5 and read a disagreement that
+// was not there: `README.md` on top of the other three bought ZERO pairs of 435 in every one of the
+// six MOST RECENT windows (offsets 0-5), and 2, 2, 3, 3 in the four older ones (6, 9, 12, 15). So at
+// its historical best it bought under 1% of parallelism, at present it buys none at all, and it spent
+// that on dispatching two roles unguarded onto another bus's actual product. A plainly bad trade at
+// any price, and the price was approximately zero. The counter-example did not need to be weighed
+// against a throughput case; there was barely a throughput case to weigh.
+//
+// WHAT THE REVERSAL COSTS, so it is on the record and not just asserted: in the current window, 100
+// pairs refuse with the three exempt and 100 with four — the reversal costs NOTHING today. The worst
+// window measured is offset 12, 79 vs 76: three pairs, under 1%. The exemption's whole value is the
+// manifest and the registry (285 -> 103); the docs were always rounding error.
+//
+// AND THE SHAPE OF THE ERROR IS THE LESSON, not the file. A guard that goes quiet is judged by what
+// the QUIETEST bus loses, never by what the busiest bus gains. `HANDOVER.md` survives that test
+// because no bus declares it as product; `README.md` failed it on the first bus anyone checked.
+//
+// AND IT STOPS AT THREE. The next candidate is a judgement about a specific bus's habits rather than
 // about the kind of change, which is a per-bus list and a different block.
 //
-// THE BILL HAS ALREADY ARRIVED, and it is worth being exact about rather than hedging. When the first
-// two were exempted, the cost was written here as a bill that COULD arrive on some other bus. It has:
-// `~/.claude/loom/hackomics/developer1/inbox.md` declares `files: public/index.html,
-// public/styles.css, README.md` — on that bus the README is the product, the copy of a landing page,
-// edited in earnest by whoever owns the page. This extension is one build serving every bus on the
-// machine, so from now on two hackomics roles rewriting that README in parallel are dispatched
-// unguarded. They are not dispatched SILENTLY — the exemption note names the file, which is the whole
-// of §1(3)'s value here — but the note is all they get. The remedy is the per-bus list, and it is a
-// different block. Added anyway because the orchestrator ordered it knowing the principle; the
-// measured counter-example is recorded here so nobody has to rediscover it.
-//
-// Segment-anchored and literal, so a `docs/README.md` or a `node_modules/x/README.md` in any
+// Segment-anchored and literal, so a `docs/HANDOVER.md` or a `node_modules/x/package.json` in any
 // directory is exempt too, and a glob that would have claimed one (`docs/**` against
-// `docs/README.md`) now goes quiet. That is the same over-match `package.json` already has, in the
+// `docs/HANDOVER.md`) now goes quiet. That is the same over-match `package.json` already has, in the
 // direction that can only drop refusals — and one more reason the list stops here.
-const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md", "README.md"];
+const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md"];
 
-/** Is this declared path one of the four files whose merge is a mechanical union (see above)?
+/** Is this declared path one of the three files whose merge is a mechanical union (see above)?
  *  Segment-anchored like the collision test, so `loom-session-tracker/package.json` counts, but
  *  LITERAL — a declared `*` or `test/*` is a claim on more than the file and is never exempt. */
 export function isMechanicalMerge(p: string | null | undefined): boolean {

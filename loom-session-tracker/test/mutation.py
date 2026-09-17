@@ -2473,7 +2473,7 @@ MUTATIONS = [
   "return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs.filter((f) => !isMechanicalMerge(f)));",
   "return firstShared(mine.filter((f) => !isMechanicalMerge(f)), theirs);"),
 
- # ── OV-001-R1 · what is not a path, the list of four, and the end of the silence ──────────────
+ # ── OV-001-R1 · what is not a path, the list of docs, and the end of the silence ───────────────
  # Added by OV-001-R1 and NOT executed as a gate under it (the orchestrator owns the repo-wide runs,
  # §23). Each was verified one at a time instead: the `find` string is unique in its file, the mutant
  # COMPILES, and a named targeted suite that passed before it FAILS with it.
@@ -2508,12 +2508,14 @@ MUTATIONS = [
   "const PATH_SENTINELS = new Set([\"none\", \"n/a\", \"-\"]);",
   "const PATH_SENTINELS = new Set<string>([]);"),
 
- # The list of four goes back to two, and a pair sharing only a HANDOVER append is refused again.
- # This is the cheap failure, not the dangerous one — but it is the one the block was asked for.
- # Killed by "the exemption names FOUR files" and by "two blocks that share only a HANDOVER append".
- ("the two docs are not exempt — an append to HANDOVER.md refuses a dispatch again",
+ # RE-ANCHORED BY OV-001-R2: the list is three files now, not four, so the old `find` named a line
+ # that no longer exists and the mutant would have been reported as a STALE ANCHOR — graded nothing.
+ # The list of three goes back to two, and a pair sharing only a HANDOVER append is refused again.
+ # This is the cheap failure, not the dangerous one — but it is the one R1 was asked for.
+ # Killed by "the exemption names THREE files" and by "two blocks that share only a HANDOVER append".
+ ("the handover is not exempt — an append to HANDOVER.md refuses a dispatch again",
   "src/overlap.ts",
-  'const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md", "README.md"];',
+  'const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md"];',
   'const MECHANICAL_MERGE = ["package.json", "test/mutation.py"];'),
 
  # THE SILENCE RETURNS, at the source: a suppressed collision reports nothing, which is exactly the
@@ -2561,6 +2563,80 @@ MUTATIONS = [
   "src/extension.ts",
   'const key = [role, other].sort().join("|") + (ov ? "|refused" : "|waived");',
   'const key = [role, other].sort().join("|");'),
+
+ # ── OV-001-R2 · the README reversal and the spaced annotation ──────────────────────────────────
+ # Added by OV-001-R2 and NOT executed as a gate under it (§23 — the orchestrator owns the repo-wide
+ # runs). Each was verified one at a time on a THROWAWAY COPY of the tree: the `find` string is unique
+ # in its file, the mutant COMPILES, and a NAMED targeted suite that passed before it FAILS with it.
+
+ # THE REVERSED INSTRUCTION, RESTORED — the mutant that matters most on this block, because the defect
+ # it reintroduces was SHIPPED for a day and was not a coding mistake at all: it was a policy the
+ # measurement had already refuted. `README.md` back on the list and the guard goes quiet on the file
+ # that IS the product on hackomics, where `files: public/index.html, public/styles.css, README.md` is
+ # live. Two roles are then dispatched onto a landing page in parallel — not silently, the waiver note
+ # names it, but a note is all they get. Killed by "OV-001-R2: `README.md` is NOT exempt" — and by no
+ # OTHER test file (verified: handoff-model.test.js and extension.test.js stay green), which is why the
+ # suite asserts the hackomics declaration verbatim rather than a convenient pair: the test has to fail
+ # for the reason the reversal happened. That suite is NOT a single-fact probe, though, and a refutation
+ # pass was right to say so: it also asserts the reversal is exactly one file wide, so the handover
+ # mutant below fails it too. The README assertions are the ones that fail for THIS mutant.
+ ("`README.md` is exempt again — the guard goes quiet on another bus's PRODUCT",
+  "src/overlap.ts",
+  'const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md"];',
+  'const MECHANICAL_MERGE = ["package.json", "test/mutation.py", "HANDOVER.md", "README.md"];'),
+
+ # The spaced-annotation pre-pass removed altogether: R1's pinned limit restored, and it is the
+ # EXPENSIVE direction — `files: src/a.ts (new file)` declares `(new` as a path, so two handoffs
+ # annotating that way refuse each other over a fragment and a dispatch stalls (§3). Killed by
+ # "OV-001-R2: a SPACED annotation is dropped".
+ ("a SPACED annotation is two paths again — two handoffs refuse each other on `(new`",
+  "src/models.ts",
+  "  for (const piece of stripSpacedAnnotations(raw).split(/[,\\s]+/)) {",
+  "  for (const piece of raw.split(/[,\\s]+/)) {"),
+
+ # THE DANGEROUS HALF OF THE SAME FIX, and the reason the pre-pass insists the bracket OPEN and CLOSE a
+ # token. Drop both boundaries and the strip fires anywhere: a real path carrying a bracketed fragment
+ # — `src/a (b).ts` — loses it, and `src/a.ts(NEW)` loses its tail, so declarations are re-spelled into
+ # paths nobody wrote. That is the silent direction: the guard compares files that were never declared.
+ # Killed by "OV-001-R2: the annotation pre-pass can only REMOVE tokens".
+ ("the pre-pass strips brackets ANYWHERE — a real path is re-spelled into one nobody declared",
+  "src/models.ts",
+  "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()/.,*]*\\)(?=[,\\s]|$)/g;",
+  "const SPACED_ANNOTATION = /()\\([^()/.,*]*\\)/g;"),
+
+ # And the inner predicate widened, which is the same silent loss R1's refutation pass found on the
+ # space-free half, now reachable through the pre-pass: allow a slash or a dot inside the brackets and
+ # a bracketed REAL path `(src/shared.ts)` is stripped, so the declaration becomes an absence — nothing
+ # refuses, and no waiver note fires either, because nothing was exempted. Killed by the same suite's
+ # T-28 case.
+ ("the pre-pass accepts a slash inside the brackets — a bracketed real path becomes an absence",
+  "src/models.ts",
+  "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()/.,*]*\\)(?=[,\\s]|$)/g;",
+  "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()]*\\)(?=[,\\s]|$)/g;"),
+
+ # ── the two defects a REFUTATION PASS found in R2's own first draft ─────────────────────────────
+ # Both were shipped in the draft that went to this refutation pass, and both are the SILENT direction:
+ # a real declared path deleted before the guard ever compares it, so nothing refuses and no waiver
+ # note fires either. They are mutants rather than just fixes because the fix is two characters wide in
+ # one case and a single character of a `join()` in the other — the cheapest kind of thing to lose.
+
+ # THE LIST-ITEM CROSSING. `listUnderKey` joins items so `declaredFiles` has one splitting loop; join
+ # them with a SPACE and one item's `(` reaches another item's `)`, taking every item between them.
+ # `Makefile`, `LICENSE` and `Dockerfile` are dot-free and slash-free, i.e. exactly annotation-shaped,
+ # so this deletes REAL declared files. Killed by "OV-001-R2: a bracket run cannot cross a LIST ITEM".
+ ("list items are joined by a space again — one item's brackets eat the items between them",
+  "src/models.ts",
+  '  return items.join(",");',
+  '  return items.join(" ");'),
+
+ # THE WILDCARD, ONE LEVEL UP FROM WHERE overlap.ts PROMISES IT. `overlap.ts` states a `*` is never
+ # exempted away; allow `*` inside an annotation run and a `files:` list containing `- *` has its claim
+ # on EVERY FILE deleted before the guard is consulted, which no downstream check can recover. Killed by
+ # "OV-001-R2: a `*` is never deleted by the pre-pass".
+ ("the pre-pass may swallow a `*` — a claim on every file is deleted before the guard sees it",
+  "src/models.ts",
+  "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()/.,*]*\\)(?=[,\\s]|$)/g;",
+  "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()/.,]*\\)(?=[,\\s]|$)/g;"),
 
 ]
 
