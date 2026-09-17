@@ -2009,6 +2009,72 @@ MUTATIONS = [
   "  return `[loom-watch] This session armed ${what} since the last check.${seen}${many} It may already ` +",
   "  return `[loom-watch] This session armed ${what} and it is running now.${seen}${many} It may already ` +"),
 
+
+ # ── CL-002, 2026-09-17: a FIRST handoff is not a §12 violation ──────────────────────────────────
+ #
+ # §12 is violated by a SECOND block in one session. The detector reported "at least 1", which is not
+ # a violation of anything, and it did so at the dispatch that had cleared and re-bound the role
+ # seconds earlier — the reminder arriving for having got it RIGHT. Fourth false alarm from this one
+ # detector in two days, and it came out of the THIRD fix: dropping the old session's ids from the
+ # baseline empties it by construction, and the first block then lands on an empty baseline.
+
+ # Killed by "CL-002 scanClears: a session's FIRST block raises nothing — one id is not a second one"
+ # and, through the wiring, by "CL-002 on the real tick: the §12 dispatch is silent". Without the
+ # threshold the detector fires on every correctly-dispatched fresh session: the state the §12 flow
+ # produces BY CONSTRUCTION, so the reminder becomes one nobody can believe.
+ ("the second-block requirement is dropped — one handoff in one session is reported as a violation",
+  "src/health.ts",
+  "      if (known.length + arrived.length < 2) continue;",
+  "      if (known.length + arrived.length < 1) continue;"),
+
+ # The same claim from the other side, and the one that fails SILENTLY. Killed by "CL-002 scanClears:
+ # a SECOND block still fires, floor 2, naming both" — a threshold set one too high reports nothing
+ # until the THIRD block, and every test of the message still passes while the detector goes deaf.
+ ("the threshold is one too high — a genuine second block is not reported until a third arrives",
+  "src/health.ts",
+  "      if (known.length + arrived.length < 2) continue;",
+  "      if (known.length + arrived.length < 3) continue;"),
+
+ # THE PLACEMENT, NOT THE VALUE. Killed by "CL-002 scanClears: the suppressed first block is
+ # REMEMBERED across a later /clear". Suppressing the arrival before `seen` is written is the same
+ # silence for the same tick and loses the record: the unreported id is then in neither `ids` nor
+ # `reported` nor `seen`, so the next `/clear` seeds it into the NEW session's baseline and a later
+ # reminder names a block from the session that was just cleared — the undelivered-arrival defect,
+ # re-introduced by the fix for a different one.
+ ("the guard moves ABOVE the `seen` record — silence becomes amnesia and the id crosses the next clear",
+  "src/health.ts",
+  "      if (arrived.length) {\n        cl[snap.role] = { ...prev, seen: [...new Set([...(prev.seen || []), ...arrived])] };\n      }",
+  "      if (arrived.length && known.length + arrived.length >= 2) {\n        cl[snap.role] = { ...prev, seen: [...new Set([...(prev.seen || []), ...arrived])] };\n      }"),
+
+ # Killed by "CL-002 on the real tick: the §12 dispatch is silent, and the block AFTER it is not"
+ # (its `NT-000` assertion) and by "CL-002 scanClears: a session's FIRST block raises nothing". The
+ # baseline subtracted the old session's ids without REMEMBERING them, so they sat in `last_handled`
+ # belonging to no list and read as fresh arrivals on the very next tick — counted and named against
+ # the new session. Measured, not reasoned: the §12 sequence produced `blocks: 2, ids: ["B-2","B-1"]`
+ # where B-1 belonged to the session that had just been cleared.
+ ("what the baseline drops is not remembered — the cleared session's id returns as an arrival",
+  "src/health.ts",
+  "                          since: new Date(now).toISOString(), reported: [], seen: [], dropped };",
+  "                          since: new Date(now).toISOString(), reported: [], seen: [], dropped: [] };"),
+
+ # The consumer half of the same claim. Killed by the same two. Recording `dropped` and then not
+ # consulting it when arrivals are computed is the identical defect one line away, and it is the
+ # shape a later reader is most likely to "simplify" back in.
+ ("`dropped` is recorded but never consulted — the inherited id is an arrival again",
+  "src/health.ts",
+  "      const arrived = snap.ids.filter((i) => !known.includes(i) && !(prev.dropped || []).includes(i));",
+  "      const arrived = snap.ids.filter((i) => !known.includes(i));"),
+
+ # THE FLOOR IS NOT A TOTAL, AND THE GUARD MUST NOT MAKE IT ONE. Killed by "CL-002 scanClears: a
+ # session first sighted HOLDING one block still fires on the next". A first sighting cannot know what
+ # a session carried before it, which is why the message says "at least"; counting only the ids that
+ # ARRIVED would make a role the extension started watching mid-block need two further blocks before
+ # it said anything, and an extension reload would silently reset every role's count.
+ ("the floor counts only arrivals — a session first sighted already holding a block starts from zero",
+  "src/health.ts",
+  "      if (known.length + arrived.length < 2) continue;",
+  "      if (arrived.length < 2) continue;"),
+
 ]
 
 def sh(cmd):

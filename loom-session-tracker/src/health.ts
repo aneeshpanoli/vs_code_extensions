@@ -600,7 +600,7 @@ interface StallState {
    *  been cleared. Found by running the compiled code against a copy of the live bus, NOT by the
    *  unit tests, which had delivered every arrival they raised. */
   clears?: Record<string, { session: string; ids: string[]; since: string; reported: string[];
-                            seen?: string[] }>;
+                            seen?: string[]; dropped?: string[] }>;
   updatedAt?: string;
 }
 function stallFile(repo: string): string { return path.join(LOOM_ROOT, repo, "stall-state.json"); }
@@ -816,19 +816,51 @@ export class HealthWatcher {
         // Only ids we already knew under the OLD session can be dropped — on a FIRST sighting there
         // is nothing to compare against, so everything present is the baseline and the count is a
         // floor, which is exactly why the message says "at least".
-        const carried = prev ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || [])] : [];
-        cl[snap.role] = { session: snap.sessionId, ids: snap.ids.filter((i) => !carried.includes(i)),
-                          since: new Date(now).toISOString(), reported: [], seen: [] };
+        //
+        // CL-002 · AND WHAT IS DROPPED IS REMEMBERED AS DROPPED. Subtracting the old session's ids
+        // from the baseline without recording them puts them back in play: they are still sitting in
+        // `last_handled`, they are in neither `ids` nor `reported`, so on the VERY NEXT tick they
+        // read as fresh arrivals and are counted and named against the new session. Measured, not
+        // reasoned — the §12 sequence produced `blocks: 2, ids: ["B-2", "B-1"]` where B-1 belonged
+        // to the session that had just been cleared, which is precisely the defect the line above
+        // exists to prevent, alive again one tick later through the same subtraction.
+        const carried = prev
+          ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || []), ...(prev.dropped || [])] : [];
+        const dropped = snap.ids.filter((i) => carried.includes(i));
+        cl[snap.role] = { session: snap.sessionId, ids: snap.ids.filter((i) => !dropped.includes(i)),
+                          since: new Date(now).toISOString(), reported: [], seen: [], dropped };
         continue;
       }
       const known = [...prev.ids, ...(prev.reported || [])];
-      const arrived = snap.ids.filter((i) => !known.includes(i));
+      // An id this session INHERITED in its status file is not an arrival into it and never becomes
+      // one, however long it sits there. It is not in `known` either: it is not this session's block
+      // and must not be counted toward its floor.
+      const arrived = snap.ids.filter((i) => !known.includes(i) && !(prev.dropped || []).includes(i));
       // EVERY arrival is remembered as SEEN, even the ones nobody could be told about yet. Only
       // `reported` retires an event, so an undelivered arrival is still raised again next tick —
       // but it no longer crosses a `/clear` boundary and get counted against the new session.
       if (arrived.length) {
         cl[snap.role] = { ...prev, seen: [...new Set([...(prev.seen || []), ...arrived])] };
       }
+      // CL-002 · §12 IS VIOLATED BY A SECOND BLOCK, SO ONE IS NOT A FINDING.
+      //
+      // The floor, not the arrival, is what decides. A session known to hold ONE block is a worker
+      // doing exactly what it should, and the §12 dispatch produces that state BY CONSTRUCTION: the
+      // orchestrator resets the status file in the same breath as the `/clear`, the baseline drops
+      // what belonged to the old session, and the first real block then lands on an empty one. So
+      // the detector fired at every correctly-dispatched fresh session — at the dispatch that did
+      // the right thing, seconds after it did it.
+      //
+      // AND THE GUARD GOES HERE, AT THE PUSH, NOT IN `arrived`. Suppressing it earlier would keep it
+      // out of `seen`, and `seen` is the only thing that stops an unreported arrival being seeded
+      // into the NEXT session's baseline and named in a later reminder. Silence is the requirement;
+      // forgetting is not, and forgetting here would cost the fix above. So the arrival is recorded
+      // in full, and only the TELLING is withheld until there is something to tell.
+      //
+      // The floor is untouched: `blocks` still counts what is KNOWN since `since`, the message still
+      // says "at least", and a session first sighted already holding one block still reports 2 on the
+      // next — a first sighting cannot know what came before it, and that is why the word is there.
+      if (known.length + arrived.length < 2) continue;
       for (const id of arrived) {
         events.push({ repo: this.repo, role: snap.role, sessionId: snap.sessionId, newId: id,
                       // A FLOOR, not a total: only blocks seen to arrive since `since` are here.

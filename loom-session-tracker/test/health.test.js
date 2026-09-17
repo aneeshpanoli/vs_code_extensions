@@ -509,6 +509,156 @@ suite("CL-001 clearReminder: a reminder naming the next action, never a gate", (
      "and nothing that reads as permission to stop working");
 });
 
+// ── CL-002 · A FIRST HANDOFF IS NOT A §12 VIOLATION ──────────────────────────────────────────
+//
+// §12 is violated by a SECOND block in one session. "At least 1" is not a violation of anything —
+// it is a worker doing exactly what it should. The detector fired on it anyway, and it fired at the
+// dispatch that had just cleared and re-bound the role seconds earlier: the reminder arriving at the
+// orchestrator for having got it RIGHT. Fourth false alarm from this one detector in two days.
+//
+// WHERE IT CAME FROM, AND IT IS THE PREVIOUS FIX'S OWN SHADOW: the baseline of a new session drops
+// every id that belonged to the OLD session (the "at least 3 for a session that carried two" fix
+// above). On the §12 dispatch the status file names only the block just finished, so every id is
+// dropped and the baseline is EMPTY BY CONSTRUCTION. The first id to arrive then reads
+// `known.length === 0`, `arrived.length === 1`, and pushes an event with `blocks: 1`.
+
+suite("CL-002 scanClears: a session's FIRST block raises nothing — one id is not a second one", () => {
+  // The empty baseline, built the way the field builds it: the new session is first sighted naming
+  // only the block the OLD session finished, so the carried-drop leaves it with nothing.
+  const repo = clearBus("cl2-first", "dev", "S-1", { status: "working", current: "B-1" });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo, {}));                        // baseline on S-1: B-1
+
+  reSession(repo, "dev", "S-2");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "B-1" });
+  eq(w.scanClears(checkHealth(repo, {})), [], "the re-bind itself is not evidence");
+  eq(readJson(busPath(repo, "stall-state.json")).clears.dev.ids, [],
+     "and the new session's baseline is EMPTY — B-1 went with the session it belonged to");
+
+  // THE FIRST BLOCK OF THE NEW SESSION. Exactly one id, in a session that has carried nothing else.
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-2", last_handled: "B-1" });
+  eq(w.scanClears(checkHealth(repo, {})), [],
+     "one block in one session is §12 being FOLLOWED — reporting it reminds the orchestrator for " +
+     "having cleared correctly, which is the opposite of what this detector is for");
+});
+
+suite("CL-002 scanClears: the full §12 sequence — clear, reset, bind, first block — is silent", () => {
+  // The realistic shape, driven end to end rather than asserted about: the orchestrator resets the
+  // role's status.json IN THE SAME BREATH as the `/clear`, which is what empties the baseline.
+  const repo = clearBus("cl2-seq", "developer1", "S-1", { status: "working", current: "NT-000" });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo, {}));
+
+  // /clear + reset, together. Nothing but the finished block is named.
+  reSession(repo, "developer1", "S-2");
+  writeJson(busPath(repo, "developer1", "status.json"),
+            { status: "dispatched", last_handled: "NT-000", last_line: "Reset by productowner at the /clear." });
+  eq(w.scanClears(checkHealth(repo, {})), [], "the reset tick");
+  // bind: the worker rewrites its own status file with the block it was given.
+  writeJson(busPath(repo, "developer1", "status.json"),
+            { status: "working", current: "NT-001", last_handled: "NT-000" });
+  eq(w.scanClears(checkHealth(repo, {})), [],
+     "NT-001 is developer1's FIRST block in this session — the live false alarm, driven");
+});
+
+suite("CL-002 scanClears: a SECOND block still fires, floor 2, naming both", () => {
+  // The property the guard must not cost. A suppressed first arrival is still REMEMBERED, so when
+  // the second one lands the count is 2 and the first is named with it.
+  const repo = clearBus("cl2-second", "dev", "S-1", { status: "working", current: "B-1" });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo, {}));
+  reSession(repo, "dev", "S-2");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "B-1" });
+  w.scanClears(checkHealth(repo, {}));                        // empty baseline on S-2
+
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-2", last_handled: "B-1" });
+  eq(w.scanClears(checkHealth(repo, {})), [], "first block: silent");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-3", last_handled: "B-2" });
+  const evs = w.scanClears(checkHealth(repo, {}));
+  eq(evs.map((e) => e.newId).sort(), ["B-2", "B-3"], "the second block fires, and so does the one it makes a violation");
+  ok(evs.every((e) => e.blocks === 2), "floor 2 — the session is now known to have carried two");
+  // Named, not ordered: `ids` follows the status file (`current`, then `last_handled`), which is not
+  // arrival order and has never claimed to be. The assertion is about WHICH blocks, not their order.
+  eq([...evs[0].ids].sort(), ["B-2", "B-3"], "both named, so the orchestrator can check them rather than believe them");
+  ok(!evs[0].ids.includes("B-1"), "and still nothing from the session that was cleared");
+});
+
+suite("CL-002 scanClears: a session first sighted HOLDING one block still fires on the next", () => {
+  // The floor's whole reason for existing, and the case the guard must not swallow: a first sighting
+  // cannot know what the session carried before it, so an id already present is one KNOWN block —
+  // not zero. The next arrival is therefore a second block and reports as "at least 2".
+  const repo = clearBus("cl2-holding", "dev", "S-1", { status: "working", current: "B-1" });
+  const w = new HealthWatcher(repo);
+  eq(w.scanClears(checkHealth(repo, {})), [], "the first sighting is the baseline");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-2", last_handled: "B-1" });
+  const evs = w.scanClears(checkHealth(repo, {}));
+  eq(evs.map((e) => e.newId), ["B-2"], "and the block that arrives on top of it IS a violation");
+  eq(evs[0].blocks, 2, "at least 2 — the extension reloading mid-block must not make this 1 and vanish");
+  eq(evs[0].ids, ["B-1", "B-2"]);
+});
+
+suite("CL-002 scanClears: the suppressed first block is REMEMBERED across a later /clear", () => {
+  // The guard goes at the EVENT PUSH, not in what counts as an arrival, and this is the difference.
+  // `seen` is what stops an undelivered arrival following a role into its next session (the
+  // undelivered-arrival fix above). Suppressing the arrival EARLIER — dropping it from `arrived` —
+  // would leave it unrecorded, and it would then be seeded into the NEXT session's baseline and
+  // named in a later reminder: the exact defect that fix exists to prevent, re-introduced by this one.
+  const repo = clearBus("cl2-seen", "dev", "S-1", { status: "working", current: "B-1" });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo, {}));
+  reSession(repo, "dev", "S-2");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "idle", last_handled: "B-1" });
+  w.scanClears(checkHealth(repo, {}));                        // empty baseline
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-2", last_handled: "B-1" });
+  eq(w.scanClears(checkHealth(repo, {})), [], "B-2 is suppressed, never delivered, never reported");
+  eq(readJson(busPath(repo, "stall-state.json")).clears.dev.seen, ["B-2"],
+     "but it is SEEN — the suppression is silence, not amnesia");
+
+  reSession(repo, "dev", "S-3");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-3", last_handled: "B-2" });
+  eq(w.scanClears(checkHealth(repo, {})), [], "the next clear starts over");
+  const st = readJson(busPath(repo, "stall-state.json")).clears.dev;
+  ok(!st.ids.includes("B-2"), "and the suppressed B-2 did NOT follow the role into its new session");
+});
+
+suite("CL-002 scanClears: `unknown` and a missing session id still never count and never reset", () => {
+  // Load-bearing, and stated here because the guard is a new `continue` in the same loop: a role that
+  // cannot be read keeps its baseline, or deleting a status file would launder the evidence.
+  const repo = clearBus("cl2-unknown", "dev", "S-1", { status: "working", current: "B-1" });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo, {}));
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-2", last_handled: "B-1" });
+  fs.writeFileSync(busPath(repo, "dev", "status.json"), "{ not json");
+  eq(w.scanClears(checkHealth(repo, {})), [], "an unreadable tick says nothing");
+  eq(readJson(busPath(repo, "stall-state.json")).clears.dev.ids, ["B-1"], "and erases nothing");
+  writeJson(busPath(repo, "dev", "status.json"), { status: "working", current: "B-2", last_handled: "B-1" });
+  eq(w.scanClears(checkHealth(repo, {})).map((e) => e.newId), ["B-2"], "the baseline survived the blip intact");
+});
+
+suite("CL-002 scanClears: the WC-001 alarm the owner's window rendered is a STALE-BUILD artifact", () => {
+  // THE 'WHICH BUILD RENDERED THIS FIGURE' RULE, APPLIED TO A DETECTOR. A second alarm fired live
+  // saying developer2 carried CL-002 and WC-001 in one session. WC-001 belonged to the PREVIOUS
+  // session and `last_handled` still named it because the reset happens in the same breath as the
+  // clear. The owner's window is running 0.44.0 — so that alarm is what 0.44.0 does, and says
+  // NOTHING about current source. Current source already has the baseline-drops-the-old-session's-ids
+  // rule. Driven here rather than argued: this suite is the evidence that no patch is owed for it.
+  const repo = clearBus("cl2-stale", "developer2", "S-1", { status: "working", current: "WC-001" });
+  const w = new HealthWatcher(repo);
+  w.scanClears(checkHealth(repo, {}));                        // the tracker saw the OLD session
+  reSession(repo, "developer2", "S-2");
+  writeJson(busPath(repo, "developer2", "status.json"),
+            { status: "dispatched", current: "CL-002", last_handled: "WC-001" });
+  eq(w.scanClears(checkHealth(repo, {})), [],
+     "no event: the carried-drop already removes WC-001, and CL-002 is a first block besides");
+
+  // …and the same reset seen by a tracker that never watched the old session (an extension reload):
+  // a first sighting is the baseline whatever it names, so it is silent for a different reason.
+  const fresh = clearBus("cl2-stale-reload", "developer2", "S-2",
+                         { status: "dispatched", current: "CL-002", last_handled: "WC-001" });
+  eq(new HealthWatcher(fresh).scanClears(checkHealth(fresh, {})), [],
+     "a first sighting names its baseline and reports nothing, however many ids are in it");
+});
+
 // ── CL-001 · THE FIELD OBSERVATION ───────────────────────────────────────────────────────────
 //
 // Everything above drives functions. This drives the TICK: activate() the extension, then invoke
@@ -681,4 +831,73 @@ suite("health: THE ORCHESTRATOR IS NEVER STALL-ALERTED ABOUT ITSELF (PB-001)", (
   const stalled = checkHealth(repo).stalled.map((s) => s.role);
   ok(!stalled.includes("po"), "the orchestrator is not reported stalled on its own file's age");
   ok(stalled.includes("dev1"), "while a WORKER with the identical file still is");
+});
+
+suite("CL-002 on the real tick: the §12 dispatch is silent, and the block AFTER it is not", async () => {
+  // THE LIVE FALSE ALARM, DRIVEN THROUGH `runTick()` RATHER THAN ASSERTED ABOUT. The suites above
+  // drive scanClears; this drives the thing that CALLS it, because WL-008 shipped 188 green tests on
+  // a mechanism that could never fire in the field. The guard is silence, and silence is exactly the
+  // property a function-level test can hold while the wiring reports anyway.
+  //
+  // The sequence is the orchestrator's real one: clear, reset the status file in the same breath,
+  // bind, then the first block. That is what empties the baseline, and the empty baseline is what
+  // made the detector fire at the dispatch that had just done it right.
+  const repo = makeRepo({ roles: { developer1: { session_id: "S-1", branch: "b" } } }, "cl2-tick");
+  writeJson(busPath(repo, "developer1", "status.json"),
+            { status: "working", current: "NT-000", updated_at: new Date().toISOString() });
+  const dir = path.join(fixtureDir("loom-clear2-"), repo);
+  fs.mkdirSync(dir);
+  vscode.workspace.workspaceFolders = [{ uri: { fsPath: dir } }];
+  setOrchestrator(repo, "product-owner", "wid-po");
+  fs.writeFileSync(path.join(LOOM, "loom_cdp.py"), "import sys\nprint(' '.join(sys.argv[1:]))\n");
+  ccdp.readFrames = async () => [{ webviewId: "wid-po", contextPct: null, type: "iframe", targetUrl: "x",
+    text: `orchestrating ~/.claude/loom/${repo}/board.json\nLOOMROLE=product-owner\nRemote Control\nOpus 5\nMedium\nBypass permissions\n` }];
+  ccdp.closeWebview = async () => ({ ok: true, note: "closed" });
+  try { fs.unlinkSync(CLEAR_DEBUG); } catch { /* none yet */ }
+
+  const context = { subscriptions: [] };
+  cext.activate(context);
+  await settle(80);                                   // tick 1: baselines NT-000 under S-1
+  try {
+    const tick = async () => {
+      await vscode.commands.executeCommand("loomSessionTracker.refresh");
+      await settle(120);
+    };
+    // /clear + reset, together, naming only the block just finished.
+    const b = readJson(busPath(repo, "board.json"));
+    b.roles.developer1.session_id = "S-2";
+    writeJson(busPath(repo, "board.json"), b);
+    writeJson(busPath(repo, "developer1", "status.json"),
+              { status: "dispatched", last_handled: "NT-000",
+                last_line: "Reset by productowner at the /clear.", updated_at: new Date().toISOString() });
+    await tick();
+    eq(readJson(CLEAR_DEBUG), null, "the reset tick says nothing");
+
+    // THE FIRST BLOCK OF THE FRESH SESSION — the alarm that fired in the field, at the dispatch
+    // that had cleared and re-bound the role seconds earlier.
+    writeJson(busPath(repo, "developer1", "status.json"),
+              { status: "working", current: "NT-001", last_handled: "NT-000",
+                updated_at: new Date().toISOString() });
+    await tick();
+    eq(readJson(CLEAR_DEBUG), null,
+       "ONE block in one session is §12 being followed — the tick delivers nothing, and this is the " +
+       "assertion the live false alarm would have failed");
+
+    // AND IT HAS NOT GONE DEAF. The second block into that same session is the violation, and it
+    // still arrives — with the floor, both blocks named, and nothing from the cleared session.
+    writeJson(busPath(repo, "developer1", "status.json"),
+              { status: "working", current: "NT-002", last_handled: "NT-001",
+                updated_at: new Date().toISOString() });
+    await tick();
+    const sent = readJson(CLEAR_DEBUG);
+    ok(sent && sent.ok, "the second block is delivered by the tick: " + (sent && sent.note));
+    match(sent.message, /at least 2 handoff ids in ONE session/, "the floor, worded as a floor");
+    match(sent.message, /NT-001/, "the first block, which the second one made a violation");
+    match(sent.message, /NT-002/, "and the block that arrived");
+    ok(!/NT-000/.test(sent.message),
+       "and NOTHING from the session that was cleared — the dropped id must not return as an arrival");
+  } finally {
+    cext.deactivate();
+    for (const d of context.subscriptions) { try { d.dispose && d.dispose(); } catch {} }
+  }
 });
