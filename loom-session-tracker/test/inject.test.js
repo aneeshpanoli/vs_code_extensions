@@ -4,7 +4,7 @@ const { suite, ok, eq, match, load, readJson, LOOM, makeRepo } = require("./harn
 const fs = require("fs");
 const path = require("path");
 const { injectTo, REPLY_FOR, REPORTING_CONTRACT, ORCHESTRATOR_KINDS, WORKER_KINDS,
-        withContract, isClearCommand, isOrchestratorTarget, clearRefusal } = load("inject.js");
+        withContract, buildStamp, isClearCommand, isOrchestratorTarget, clearRefusal } = load("inject.js");
 const { setOrchestrator } = load("orchestrator.js");
 
 const CDP = path.join(LOOM, "loom_cdp.py");
@@ -121,7 +121,13 @@ suite("PD-001: no WORKER-facing kind carries it — the evidence a block is bank
     const body = "225/225 caught, 0 survived, 830/830 green";
     const typed = withContract(kind, body);
     ok(!typed.includes(REPORTING_CONTRACT), `${kind} does NOT carry the contract`);
-    eq(typed, body, `${kind} is delivered exactly as written`);
+    // MOD-001 §5 · this asserted `eq(typed, body)` — "delivered exactly as written" — while the
+    // contract was the only thing that could ever be appended, so exact equality and "no contract"
+    // were the same claim. They are not any more: every non-command message now carries a build
+    // stamp. The claim PD-001 owns is the CONTRACT's absence, asserted above; what equality was
+    // also protecting is that the worker's own figures reach it unaltered, asserted here.
+    ok(typed.startsWith(body), `${kind} keeps the worker's figures first and unaltered`);
+    eq(typed, `${body}\n\n${buildStamp()}`, `${kind} carries the build stamp and nothing else`);
   }
 });
 
@@ -363,9 +369,14 @@ suite("inject: the delegation reminder is an ORCHESTRATOR message and carries th
 suite("inject: NO WORKER MESSAGE PICKS UP ANY OF PB-001 (both directions)", () => {
   // Same boundary PD-001 established. A worker owes its orchestrator counts and measurements; the
   // contract would suppress exactly the evidence this bus banks a block on.
-  const { WORKER_KINDS, withContract, REPORTING_CONTRACT } = load("inject.js");
+  const { WORKER_KINDS, withContract, REPORTING_CONTRACT, buildStamp } = load("inject.js");
   for (const kind of WORKER_KINDS) {
-    eq(withContract(kind, "a worker message"), "a worker message", `${kind} is untouched`);
+    // MOD-001 §5 · "untouched" was exact equality, which now also forbids the build stamp. The
+    // boundary this suite owns is PB-001's reminder text, so it is asserted directly: the stamp
+    // names a build, the contract instructs the reader, and only the second is a worker's business.
+    ok(withContract(kind, "a worker message").startsWith("a worker message"), `${kind} body intact`);
+    eq(withContract(kind, "a worker message"), `a worker message\n\n${buildStamp()}`,
+       `${kind} picks up the build stamp and nothing more`);
     ok(!withContract(kind, "a worker message").includes(REPORTING_CONTRACT),
        `${kind} carries no contract`);
   }
@@ -399,4 +410,54 @@ suite("inject: the playbook pointer exists EXACTLY ONCE across every message the
   }
   eq(hits.length, 1, `exactly one message names the playbook file (found: ${hits.join(" | ")})`);
   ok(/extension\.ts/.test(hits[0]), "and it is the restart wake, the one moment an orchestrator begins");
+});
+
+// ── MOD-001 §5 · WHICH BUILD SAID THIS ─────────────────────────────────────────────────────────
+//
+// An alarm that cannot name its build is unfalsifiable: a live `[loom-clears]` was read as a claim
+// about main, and proving it had come from 0.44.0 cost a block's attention. These assert the stamp
+// at the ONE point every injection passes, which is why no message builder needed editing — and
+// which is also why `watchers.ts`, owned by another live handoff, is covered without being touched.
+suite("MOD-001: every non-command injection names the build that sent it", () => {
+  const { withContract, setBuildVersion, buildStamp, ORCHESTRATOR_KINDS, WORKER_KINDS } = load("inject.js");
+  setBuildVersion("0.52.0");
+  eq(buildStamp(), "[loom-session-tracker 0.52.0]", "the stamp is the version, not a guess");
+  for (const kind of [...ORCHESTRATOR_KINDS, ...WORKER_KINDS, "some-future-debug.json"]) {
+    ok(withContract(kind, "a reminder").includes("[loom-session-tracker 0.52.0]"),
+       `${kind} names its build — a kind added later inherits this without knowing the rule exists`);
+  }
+});
+
+suite("MOD-001: a COMMAND is still returned verbatim — a stamp would be typed as part of it", () => {
+  const { withContract, setBuildVersion } = load("inject.js");
+  setBuildVersion("0.52.0");
+  for (const cmd of ["/clear", "/loom developer2", "/model claude-opus-5"]) {
+    eq(withContract("spawn-debug.json", cmd), cmd, `${cmd} carries no stamp`);
+    eq(withContract("clear-debug.json", cmd), cmd, `${cmd} carries no stamp, orchestrator-bound either`);
+  }
+  eq(withContract("notify-debug.json", ""), "", "and an empty message stays empty");
+});
+
+suite("MOD-001: an unset or blank version says 'unknown' rather than inventing a number", () => {
+  const { setBuildVersion, buildStamp } = load("inject.js");
+  for (const bad of [null, "", "   ", undefined]) {
+    setBuildVersion(bad);
+    eq(buildStamp(), "[loom-session-tracker unknown]",
+       `${JSON.stringify(bad)} is reported as unknown — a wrong number is worse than no number`);
+  }
+  setBuildVersion("0.52.0");
+});
+
+suite("MOD-001: the debug log's `contract` flag tracks the CONTRACT, not 'something was appended'", () => {
+  const { setBuildVersion } = load("inject.js");
+  setBuildVersion("0.52.0");
+  stub();
+  // gate-debug.json is worker-facing: stamped, but carrying no contract. Before the stamp existed
+  // the flag was `outgoing !== message`, which would now report this as contract: true.
+  return run({ role: "dev2" }, "your gate exited", "gate-debug.json").then(() => {
+    const dbg = readJson(path.join(LOOM, "gate-debug.json"));
+    eq(dbg.contract, false, "a stamped worker message is still logged as carrying NO contract");
+    eq(dbg.build, "0.52.0", "and the log names the build, where a disputed reminder is read");
+    match(dbg.message, /\[loom-session-tracker 0\.52\.0\]/, "the stamp is in the logged text too");
+  });
 });

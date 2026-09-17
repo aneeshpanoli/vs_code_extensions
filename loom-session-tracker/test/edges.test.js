@@ -264,7 +264,13 @@ suite("edge: a prompt with newlines, quotes and shell metacharacters arrives int
       try {
         ok(okFlag, "reported ok");
         const argv = readJson(argvFile);
-        eq(argv[argv.indexOf("--message") + 1], nasty, "the message arrived byte for byte");
+        // MOD-001 §5 · the claim here is that execFile's argv array means NOTHING in this string is
+        // shell-interpreted — not that the argument equals the body. Every non-command injection now
+        // carries a build stamp, so the body is asserted as the prefix, byte for byte, which is what
+        // "arrives intact" was ever proving. A `$(rm -rf /)` that had been evaluated would not match.
+        const sent = argv[argv.indexOf("--message") + 1];
+        ok(sent.startsWith(nasty), "the message arrived byte for byte, metacharacters uninterpreted");
+        eq(sent.slice(0, nasty.length), nasty, "every byte of it, in order");
         eq(argv[argv.indexOf("--webview-id") + 1], "wid-1", "and so did the frame id");
         resolve();
       } catch (e) { reject(e); }
