@@ -5,7 +5,7 @@
 // to leave alone. Four reminders exist on this bus and one of them was wrong four times in two days;
 // a fifth that misfires costs more than it saves.
 
-const { suite, eq, ok, match, load } = require("./harness");
+const { suite, eq, ok, match, load, fixtureDir } = require("./harness");
 
 const {
   isCollidable,
@@ -281,8 +281,10 @@ suite("DU-001: with one shared file the message does not claim there are more", 
 // ── STATE FILE ─────────────────────────────────────────────────────────────────────────────────
 
 suite("DU-001: the latch survives a restart, and a quiet tick does not rewrite the file", () => {
-  const os = require("os"), fs = require("fs"), path = require("path");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "duties-state-"));
+  const fs = require("fs");
+  // FX-002: through the registry, never `mkdtempSync(os.tmpdir(), …)` — the runner owns the
+  // removal, so a suite that throws still gives its fixture back, and the gate's TMPDIR contains it.
+  const root = fixtureDir("loom-du-state-");
   const st = markOverlapReminded(
     emptyOverlapState(),
     collisions([work("developer1", "A-001", ["src/x.ts"]), work("developer2", "B-001", ["src/x.ts"])])[0],
@@ -295,8 +297,8 @@ suite("DU-001: the latch survives a restart, and a quiet tick does not rewrite t
 });
 
 suite("DU-001: a missing or corrupt state file is a fresh latch, never a crash", () => {
-  const os = require("os"), fs = require("fs"), path = require("path");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "duties-state-"));
+  const fs = require("fs"), path = require("path");
+  const root = fixtureDir("loom-du-state-");            // FX-002 · registered, swept by the runner
   eq(loadOverlapState("absent", root).reported, {}, "absent");
   fs.mkdirSync(path.join(root, "bad"), { recursive: true });
   fs.writeFileSync(path.join(root, "bad", "duties-state.json"), "{not json");
