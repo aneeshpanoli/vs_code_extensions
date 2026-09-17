@@ -1374,6 +1374,92 @@ MUTATIONS = [
   '  return { sandbox, env: { ...process.env, HOME: sandbox, LOOM_TEST_SANDBOX: sandbox,\n                           TMPDIR: tmp, ELECTRON_RUN_AS_NODE: "1" } };',
   '  return { sandbox, env: { ...process.env, HOME: sandbox, LOOM_TEST_SANDBOX: sandbox,\n                           ELECTRON_RUN_AS_NODE: "1" } };'),
 
+ # ── TI-001 · a green run that ran nothing, and sandboxes that outlive a kill ────────
+ # MEASURED 2026-09-17: `./test.sh duties.test.js` printed `0/0 passed (1071 filtered out)` and
+ # EXITED 0 — the eighth costume of the vacuous baseline in this repo, and the first one sitting
+ # underneath a standing rule: playbook §23 makes a targeted run a worker's ONLY verification
+ # before it answers. And killing a 6-second parallel run left 3 sandboxes on the host; two killed
+ # gates the same day left 42 trees holding 79,741 inodes.
+ #
+ # VERIFY THESE WITH `--file fixtures.test.js`, NEVER WITH A NAME FILTER. Two of them mutate the
+ # filter itself, so a name-filtered run would exit non-zero because the runner REFUSED, and a
+ # refusal reads exactly like a kill. That is the trap this block was written inside.
+
+ # Killed by "TI-001: a filter that matches NOTHING exits non-zero".
+ ("the zero-test guard is gone — a filter matching nothing reports success again",
+  "test/run-tests.js",
+  "  if (pass + fail === 0) {",
+  "  if (Boolean(0)) {"),
+
+ # Killed by "TI-001: a TEST FILE name runs that file's suites". The ORIGINAL defect, restored: a
+ # file name falls through to the suite-name filter and selects nothing.
+ ("a filter is a suite NAME only — the file spelling §23 tells workers to use matches nothing",
+  "test/run-tests.js",
+  'function looksLikeFile(arg) { return /\\.js$/i.test(path.basename(String(arg))); }',
+  'function looksLikeFile(arg) { return Boolean(0); }'),
+
+ # R1 — killed by "TI-001: a suite-NAME filter is NOT narrowed to a file of the same name". THE
+ # DEFECT THE FIRST VERSION OF THIS BLOCK SHIPPED, found by an adversarial pass: trying the file
+ # name first for ANY argument made `./test.sh notifier` run notifier.test.js alone and silently
+ # drop the "notifier" suites in extension.test.js — non-zero count, exit 0, invisible to the
+ # zero-test guard. A subset reported as the whole is the same lie in a new place.
+ ("any filter is tried as a FILE first — a name filter is silently narrowed to one file",
+  "test/run-tests.js",
+  'function looksLikeFile(arg) { return /\\.js$/i.test(path.basename(String(arg))); }',
+  'function looksLikeFile(arg) { return Boolean(arg); }'),
+
+ # R1 — killed by "TI-001: the SINGLE-PROCESS path is interruptible…". The occupant stamps itself;
+ # without it the directory keeps the PARENT's pid, and a SIGKILLed parent leaves a live orphan
+ # whose HOME the next run's reaper deletes out from under it. Reproduced on this host.
+ ("the process inside the sandbox never claims it — the stamp stays the parent's",
+  "test/run-tests.js",
+  'stampOwner(process.env.LOOM_TEST_SANDBOX, process.pid);',
+  'void stampOwner;'),
+
+ # R1 — killed by the SAME test's promptness assertion. spawnSync blocks the event loop, so with
+ # handlers installed a SIGTERM cannot be delivered until the run ENDS: the handlers swallow the
+ # signal and an outer `timeout` or a reap stops stopping the run. Measured: still running 13s
+ # after SIGTERM, where the default disposition had killed it at once.
+ ("the single-process path blocks the event loop again — the handlers swallow the signal",
+  "test/run-tests.js",
+  '    const child = spawn(process.execPath, [__filename, ...process.argv.slice(2)], { stdio: "inherit", env });\n    LIVE_CHILDREN.add(child);\n    child.on("close", (code, signal) => {\n      LIVE_CHILDREN.delete(child);\n      reclaim(sandbox);\n      process.exit(signal ? 1 : code === null ? 1 : code);\n    });\n    return;',
+  '    const r = require("child_process").spawnSync(process.execPath, [__filename, ...process.argv.slice(2)], { stdio: "inherit", env });\n    reclaim(sandbox);\n    process.exit(r.status === null ? 1 : r.status);'),
+
+ # R1 — killed by "…an OLD unstamped one outlived every possible run". Ignoring unstamped
+ # directories for ever turns the mkdtemp/stamp window, and every pre-0.56.0 leftover, into a
+ # PERMANENT leak — the thing this block exists to end.
+ ("an unstamped sandbox is never collectable, however old — the leak just moves",
+  "test/run-tests.js",
+  'const UNSTAMPED_GRACE_MS = 24 * 60 * 60 * 1000;',
+  'const UNSTAMPED_GRACE_MS = Number.POSITIVE_INFINITY;'),
+
+ # R1 — killed by "…a RECENT unstamped directory could still be in use". THE DANGEROUS DIRECTION:
+ # no grace at all means the reaper deletes a sandbox created microseconds ago by a live run.
+ ("the unstamped grace is zero — a sandbox opened a moment ago is reaped from under a live run",
+  "test/run-tests.js",
+  '      if (age < UNSTAMPED_GRACE_MS) continue;                 // could still be in use — leave it',
+  '      if (Boolean(0)) continue;'),
+
+ # Killed by "TI-001: an INTERRUPTED run leaves NO sandbox behind". The `exit` handler alone does
+ # NOT cover this: default signal disposition terminates without running exit handlers.
+ ("the signal handlers are gone — a killed run leaks every sandbox in flight, as it did",
+  "test/run-tests.js",
+  '  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {',
+  "  for (const sig of []) {"),
+
+ # Killed by "TI-001: the next run reaps what a SIGKILL abandoned".
+ ("the reaper never runs — what a SIGKILL abandoned stays on the host for ever",
+  "test/run-tests.js",
+  "  const reaped = reapAbandonedSandboxes();",
+  "  const reaped = 0;"),
+
+ # Killed by the SAME test's other half. THE DANGEROUS DIRECTION: a reaper that ignores whether the
+ # owner is alive deletes the HOME of a running job — worse than the leak it fixes.
+ ("the reaper ignores whether the sandbox's owner is still alive",
+  "test/run-tests.js",
+  '    try { process.kill(pid, 0); continue; } catch (e) { if (e.code !== "ESRCH") continue; }',
+  '    try { process.kill(pid, 0); } catch (e) { if (e.code !== "ESRCH") continue; }'),
+
  # ── WL-004 · the byte number the memory prompt must never name ──────────────────────
  # MEASURED 2026-09-15: 'Keep it under 12,000 bytes' made the orchestrator delete the section
  # recording the owner's stated product goal in order to fit, twice in one day. An imperative with
