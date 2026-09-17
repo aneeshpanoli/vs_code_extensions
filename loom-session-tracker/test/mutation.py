@@ -239,8 +239,8 @@ MUTATIONS = [
 
  ("the restart path imports the window-closing call",
   "src/extension.ts",
-  'import { readFrames } from "./cdp";',
-  'import { readFrames, closeWebview } from "./cdp";\nvoid closeWebview;'),
+  'import { readFrames, openWindowRoots } from "./cdp";',
+  'import { readFrames, openWindowRoots, closeWebview } from "./cdp";\nvoid closeWebview;'),
 
  ("clicking a role opens a stale transcript in a NEW tab (a duplicate)",
   "src/focus.ts",
@@ -770,7 +770,9 @@ MUTATIONS = [
  # DISCUSSES a model would otherwise set the worker's tier.
  ("a `model:` line anywhere in a handoff's body sets the tier, not just its frontmatter",
   "src/models.ts",
+  'export function frontmatter(text: string | null | undefined): Record<string, string> {\n'
   '  const m = /^\\uFEFF?[ \\t]*---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---[ \\t]*(?:\\r?\\n|$)/.exec(String(text || ""));',
+  'export function frontmatter(text: string | null | undefined): Record<string, string> {\n'
   '  const m = /[ \\t]*---[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*---[ \\t]*(?:\\r?\\n|$)/.exec(String(text || ""));'),
 
  # R2 — killed by "policy: the desired tier is enforced in BOTH directions" and by
@@ -848,8 +850,8 @@ MUTATIONS = [
  # nothing that exists — so the guard silently has no opinion on exactly the briefs it should refuse.
  ("`files:` is comma-separated only — a space-separated line declares one impossible path",
   "src/models.ts",
-  "  for (const piece of raw.split(/[,\\s]+/)) {",
-  "  for (const piece of raw.split(/,/)) {"),
+  "  for (const piece of stripSpacedAnnotations(raw).split(/[,\\s]+/)) {",
+  "  for (const piece of stripSpacedAnnotations(raw).split(/,/)) {"),
 
  # R2 — killed by "CH-001 R2: the suffix match is anchored on a path SEGMENT, not on characters".
  # Dropping the anchor makes the comparison a plain substring test, so `src/models.ts` collides with
@@ -874,7 +876,7 @@ MUTATIONS = [
  # both and the disjointness rule would never be consulted at all — the exact case §19 is most about.
  ("roles opened in the same request are not counted as live — two colliding briefs spawn together",
   "src/requests.ts",
-  "    const ov = overlapFor(repo, role, [...open.map((c) => c.role), ...spawn]);",
+  "    const ov = overlapFor(repo, role, alsoLive);",
   "    const ov = overlapFor(repo, role, []);"),
 
  # R3 contextPctAtFinish — killed by "CH-001 R3: every new field is NULL rather than guessed when it
@@ -1779,7 +1781,7 @@ MUTATIONS = [
  # boundary, and the next reminder names a block from the session that was cleared.
  ("the new session's baseline keeps what the old one carried — a cleared block is named later",
   "src/health.ts",
-  "        const carried = prev ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || [])] : [];",
+  "        const carried = prev\n          ? [...prev.ids, ...(prev.reported || []), ...(prev.seen || []), ...(prev.dropped || [])] : [];",
   "        const carried: string[] = [];"),
 
  # Killed by "CL-001 scanClears: an UNDELIVERED arrival does not cross a /clear boundary". FOUND IN
@@ -2190,8 +2192,8 @@ MUTATIONS = [
  # Killed by "watchers: A SUBAGENT'S WATCHER IS NEVER THE ORCHESTRATOR'S".
  ("a subagent's Monitor is reported as the orchestrator's own watcher",
   "src/watchers.ts",
-  "  if (rec.isSidechain) return null;",
-  "  if (false) return null;"),
+  "  if (rec.isSidechain) return null;\n  const content = rec.message && rec.message.content;\n  if (!Array.isArray(content)) return null;",
+  "  if (false) return null;\n  const content = rec.message && rec.message.content;\n  if (!Array.isArray(content)) return null;"),
 
  # (6) ONLY THE SESSION'S OWN ACTS. A human typing into an orchestrator tab is a `user` record;
  # reporting it tells the session it did something a person did. Killed by "watchers: A WATCHER THE
@@ -2453,8 +2455,10 @@ MUTATIONS = [
  # bus. Killed by both "OV-001 §3: ABSENCE never refuses" and "§3: DOUBT never refuses".
  ("the guard refuses when NOTHING was declared — every bus without a `files:` line stalls",
   "src/overlap.ts",
-  "if (!mine.length) return null;",
-  'if (!mine.length) return { role, other: "?", file: "?" };'),
+  "export function overlapFor(repo: string | null, role: string, alsoLive: string[] = []): Overlap | null {\n"
+  "  if (!repo || !role) return null;\n  const mine = handoffFiles(repo, role);\n  if (!mine.length) return null;",
+  "export function overlapFor(repo: string | null, role: string, alsoLive: string[] = []): Overlap | null {\n"
+  '  if (!repo || !role) return null;\n  const mine = handoffFiles(repo, role);\n  if (!mine.length) return { role, other: "?", file: "?" };'),
 
  # The exemption is LITERAL on the declared path. Run it through `pathsCollide` instead and a glob
  # exempts itself — `*` matches `package.json`, so `files: *`, a claim on every file, would be
@@ -2647,10 +2651,17 @@ def sh(cmd):
 # which cannot tell a mutation from work in progress: on 2026-09-09 it silently destroyed an hour of
 # uncommitted changes to registry.ts, roles.ts, tracker.ts and statusView.ts. Commit (or stash) first;
 # the whole point of the tool is to run against the code you are about to trust.
+# AN-001 · IT COVERS WHAT `make_tree` COPIES, not just src/. It checked `-- src/` alone, while a
+# mutant tree is a copy of src/, test/, test.sh, live-check.js and both manifests — so the SUITE that
+# grades every mutant, and 18 of the 350 anchors, sat outside the only guard that claims "mutants are
+# copies of what is committed-and-built". An uncommitted test file would have been graded against and
+# then vanished from the record. The scan added by AN-001 reads the live tree, and that is sound only
+# if this list is the same list.
 def _refuse_if_dirty():
-    dirty = sh("git status --porcelain -- src/").stdout.strip()
+    dirty = sh("git status --porcelain -- src/ test/ test.sh live-check.js package.json "
+               "tsconfig.json").stdout.strip()
     if dirty:
-        print("REFUSING: src/ has uncommitted changes — mutants are copies of what is committed-and-built,\n"
+        print("REFUSING: the tree has uncommitted changes — mutants are copies of what is committed-and-built,\n"
               "          and a run over a dirty tree would report on code that is not what you will ship.\n")
         print(dirty)
         sys.exit(2)
@@ -2731,6 +2742,13 @@ def make_tree(idx):
     # live-check.js: FX-001's live-check.test.js requires it by relative path (`../live-check.js`)
     # to reach `judgeRunningVersions` — omitting it here is not "one file missing", it is the whole
     # baseline crashing (MODULE_NOT_FOUND), which used to read as a suite-wide false red before this.
+    # `.mutant-tree` tells corpus.test.js that this tree is a COPY. Its anchor check is a claim
+    # about the REAL source tree, and inside a mutant copy one anchor is bent on purpose, so the
+    # claim is false here by construction — ungated it would fail in all 349 trees and mark every
+    # mutant "caught" for a reason that is not the defect, which is an unreadable scoreboard.
+    # A FILE rather than an environment variable: the first version was LOOM_MUTANT_TREE=1, which
+    # one `export` in any shell could use to delete that file's coverage and still print a pass.
+    (work / ".mutant-tree").write_text("a throwaway copy made by test/mutation.py\n")
     for item in ("src", "test", "package.json", "tsconfig.json", "test.sh", "live-check.js"):
         srcp = ROOT / item
         if srcp.is_dir():
@@ -2807,6 +2825,74 @@ def preflight_one(idx, name, rel, find, repl):
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ── AN-001 · THE ANCHOR CHECK IS NOT PART OF THE GRADE, AND MUST NOT BE SCOPED LIKE ONE ─────────
+#
+# ANCHORING IS CHEAP AND GRADING IS EXPENSIVE, and this file used to conflate them: both halves of
+# the pre-flight ran per mutant, so a run that graded 7 mutants checked 7 anchors and said nothing
+# about the other 342. developer1 met that on OV-001-R2 — `7/7 caught` was true and carried no
+# information about the rest of the corpus — and on this block SEVEN anchors were stale at HEAD
+# while every subset run anyone had done reported clean. A stale anchor matches nothing, so the
+# mutant is never applied, so it grades nothing, AND THE RUN REPORTS A CLEAN CORPUS: the evidence
+# of the defect is indistinguishable from success, which is why it accumulates invisibly.
+#
+# So the anchor check is corpus-wide on EVERY run of every size. It can afford to be, because it is
+# a string count: one read per DISTINCT FILE (32 files for 350 mutants), no tree copy, no compile.
+# The per-mutant pre-flight below still checks the anchors it is about to grade — that is deliberate
+# duplication in the safe direction, and the one check it adds is the compile, which cannot be done
+# without a tree.
+#
+# IT READS THE LIVE TREE, which is only sound because `_refuse_if_dirty()` has already established
+# that the tree is the committed one; it never writes there. Every mutation happens in a copy.
+def anchor_scan(rows):
+    """-> [(idx, name, rel, reason)] for every mutant whose `find` is not unique in its file."""
+    cache, bad = {}, []
+    for idx, (name, rel, find, _repl) in rows:
+        if rel not in cache:
+            fp = ROOT / rel
+            cache[rel] = fp.read_text() if fp.exists() else None
+        src = cache[rel]
+        if src is None:
+            bad.append((idx, name, rel, f"{rel}: the file does not exist"))
+            continue
+        n = src.count(find)
+        if n != 1:
+            bad.append((idx, name, rel, f"{rel}: pattern occurs {n} time(s), expected 1"))
+    return bad
+
+
+# WHAT A STALE ANCHOR COSTS THE RUN, and it is not one answer:
+#
+#   · stale INSIDE what this run grades -> REFUSE. A mutant you asked for that cannot be applied is
+#     a hole exactly where you are looking, and the run would print a score that does not include it.
+#   · stale ELSEWHERE -> REPORT. Refusing here would block work on one defect because of an anchor
+#     somebody else rotted last week, and a guard that does that gets stopped being run — which
+#     costs more than the staleness did. Reported at the top of the run AND in the final summary, so
+#     it cannot be mistaken for success; MUTATION_STRICT_ANCHORS=1 escalates it to a refusal.
+#
+# PURE, so the decision is testable without a gate: the branch is the whole point of this block and
+# an untested branch in a guard is how "it has never refused anything" happens.
+def anchor_verdict(stale, graded, strict=False):
+    """-> ("refuse"|"report"|"clean", stale_here, stale_elsewhere)."""
+    here = [s for s in stale if s[0] in graded]
+    away = [s for s in stale if s[0] not in graded]
+    if here:
+        return ("refuse", here, away)
+    if away:
+        return ("refuse" if strict else "report", here, away)
+    return ("clean", here, away)
+
+
+# Substring selection over the mutant's NAME and its FILE, so `mutation.py overlap.ts` grades the
+# overlap guard's mutants and `mutation.py "stall alarm"` grades one. Selecting is how a subset run
+# stops being an ad-hoc script that mutates the real tree by hand.
+def select(patterns):
+    if not patterns:
+        return list(range(len(MUTATIONS)))
+    pats = [s.lower() for s in patterns]
+    return [i for i, (name, rel, _f, _r) in enumerate(MUTATIONS)
+            if any(s in f"{name} {rel}".lower() for s in pats)]
+
+
 # ── THE GATE ITSELF — everything below runs ONLY as a script ────────────────────────────────────
 #
 # WC-001 · WHY THIS GUARD EXISTS. Until now every statement below sat at module level, so `import
@@ -2821,10 +2907,58 @@ def preflight_one(idx, name, rel, find, repl):
 if __name__ == "__main__":
     _refuse_if_dirty()
 
-    print(f"pre-flight: every one of {len(MUTATIONS) + 1} mutants must ANCHOR and must COMPILE...")
+    # THE WHOLE CORPUS, on every run of any size — see the note above `anchor_scan`. FIRST, before
+    # the selection is even judged: a run that grades nothing still reports the corpus, because the
+    # cost of saying so is a string count and the cost of not saying so is this whole block.
+    _all = [(i, m) for i, m in enumerate(MUTATIONS)] + [("noop", tuple(NOOP_SELFCHECK))]
+    _stale_all = anchor_scan(_all)
+    print(f"anchor check (WHOLE corpus, {len(_all)} anchors): "
+          f"{len(_all) - len(_stale_all)} unique, {len(_stale_all)} STALE")
+
+    _sel = select(sys.argv[1:])
+    # TI-001's rule, which is the same rule as this block's: a run that executes nothing is not a
+    # pass. A selector that matches no mutant must never look like a clean gate.
+    if not _sel:
+        print(f"REFUSING: {sys.argv[1:]} selects 0 of the {len(MUTATIONS)} mutants — nothing would be "
+              f"graded, and an empty run is not a green one.\n"
+              f"          A selector is matched as a substring of a mutant's name or its file.")
+        sys.exit(3)
+    _rows = [(i, MUTATIONS[i]) for i in _sel]
+    _subset = len(_sel) != len(MUTATIONS)
+    _graded = {i for i in _sel} | {"noop"}
+    _verdict, _stale_here, _stale_away = anchor_verdict(
+        _stale_all, _graded, os.environ.get("MUTATION_STRICT_ANCHORS") == "1")
+    _anchor_line = (f"anchor check (WHOLE corpus, {len(_all)} anchors): "
+                    f"{len(_all) - len(_stale_all)} unique, {len(_stale_all)} STALE")
+
+    # A stale anchor OUTSIDE this run is REPORTED, NOT REFUSED. Refusing would block work on one
+    # defect because of an anchor somebody else rotted, which is how a guard teaches people to stop
+    # running it. Reporting is only honest if it cannot be mistaken for success, so the count is
+    # printed here, again in the summary at the end, and nowhere is a subset run allowed to end on a
+    # line that mentions only what it graded. MUTATION_STRICT_ANCHORS=1 escalates it to a refusal
+    # for anyone who wants the whole corpus to be a gate.
+    if _stale_away:
+        print(f"\n  {len(_stale_away)} STALE ANCHOR(S) OUTSIDE THIS RUN — they grade nothing, and this run "
+              f"does not grade them:")
+        for _i, _nm, _rel, _why in sorted(_stale_away, key=lambda s: str(s[0])):
+            print(f"    [{_i}] {_why}\n         {_nm}")
+        print()
+    if _verdict == "refuse" and not _stale_here:
+        print("REFUSING: MUTATION_STRICT_ANCHORS=1 — the whole corpus must anchor, not just the part "
+              "this run grades.")
+        sys.exit(2)
+    if _stale_here:
+        print(f"REFUSING: {len(_stale_here)} anchor(s) THIS RUN WOULD GRADE match nothing — the score "
+              f"would silently omit them:")
+        for _i, _nm, _rel, _why in sorted(_stale_here, key=lambda s: str(s[0])):
+            print(f"    [{_i}] {_why}\n         {_nm}\n"
+                  f"         FIX: re-anchor `find` on the current source — the code moved under it.")
+        sys.exit(2)
+
+    print(f"pre-flight: every one of {len(_rows) + 1} mutants this run grades must ANCHOR and must COMPILE...")
     _bad_anchor, _bad_compile = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-        _pf = [pool.submit(preflight_one, i, *m) for i, m in enumerate(MUTATIONS)]
+        _pf = [pool.submit(preflight_one, i, *m) for i, m in _rows]
         # The self-check is a mutant like any other: a no-op that stopped compiling would fail the run
         # for a reason that has nothing to do with the harness being able to tell a no-op from a defect.
         _pf.append(pool.submit(preflight_one, "noop", *NOOP_SELFCHECK))
@@ -2846,7 +2980,7 @@ if __name__ == "__main__":
                   f"                  FIX: rewrite `repl` — it anchors, but the text it produces is not "
                   f"valid TypeScript.")
         sys.exit(2)
-    print(f"pre-flight clean: all {len(MUTATIONS) + 1} anchor and compile.\n")
+    print(f"pre-flight clean: all {len(_rows) + 1} anchor and compile.\n")
 
     print("measuring the baseline (unmutated, LOOM_TEST_JOBS=1) — nothing can be graded against a red suite...")
     _base = make_tree("base")
@@ -2871,7 +3005,8 @@ if __name__ == "__main__":
     print(f"baseline is green: {len(base_pass)} tests pass, and a mutant is 'caught' only by breaking one of them.\n")
 
     survived, stale, ungraded, noncompiling = [], [], [], []
-    print(f"reintroducing {len(MUTATIONS)} defects that were live on 2026-09-09:\n")
+    print(f"reintroducing {len(_rows)} of the {len(MUTATIONS)} defects that were live on 2026-09-09"
+          + (f" (selected by {sys.argv[1:]})" if _subset else "") + ":\n")
 
 
     def run_one(idx, name, rel, find, repl):
@@ -2927,7 +3062,7 @@ if __name__ == "__main__":
 
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-        futures = [pool.submit(run_one, i, *m) for i, m in enumerate(MUTATIONS)]
+        futures = [pool.submit(run_one, i, *m) for i, m in _rows]
         selfcheck = pool.submit(run_one, "noop", *NOOP_SELFCHECK)
         for fut in concurrent.futures.as_completed(futures):
             report(*fut.result())
@@ -2945,7 +3080,13 @@ if __name__ == "__main__":
         print(f"CONTAINMENT FAILED: the run left {host_leak} loom-* director(ies) in {tempfile.gettempdir()} "
               f"— TMPDIR is no longer inside the throwaway trees, and a full gate now costs the host inodes.")
     else:
-        print(f"containment: 0 loom-* left in {tempfile.gettempdir()} across {len(MUTATIONS)} suite run(s).")
+        print(f"containment: 0 loom-* left in {tempfile.gettempdir()} across {len(_rows)} suite run(s).")
+
+    # What this run is a statement ABOUT. A scoreboard over 7 of 349 mutants says nothing about the
+    # other 342, and the one number a reader carries away must say so itself.
+    _scope = (f"\n{len(_rows)} of {len(MUTATIONS)} mutants graded — this score is a statement about "
+              f"those {len(_rows)}, not about the corpus." if _subset else
+              f"\nall {len(MUTATIONS)} mutants graded.")
 
     sc_ok = sc_status == "SURVIVED"
     if sc_ok:
@@ -2968,7 +3109,7 @@ if __name__ == "__main__":
         ungradeable = len(survived) + len(stale) + len(ungraded) + len(noncompiling)
         parts = [f"{len(survived)} survived", f"{len(stale)} stale",
                  f"{len(noncompiling)} non-compiling", f"{len(ungraded)} ungraded"]
-        line = (f"\n{len(MUTATIONS) - ungradeable}/{len(MUTATIONS)} caught, " + ", ".join(parts))
+        line = (f"\n{len(_rows) - ungradeable}/{len(_rows)} caught, " + ", ".join(parts))
         # Only claim a defect could return when one actually can. A failing SELF-CHECK with a clean
         # scoreboard means the opposite: the scoreboard cannot be trusted to tell us either way.
         if survived or stale or ungraded or noncompiling:
@@ -2976,5 +3117,7 @@ if __name__ == "__main__":
         else:
             line += " — but the SELF-CHECK above failed, so this scoreboard is not evidence of anything"
         print(line)
+        print(_anchor_line + _scope)
         sys.exit(1)
-    print(f"all {len(MUTATIONS)} mutations caught — every defect of that night now breaks the suite")
+    print(f"all {len(_rows)} mutations run were caught — those defects now break the suite")
+    print(_anchor_line + _scope)
