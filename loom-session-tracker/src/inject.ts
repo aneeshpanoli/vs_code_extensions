@@ -177,6 +177,11 @@ export const REPLY_FOR: Record<string, string> = {
   // "stop the watcher named here": the arming is readable but its liveness is not (watchers.ts), so
   // an instruction to stop a specific running thing would be asserting what the tool cannot see.
   "watch-debug.json":   "no reply — drop the watcher; the tracker's own tick is what wakes you",
+  // DU-001 · §19. The action is a SEQUENCING decision — which block banks first, or which worker
+  // moves off the file — and there is nothing to answer. It must not say "tell them to stop": the
+  // two workers are each doing what their own handoff asked, and the party that can resolve it is
+  // the one that dispatched both.
+  "overlap-debug.json": "no reply — sequence the banks, or move one worker off the shared file",
   "resume":             "keep status.json current; nothing else is read",
   "model":              "none needed — your footer is re-read every tick",
   // MC-001 · the context-memory subsystem (memory.ts) sends THREE different messages down the SAME
@@ -214,9 +219,38 @@ export const REPLY_FOR: Record<string, string> = {
 //
 // KEPT TO ONE LINE, deliberately: the complaint being fixed is volume standing in for a decision,
 // so a fix that appended three paragraphs to every message would BE the defect, shipped.
+//
+// ── DU-001 · WHAT THE 2026-09-17 REWRITE CHANGED, AND WHY EACH CLAUSE MOVED ──────────────────
+//
+// The owner sharpened the rule and the old line no longer stated it: "I'm only interested in the
+// high-level view of the product and where it's going, and that too very concisely. Unless we are
+// trying to do problem-solving where I need to know more details — I would always ask."
+//
+// 1. "Not figures — those are yours" DID NOT WORK. It names a category, and a category is arguable:
+//    it did not stop an orchestrator sending him commit hashes, and he had to say so himself. The
+//    replacement NAMES the banned things — counts, hashes, versions, paths, ids — because a list you
+//    can check your own draft against is enforceable in a way that "not figures" was not.
+//
+// 2. "what the next block changes for a user" reported the PAST and the immediate next step. He asks
+//    for DIRECTION ("where it's going"), which is the thing the old line never requested.
+//
+// 3. "the decision the owner must make" is REMOVED, and this is the load-bearing edit. Read as a
+//    standing instruction it says *always produce a decision for him*, so an orchestrator hands up
+//    every question it has — which funnels work onto the one person on this bus who cannot be
+//    parallelised. He stopped exactly that on 2026-09-17: "you can find answers to all these
+//    questions. You don't need me to answer them." "Ask only what is his; decide the rest" keeps the
+//    escalation path open for what is genuinely his (direction, priorities, his money/machine/time,
+//    anything leaving the machine, anything expensive and irreversible) and closes it for the rest.
+//
+// 4. "He will ask" makes detail PULL. An orchestrator that pre-empts the follow-up question is how a
+//    product summary becomes the "500 lines of garbage" he is objecting to.
+//
+// IT IS SHORTER THAN WHAT IT REPLACED — 184 bytes against 188 (184 chars against 186), asserted by
+// test rather than claimed here. That bound is the point: this line rides on EVERY orchestrator
+// message, so a "fix" that lengthened it would be the complaint, shipped under a new name.
 export const REPORTING_CONTRACT =
-  "[contract] To the owner, in a few bullets: what works, what is broken for a user, what the next " +
-  "block changes for a user, the decision the owner must make. Not figures — those are yours.";
+  "[contract] To the owner, in bullets: what works, what a user cannot do, where it goes next. " +
+  "No counts, hashes, versions, paths, ids. Ask only what is his; decide the rest. He will ask.";
 
 /**
  * The message kinds that reach an ORCHESTRATOR — the session that reports upward to the human.
@@ -232,6 +266,7 @@ export const ORCHESTRATOR_KINDS: ReadonlySet<string> = new Set([
   "brief-debug.json",    // extension.ts  — the work-ledger briefing at a dispatch point
   "delegate-debug.json", // delegation.ts — you have been working alone while a role sat idle
   "watch-debug.json",    // watchers.ts   — §17: this session armed a watcher; the tick already wakes you
+  "overlap-debug.json",  // duties.ts     — §19: two of your live blocks are editing the same file
   "context-save",        // memory.ts     — write your working memory before the clear
   "context-restore",     // memory.ts     — fresh context; here is who you are and what to read
   // "context-clear" is UNREACHABLE as of CX-001 — memory.ts produces no clear step, and a clear

@@ -227,9 +227,51 @@ suite("PD-001: the contract is ONE line and names the four things a report must 
      "one line — a paragraph appended to every message would be the defect, shipped");
   match(REPORTING_CONTRACT, /bullets/, "how to say it");
   match(REPORTING_CONTRACT, /what works/, "what the product does now");
-  match(REPORTING_CONTRACT, /broken for a user/, "what is broken, in a user's terms");
-  match(REPORTING_CONTRACT, /next block changes for a user/, "what the next block buys a user");
-  match(REPORTING_CONTRACT, /decision the owner must make/, "and the decision being asked for");
+  match(REPORTING_CONTRACT, /a user cannot do/, "what is broken, in a user's terms");
+  match(REPORTING_CONTRACT, /where it goes next/, "and where the product is going");
+});
+
+// ── DU-001 §3 · THE 2026-09-17 SHARPENING, HELD BY TEST ────────────────────────────────────────
+//
+// The owner restated the rule and the old line no longer said it. Each assertion below is one of
+// the four gaps, held in BOTH directions where the old wording is the thing being excluded: a
+// regression that reinstates the old clause has to delete a test that says why it went.
+suite("DU-001: the contract NAMES what is banned, rather than naming a category", () => {
+  // "Not figures — those are yours" did not stop commit hashes being sent; he had to say so himself.
+  // A named list is checkable against a draft in a way that an arguable category is not.
+  for (const banned of ["counts", "hashes", "versions", "paths", "ids"]) {
+    match(REPORTING_CONTRACT, new RegExp(banned), `the ban names ${banned} outright`);
+  }
+  ok(!/Not figures/.test(REPORTING_CONTRACT),
+     "and the category that did not work is gone, not merely supplemented");
+});
+
+suite("DU-001: detail is PULL, and the decision clause no longer funnels work onto the owner", () => {
+  // THE LOAD-BEARING REMOVAL. "the decision the owner must make", read as a standing instruction,
+  // says *always produce a decision for him* — so an orchestrator hands up every question it has,
+  // moving work onto the one party on this bus who cannot be parallelised. Owner, 2026-09-17:
+  // "you can find answers to all these questions. You don't need me to answer them."
+  ok(!/decision the owner must make/.test(REPORTING_CONTRACT),
+     "the clause that taught orchestrators to escalate everything is REMOVED");
+  match(REPORTING_CONTRACT, /Ask only what is his/,
+        "escalation stays open for what is genuinely his");
+  match(REPORTING_CONTRACT, /decide the rest/,
+        "and everything else is the orchestrator's to determine and state");
+  // "Unless we are trying to do problem-solving where I need to know more details — I would always
+  // ask." An orchestrator that pre-empts the follow-up is how a summary becomes 500 lines.
+  match(REPORTING_CONTRACT, /He will ask/, "detail is pulled by him, never pushed at him");
+});
+
+// The bound is the point, not a nicety: this line rides on EVERY orchestrator-facing message, so a
+// replacement that stated the rule better but cost more bytes would be the complaint he is making
+// ("500 lines of garbage"), shipped under a new name. Asserted here rather than claimed in a comment.
+suite("DU-001: the replacement is no longer than what it replaced", () => {
+  const OLD_BYTES = 188; // measured on the PD-001 line this replaced (186 chars; the em dash was 3 bytes)
+  const OLD_CHARS = 186;
+  const bytes = Buffer.byteLength(REPORTING_CONTRACT, "utf8");
+  ok(bytes <= OLD_BYTES, `contract is ${bytes} bytes, must not exceed the ${OLD_BYTES} it replaced`);
+  ok(REPORTING_CONTRACT.length <= OLD_CHARS,
+     `contract is ${REPORTING_CONTRACT.length} chars, must not exceed the ${OLD_CHARS} it replaced`);
 });
 
 

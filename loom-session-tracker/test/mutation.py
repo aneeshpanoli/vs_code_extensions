@@ -2241,6 +2241,95 @@ MUTATIONS = [
   "      if (known.length + arrived.length < 2) continue;",
   "      if (arrived.length < 2) continue;"),
 
+ # ── DU-001 · §19 · two live blocks on one file ────────────────────────────────────────────────
+ #
+ # THE FIRST TWO ARE WIRING MUTANTS AND THEY ARE THE POINT. Every claim in duties.test.js is about a
+ # pure function and all of them stay green if nothing ever calls the detector. Verified by hand on
+ # 2026-09-17: deleting the tick call left duties.test.js at 22/22 and was caught ONLY by
+ # duties-wiring.test.js, which drives the real activate().
+ #
+ # AND A WARNING ABOUT HOW THAT WAS VERIFIED, because it nearly produced a false pass. The first
+ # attempt reported the mutant CAUGHT-BY-NOTHING (all three wiring tests green) — because the
+ # verification chain was `grep -c … && tsc …`, and `grep -c` exits NON-ZERO when the count is 0, so
+ # the `&&` short-circuited and tsc never ran. The suite graded the previous build. A mutant run that
+ # does not prove it recompiled is not evidence; check the emit, not the exit code of the line before.
+
+ ("THE DETECTOR IS NEVER CALLED — the tick no longer runs it, and every unit test stays green",
+  "src/extension.ts",
+  "        try { runDuties(); } catch { /* a reminder must never break a tick */ }",
+  "        try { if (false) runDuties(); } catch { /* a reminder must never break a tick */ }"),
+
+ ("the finding is never DELIVERED — it is computed, logged, and dropped before the composer",
+  "src/extension.ts",
+  "      injectTo({ role: tag.role, webviewId: tag.webviewId ? tag.webviewId : null, repo },\n               overlapReminder(f), \"overlap-debug.json\", (ok, note) => {",
+  "      injectTo({ role: tag.role, webviewId: tag.webviewId ? tag.webviewId : null, repo },\n               \"\", \"overlap-debug.json\", (ok, note) => {"),
+
+ # IDLE ROLES ARE THE LOUDEST FALSE POSITIVE AVAILABLE. A finished worker's worktree still holds its
+ # whole block until the orchestrator merges it, so dropping this filter reports every pair of BANKED
+ # blocks as a live collision — on this repo that is most pairs, most of the time.
+ ("an idle role counts as a live block — every pair of banked, unmerged blocks reports as a collision",
+  "src/extension.ts",
+  "        .filter((r) => isWorkingLike(readRoleStatus(repo, r).status));",
+  "        .filter((r) => true);"),
+
+ # THE LATCH. delegation.ts is the precedent and the stall alarm is the anti-precedent: a latch that
+ # re-arms whenever its condition clears re-fires every time the condition flickers, which is how the
+ # stall alarm produced four wrong alarms in two days. At a 15-second tick, two roles on one file for
+ # an hour is 240 messages instead of one.
+ ("the latch is dropped — the same collision is reported again on every tick, 240 times an hour",
+  "src/duties.ts",
+  "    if (st.reported[pairKey(c)] === blockKey(c)) continue;",
+  "    if (false) continue;"),
+
+ # …and the other direction: a latch keyed on the PAIR alone never re-arms, so a genuinely new pair
+ # of blocks on the same file is silently swallowed for the life of the bus.
+ ("the latch never re-arms — a new block on the same pair of roles is never reported",
+  "src/duties.ts",
+  "function blockKey(c: Collision): string {\n  return `${c.handoffs[0] ?? \"?\"}|${c.handoffs[1] ?? \"?\"}`;",
+  "function blockKey(c: Collision): string {\n  return \"same\";"),
+
+ # THE MANIFEST EXCLUSION, both ways. Without it the detector fires on package.json on every pair of
+ # live blocks forever — a true collision the orchestrator already solves by assigning each block its
+ # own version, and therefore pure noise.
+ ("package.json is no longer excluded — every pair of live blocks reports the version bump",
+  "src/duties.ts",
+  "  for (const re of SERIALISED_BY_PROCESS) if (re.test(f)) return false;",
+  "  for (const re of SERIALISED_BY_PROCESS) if (false) return false;"),
+
+ # …and the exclusion must not be allowed to swallow the real finding sitting beside it.
+ ("a pair sharing the manifest is dropped WHOLESALE — the real collision beside it goes unreported",
+  "src/duties.ts",
+  "      const shared = a.files.filter((f) => isCollidable(f) && bFiles.has(f));",
+  "      const shared = a.files.every((f) => isCollidable(f)) ? a.files.filter((f) => bFiles.has(f)) : [];"),
+
+ # BOTH HALVES OF A ROLE'S WORK. Measured on this bus 2026-09-17: the other live role had ZERO
+ # committed files and its entire block sat uncommitted, so a branch-diff-only detector is blind to
+ # the commonest state a worker is in.
+ ("uncommitted work stops counting — a worker that has not committed yet is invisible",
+  "src/duties.ts",
+  "  for (const p of parsePorcelain(git(worktree, [\"status\", \"--porcelain\"]))) files.add(p);",
+  "  for (const p of []) files.add(p);"),
+
+ ("committed work stops counting — a worker that committed but was not merged is invisible",
+  "src/duties.ts",
+  "  for (const f of String(git(worktree, [\"diff\", \"--name-only\", `${base}...HEAD`]) || \"\").split(\"\\n\")) {",
+  "  for (const f of String(\"\").split(\"\\n\")) {"),
+
+ # THE THREE-DOT FORM. With two dots the diff also carries everything the orchestrator banked from
+ # the OTHER worker since this branch forked, so one worker's merged block reads as the other's live
+ # work — a collision between a role and its own colleague's already-merged code.
+ ("the branch diff uses two dots — another worker's merged block reads as this one's live work",
+  "src/duties.ts",
+  "`${base}...HEAD`",
+  "`${base}..HEAD`"),
+
+ # A ROLE NEVER COLLIDES WITH ITSELF. A stale board entry beside a live one would otherwise be a
+ # permanent, unfixable self-collision on every file that role touches.
+ ("a role collides with itself — a duplicated board entry reports a permanent false collision",
+  "src/duties.ts",
+  "      if (a.role === b.role) continue;",
+  "      if (false) continue;"),
+
 ]
 
 def sh(cmd):

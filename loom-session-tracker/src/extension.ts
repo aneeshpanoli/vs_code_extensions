@@ -31,7 +31,7 @@ import { buildDigest, renderDigest, Digest } from "./digest";
 import { missingRoles, previouslyLive, strandedRoles, resumableFrom, ReopenCandidate } from "./reopen";
 import { blankShells, closableShells } from "./blanks";
 import { frameWatcher, openAndIdentify } from "./newframe";
-import { rebindFrame, RebindLog } from "./rebind";
+import { rebindFrame, RebindLog, roleWorktree } from "./rebind";
 import { planOpen, writeResult, strandedNote, Opened } from "./requests";
 import { overlapFor, overlapReason } from "./overlap";
 import { planFocus } from "./focus";
@@ -42,6 +42,8 @@ import { HealthWatcher, checkHealth, countWorking, publishWorking, scanWorktrees
          isWorkingLike, boardSessionId, statusSessionId, sessionAgreement } from "./health";
 import { watcherTick, loadWatchers, saveWatchers, markWatcherReminded,
          watcherReminder } from "./watchers";
+import { gatherWork, collisions, overlapFinding, markOverlapReminded, overlapReminder,
+         loadOverlapState, saveOverlapState, baseBranch } from "./duties";
 import { quietTick, gatherSignals, loadQuiet, saveQuiet, markNotified, markDropped, quietMessage,
          gateByOpenWindow, DEFAULT_QUIET_MINUTES, FrameSeen, orchestratorSaid } from "./quiet";
 import { sendPush, preflight, pushKey, DEFAULT_CONTAINER, DEFAULT_TIMEOUT_SEC } from "./push";
@@ -203,6 +205,49 @@ export function activate(context: vscode.ExtensionContext) {
                                  idle: f.idle, busy: f.busyWorkers, ok, note } });
       });
       saveDelegation(repo, r.state);
+    };
+
+    // ── DU-001 · §19 · TWO LIVE BLOCKS ON ONE FILE ──────────────────────────────────────────────
+    //
+    // The owner: "It is better for us to make the files modular so there is never more than one
+    // worker on any file", and "this should also be part of the session add-on, so the orchestrators
+    // know their duties." Everything that DECIDES lives in duties.ts, pure and tested; this function
+    // only gathers the observation and delivers it.
+    //
+    // WHY IT READS WORKTREES RATHER THAN HANDOFFS. `overlap.ts` already enforces §19 from the
+    // handoffs' `files:` front-matter and has never refused anything on this bus — 3 of 25 blocks
+    // declare `files:` at all. This reads what the worktrees actually contain, so it does not depend
+    // on a declaration nobody writes. It does not touch overlap.ts, which another live handoff owns.
+    const runDuties = () => {
+      if (!repo) return;
+      if (cfg().get<boolean>("overlapReminders", true) !== true) return;
+      const tag = getOrchestrator(repo);
+      if (!tag) return;                      // nobody to tell; the finding is the orchestrator's
+      // ONLY ROLES THAT ARE ACTUALLY WORKING. A finished worker's worktree still holds its whole
+      // block until the orchestrator merges it, so counting idle roles would report every pair of
+      // banked blocks as a live collision — the loudest possible false positive.
+      const live = boardRoles(repo)
+        .filter((r) => r !== tag.role)
+        .filter((r) => isWorkingLike(readRoleStatus(repo, r).status));
+      if (live.length < 2) return;           // no pair, nothing to say — the common case
+      const works = live.map((role) => {
+        const wt = roleWorktree(repo, role, windowCwd);
+        if (!wt) return { role, handoff: handoffId(repo, role), files: [] as string[] };
+        return gatherWork(wt, baseBranch(wt), handoffId(repo, role), role);
+      });
+      const prev = loadOverlapState(repo);
+      const r = overlapFinding(prev, collisions(works));
+      if (!r.finding) { saveOverlapState(repo, r.state); return; }
+      const f = r.finding;
+      injectTo({ role: tag.role, webviewId: tag.webviewId ? tag.webviewId : null, repo },
+               overlapReminder(f), "overlap-debug.json", (ok, note) => {
+        // LATCHED ONLY ON DELIVERY, like every other reminder here: a refused injection (a busy
+        // composer) must leave the finding armed for the next tick rather than swallowing it.
+        if (ok) saveOverlapState(repo, markOverlapReminded(r.state, f));
+        debugLog({ overlapReminder: { roles: f.roles, handoffs: f.handoffs,
+                                      files: f.files.slice(0, 5), ok, note } });
+      });
+      saveOverlapState(repo, r.state);
     };
 
     // ── NT-001 · TELL HIM WHEN A PROJECT GOES QUIET ─────────────────────────────────────────────
@@ -1156,6 +1201,7 @@ export function activate(context: vscode.ExtensionContext) {
         try { runReachBack(); } catch { /* a supply must never break a tick */ }
         try { runDelegation(); } catch { /* a reminder must never break a tick */ }
         try { runWatchers(); } catch { /* a reminder must never break a tick */ }
+        try { runDuties(); } catch { /* a reminder must never break a tick */ }
         try { runQuiet(); } catch { /* a notifier must never break a tick */ }
         runContextMemory();
         try { runWorkLedger(); } catch { /* a measurement must never break a tick */ }
