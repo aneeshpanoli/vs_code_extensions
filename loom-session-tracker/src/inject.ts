@@ -58,14 +58,97 @@ export function setSenderWindow(root: string | null): void { senderWindow = root
 export const REPLY_FOR: Record<string, string> = {
   "notify-debug.json":  "act on the outbox named here; this tool reads no chat",
   "stall-debug.json":   "ring the role named here; this tool reads no chat",
-  "context-debug.json": "write the memory file named here; nothing else is read",
   "restart-debug.json": "for any missing role tab, write ~/.claude/loom/<repo>/open-requests.json",
   // CL-001 · there is nothing to reply TO — the action is the next dispatch, not an answer. Saying
   // "reads no chat" alone would leave an orchestrator looking for something to respond to.
   "clear-debug.json":   "no reply — clear and re-bind the role named here on your next dispatch to it",
   "resume":             "keep status.json current; nothing else is read",
   "model":              "none needed — your footer is re-read every tick",
+  // MC-001 · the context-memory subsystem (memory.ts) sends THREE different messages down the SAME
+  // debug log ("context-debug.json"), and a single "context-debug.json" reply key spoke for all
+  // three — so a freshly-restored session, whose whole job is to READ its memory file, was told
+  // "write the memory file named here". Keyed by StepKind instead, one per message this subsystem
+  // actually sends. ("abort" and "none" never reach injectTo — see extension.ts — so they need no
+  // entry here; there is nothing to reply to because nothing is ever typed.)
+  "context-save":       "write the memory file named here; nothing else is read",
+  // The message body IS the literal string "/clear" — loom_cdp.py's compose_outgoing() skips the
+  // return-address header entirely for anything starting with "/", so this reply hint is NEVER
+  // actually delivered. Kept (rather than omitted) so the table stays honest about every message
+  // this subsystem sends, and documented rather than assumed — see MC-001.
+  "context-clear":      "no reply — a bare /clear carries no header; this line is never delivered",
+  "context-restore":    "no reply — nothing to bank; read the memory file named here and get on with the work it names",
 };
+
+// ── the REPORTING CONTRACT (owner directive 2026-09-16 · playbook §21) ─────────────────────────
+//
+// "Make sure that orchestrators always talk product, not the number of lines they did, number of
+// commits they pushed — all that is available in the work ledger. I don't need to know that. I need
+// to know where the product is going." Said three times in one session, about three different
+// reports ("500 lines of garbage. Just bullet points only.").
+//
+// WHY IT LIVES HERE AND NOT IN THE PLAYBOOK. A rule in a doc is advice; behaviour flows from the
+// text a session actually READS. This product has been bitten three times by a rule that lived in
+// prose while the tool kept typing something else — so the rule is attached to the messages
+// themselves, at the one choke point every injection passes through, and a new orchestrator-facing
+// message cannot be added without choosing a side of the table below.
+//
+// ONE BOUNDARY ONLY: orchestrator → human. A WORKER's report to its orchestrator MUST keep its full
+// counts, grade blocks and measurements — that is the evidence the orchestrator banks a block on —
+// so putting this on a worker message would suppress exactly the evidence this bus runs on. The
+// worker kinds below are excluded deliberately, and that is the load-bearing half of this table.
+//
+// KEPT TO ONE LINE, deliberately: the complaint being fixed is volume standing in for a decision,
+// so a fix that appended three paragraphs to every message would BE the defect, shipped.
+export const REPORTING_CONTRACT =
+  "[contract] To the owner, in a few bullets: what works, what is broken for a user, what the next " +
+  "block changes for a user, the decision the owner must make. Not figures — those are yours.";
+
+/**
+ * The message kinds that reach an ORCHESTRATOR — the session that reports upward to the human.
+ * Keyed by the same string `senderArgs` is (`replyKind ?? debugName`), so the two tables cannot
+ * drift apart. Measured against every `injectTo` call site in the extension (PD-001 §3).
+ */
+export const ORCHESTRATOR_KINDS: ReadonlySet<string> = new Set([
+  "notify-debug.json",   // notifier.ts   — a worker finished / raised a loop-back
+  "stall-debug.json",    // health.ts     — a worker looks stuck
+  "clear-debug.json",    // health.ts     — a worker has carried too many blocks unclear
+  "restart-debug.json",  // extension.ts  — the editor restarted; pick the work back up
+  "ledger-debug.json",   // extension.ts  — the once-a-day work-ledger alert
+  "brief-debug.json",    // extension.ts  — the work-ledger briefing at a dispatch point
+  "context-save",        // memory.ts     — write your working memory before the clear
+  "context-restore",     // memory.ts     — fresh context; here is who you are and what to read
+  // "context-clear" is the literal string "/clear" — a command, and commands carry no header and no
+  // contract (see `withContract`). Listed here in the comment rather than the set so the table
+  // stays honest about every message this subsystem sends without asserting a falsehood.
+]);
+
+/**
+ * The kinds that reach a WORKER. Not merely "everything else": named, so that the exclusion is a
+ * decision on the record and a reviewer can see that `gate-debug.json` was considered and kept out.
+ * A worker owes its orchestrator counts and measurements; the contract would suppress them.
+ */
+export const WORKER_KINDS: ReadonlySet<string> = new Set([
+  "gate-debug.json",     // health.ts  — YOUR gate exited; read its log and write your grade counts
+  "spawn-debug.json",    // extension.ts — "/model …" and "/loom <role>", commands either way
+  "resume",              // a resume nudge
+  "model",               // a tier switch
+]);
+
+/**
+ * The text that actually gets typed: the message, plus the contract when this kind of message
+ * reaches an orchestrator. Pure, so the CLAIM ("this kind carries it, that kind does not") is
+ * testable without a composer.
+ *
+ * A COMMAND NEVER CARRIES IT. loom_cdp.py's `compose_outgoing()` returns anything starting with "/"
+ * untouched — no return-address header, nothing appended — because the composer would execute the
+ * whole line. Appending here would corrupt the command rather than instruct anybody.
+ */
+export function withContract(kind: string, message: string): string {
+  const msg = String(message || "");
+  if (!msg.trim() || msg.trimStart().startsWith("/")) return msg;
+  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;
+  return `${msg}\n\n${REPORTING_CONTRACT}`;
+}
 
 /** argv fragment naming the sender and the reply channel, for every inject the extension makes. */
 export function senderArgs(kind: string, repo: string | null): string[] {
@@ -101,9 +184,19 @@ export function injectVerdict(err: Error | null | undefined, stdout: string | Bu
 }
 
 export function injectTo(target: InjectTarget, message: string, debugName: string,
-                         done?: (ok: boolean, note: string) => void): void {
-  const args = [LOOM_CDP, "inject", "--role", target.role, "--message", message, "--submit",
-                ...senderArgs(debugName, target.repo ?? null)];
+                         done?: (ok: boolean, note: string) => void, replyKind?: string): void {
+  // `debugName` is where the attempt is LOGGED; `replyKind` is what REPLY_FOR is keyed by. They are
+  // usually the same string (one message per debug file, at every other call site) but the
+  // context-memory subsystem writes three different KINDS of message to the one debug file
+  // ("context-debug.json") — see REPLY_FOR's "context-save/-clear/-restore" entries — so a caller
+  // that sends more than one kind of message down one debug file must pass `replyKind` explicitly.
+  // PD-001 · the reporting contract rides the SAME key as the reply hint, and is attached here
+  // rather than at the nine call sites so that no orchestrator-facing message can be added without
+  // one, and no worker-facing message can pick one up by accident.
+  const kind = replyKind ?? debugName;
+  const outgoing = withContract(kind, message);
+  const args = [LOOM_CDP, "inject", "--role", target.role, "--message", outgoing, "--submit",
+                ...senderArgs(kind, target.repo ?? null)];
   if (target.webviewId) args.push("--webview-id", target.webviewId);
   if (target.repo) args.push("--repo", target.repo);
   execFile("python3", args, { timeout: INJECT_TIMEOUT_MS }, (err, stdout, stderr) => {
@@ -112,8 +205,18 @@ export function injectTo(target: InjectTarget, message: string, debugName: strin
     try {
       fs.writeFileSync(path.join(LOOM_ROOT, debugName), JSON.stringify({
         at: new Date().toISOString(), target, ok, note,
-        message: message.slice(0, 300),
-        out: out.slice(-400), err: String((err && err.message) || stderr || "").slice(-400),
+        // what was actually TYPED, contract included — a log of the pre-contract text would make
+        // the one thing this block adds invisible in the only record of the injection.
+        message: outgoing.slice(0, 300),
+        // …and the contract sits at the END, so on any body over ~300 chars (the briefing is 517)
+        // the truncation above would hide it and the log would read as though it never went. This
+        // flag is the claim itself, and it does not grow with the message.
+        contract: outgoing !== message,
+        // PD-001 · 400 was enough while the longest message was short. The contract now occupies
+        // ~190 chars of any tail, which pushed the subcommand and the role — the part that says
+        // WHAT WAS RUN — out of the window, in the one file that exists to diagnose a silent
+        // failure after the fact.
+        out: out.slice(-800), err: String((err && err.message) || stderr || "").slice(-400),
       }, null, 2));
     } catch { /* a failed log must never break the caller */ }
     done?.(ok, note);

@@ -247,9 +247,11 @@ MUTATIONS = [
   "      if (!this.inMyWindow(f, validRoles)) continue;",
   "      if (!this.inMyWindow(f, validRoles) && Boolean(0)) continue;"),
 
+ # PD-001 RE-ANCHORED: the senderArgs argument is now the local `kind`, so the old spelling of this
+ # line no longer exists. Same defect — the return address is stripped from every injection.
  ("the extension's notifications carry no return address",
   "src/inject.ts",
-  '                ...senderArgs(debugName, target.repo ?? null)];',
+  "                ...senderArgs(kind, target.repo ?? null)];",
   "                ];"),
 
  ("the clock form of the banner is unparseable — `resets 9:50pm` yielded no deadline",
@@ -1644,75 +1646,82 @@ MUTATIONS = [
   "src/workledger.ts",
   "    L.push(`${w.blocksSinceProduct} block(s) since product code last changed` +",
   "    L.push(`${w.blocksSinceProduct} block(s) since anything reached a user` +"),
- # ── WL-012 · the population that is never asked ─────────────────────────────────────────────
- # Gaming: 648 commits, 40 tags whose newest is ON this history, two tracked manifests at DEPTH 2.
- # The gate returned null one level above them, so the tag veto and the deployed anchor — two whole
- # blocks of work — never ran on it, and it rendered `unmeasured` for as long as the panel existed.
- # The first version of this mutant appended `return null;`, which made the sweep below UNREACHABLE
- # — and TypeScript does not narrow in unreachable code, so `if (m) deep.push(m)` stopped compiling
- # and the pre-flight refused it. It restores the defect at the SOURCE instead: the finder never
- # asks git, which is exactly the state Gaming's 40 tags went unread in.
- ("findManifest stops one level above Gaming's manifest — half the corpus is never asked",
-  "src/workledger.ts",
-  '  const tracked = (git(repoPath, ["ls-files", "*package.json"]) || "")',
-  '  const tracked = ("")'),
 
- # The sweep must be BOUNDED. Unbounded, a manifest in a fixture or vendor tree answers for a
- # product nobody ships — the confidently-wrong line one layer down, which is R5's whole subject.
- ("the tracked sweep is unbounded — a fixture manifest four levels down answers for the repo",
-  "src/workledger.ts",
-  '    .filter((rel) => rel.split("/").length - 1 <= MANIFEST_MAX_DEPTH);',
-  "    ;"),
+ # MC-001 · THE EXACT DEFECT the block was written to fix, reintroduced: a freshly-restored session,
+ # whose whole job is to READ its memory file, is told again to WRITE it. Killed by
+ # "context memory: the fresh session is restored from the memory doc" (extension.test.js), which
+ # asserts the delivered --reply line is context-restore's, never context-save's.
+ ("the restore step's reply hint reverts to the save one — a fresh session is told to write, not read",
+  "src/extension.ts",
+  '        : step.kind === "clear" ? "context-clear" : "context-restore";',
+  '        : step.kind === "clear" ? "context-clear" : "context-save";'),
 
- # `ls-files` is the MECHANISM that keeps dependencies out. Reading the filesystem instead would let
- # a committed or vendored dependency manifest speak for the repo.
- ("a committed node_modules dependency is allowed to answer for the repo",
-  "src/workledger.ts",
-  '    .filter((rel) => !rel.split("/").includes("node_modules"))',
-  "    "),
+ # MC-001 · the clear step's own reply key swapped for the restore one — killed by "context memory:
+ # /clear follows only once the memory file is on disk", which asserts context-clear's own line, not
+ # some other step's.
+ ("the clear step's reply hint is keyed as a restore instead of its own",
+  "src/extension.ts",
+  '      const replyKind = step.kind === "save" ? "context-save"\n        : step.kind === "clear" ? "context-clear" : "context-restore";',
+  '      const replyKind = step.kind === "save" ? "context-save"\n        : step.kind === "clear" ? "context-restore" : "context-restore";'),
 
- # pleodo: a Python engine with a web shell, rendering "never released — pleodo-web 0.1.0 has never
- # changed version" in RED with 48,819 lines called unshipped, off a manifest that cannot see its
- # releases. The livegita shape in a second ecosystem.
- ("a Python build manifest no longer contradicts the Node manifest — pleodo's false RED returns",
-  "src/workledger.ts",
-  '  ["*pyproject.toml", "Python"], ["*setup.py", "Python"],',
-  "  "),
+ # MC-001 · the whole point of injectTo's new `replyKind` parameter is that it can differ from the
+ # debug-log file name; dropping it collapses save/clear/restore back onto ONE reply line again (via
+ # the "context-debug.json" fallback, which no longer even has a REPLY_FOR entry — every context-
+ # memory message would get the generic "none — this is a tool" line). Killed by the save-step
+ # assertion in extension.test.js, which requires the SAVE-specific line, not the generic fallback.
+ # PD-001 RE-ANCHORED. This mutant used to cut `replyKind ?? ` out of the senderArgs call directly;
+ # that argument is now the local `kind`, computed one line up and used by BOTH the reply hint and
+ # the reporting contract, so the old anchor no longer matches any line in the file. Same defect,
+ # current shape — and it now also collapses the contract's keying, which is the stronger kill.
+ ("injectTo ignores replyKind — every context-memory message collapses back onto one debug-log key",
+  "src/inject.ts",
+  "const kind = replyKind ?? debugName;",
+  "const kind = debugName;"),
 
- # And the PATTERN is the decision. Keying on `*.py` vetoes livegita (26 .py, 38 tags, a correct
- # `tag` reading) and this repo (5 .py — the mutation harness — a correct `deployed` reading),
- # destroying two right answers to fix one wrong one.
- ("the Python veto keys on .py FILES, so any repo carrying a script is refused a measurement",
-  "src/workledger.ts",
-  '  ["*pyproject.toml", "Python"], ["*setup.py", "Python"],',
-  '  ["*.py", "Python"],'),
+ # ── PD-001 · the reporting contract (owner: orchestrators talk PRODUCT, not statistics) ────────
+ # Each of these is a way the boundary can silently stop being a boundary. The two that matter most
+ # are the second and third: they do not remove the feature, they point it at the WRONG session, and
+ # a worker told to report "product, not figures" would stop sending the counts a block is banked on.
 
- # THE FALSE GREEN THE GATE WAS HIDING. Gaming: 228 commits since its tag, +2,695/-171,230 lines,
- # net -152,056 — rendered as "nothing unshipped", in GREEN, with 2,695 lines in front of nobody.
- ("a NEGATIVE net diff is read as zero — 'nothing unshipped' about product that shrank",
-  "src/workledger.ts",
-  "  if (r.unshippedProduct !== null && r.unshippedProduct < 0) {\n"
-  "    return { blocksSince: r.blocksSince, unshippedProduct: null, netShrank: r.unshippedProduct };\n"
-  "  }",
-  "  "),
+ ("the contract is never attached — the feature is inert and every orchestrator message is unchanged",
+  "src/inject.ts",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;\n  return `${msg}\\n\\n${REPORTING_CONTRACT}`;",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;\n  return msg;"),
 
- # The band is the part that matters: statusView derives the whole node's icon from it, and GREEN is
- # the one colour that tells a reader to stop looking.
- ("a repo whose product SHRANK since its release is banded green",
-  "src/workledger.ts",
-  '  const band: Band = dist.netShrank !== null ? "unknown"',
-  '  const band: Band = dist.netShrank !== null ? "good"'),
+ ("the contract goes to EVERYONE — a worker is told to drop the counts its orchestrator banks on",
+  "src/inject.ts",
+  "  if (!ORCHESTRATOR_KINDS.has(kind)) return msg;",
+  "  if (false) return msg;"),
 
- # WL-011-R1's rule, in its next costume: the doubt the object already carries must QUALIFY the
- # sentence, not merely be absent from it. An orchestrator told "228 block(s) since" and nothing
- # else reads the magnitude as small; it is not small, it is refused.
- ("the briefing keeps the commit distance but drops the shrink that makes it unreadable",
+ ("the gate wake is reclassified as orchestrator-facing — the one message that ASKS for grade counts "
+  "is told not to report figures",
+  "src/inject.ts",
+  '  "gate-debug.json",     // health.ts  — YOUR gate exited; read its log and write your grade counts',
+  '  "unused-gate-debug.json",'),
+
+ ("a command carries the contract — '/clear' is typed with a paragraph after it and stops being a command",
+  "src/inject.ts",
+  '  if (!msg.trim() || msg.trimStart().startsWith("/")) return msg;',
+  "  if (!msg.trim()) return msg;"),
+
+ ("the contract is computed but never typed — it appears in no composer, only in the code",
+  "src/inject.ts",
+  '"--message", outgoing, "--submit",',
+  '"--message", message, "--submit",'),
+
+ ("the debug log claims a contract was attached whichever way it went — the record stops being evidence",
+  "src/inject.ts",
+  "        contract: outgoing !== message,",
+  "        contract: true,"),
+
+ # §2(b) · the briefing's purpose line. Reverting it to the bare header is exactly the state the
+ # owner complained about: figures handed to an orchestrator with nothing saying what they are for,
+ # which is how they came to be recited upward in the first place.
+ ("the briefing stops saying what its numbers are FOR — the reminder against drift is gone",
   "src/workledger.ts",
-  "           `${measurableDistance(r).netShrank !== null\n"
-  "              ? `; product has NET SHRUNK by ` +\n"
-  "                `${Math.abs(measurableDistance(r).netShrank as number)} line(s) since, so how much ` +\n"
-  "                `is unshipped is ${UNMEASURED}` : \"\"}` +",
-  '           `` +'),
+  "  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days — yours, for choosing the next ` +\n"
+  "          `block; nothing here is a mark on you, and none of it is for repeating upward:`,",
+  "  return [`[loom-ledger] ${w.repo}, last ${w.windowDays} days:`,"),
 ]
 
 def sh(cmd):

@@ -477,10 +477,14 @@ export function activate(context: vscode.ExtensionContext) {
         : step.kind === "clear" ? `Loom: ${orch.role} — ${step.note} (its context is being reset)`
         : `Loom: ${step.note}`;
       vscode.window.showInformationMessage(label);
+      // MC-001 · the reply hint is keyed by WHICH of the three messages this is (save/clear/restore),
+      // not by the shared debug log file — see inject.ts's REPLY_FOR and injectTo's `replyKind`.
+      const replyKind = step.kind === "save" ? "context-save"
+        : step.kind === "clear" ? "context-clear" : "context-restore";
       injectTo(target, step.message || "", "context-debug.json", (ok, note) => {
         if (!ok) vscode.window.showWarningMessage(
           `Loom: could not deliver the context-memory ${step.kind} to ${orch.role} (${note}).`);
-      });
+      }, replyKind);
       return step;
     };
 
