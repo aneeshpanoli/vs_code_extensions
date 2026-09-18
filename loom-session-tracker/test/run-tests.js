@@ -120,6 +120,117 @@ function reapAbandonedSandboxes() {
   return reaped;
 }
 
+// ── TI-002 · THE BUILD THE TESTS ACTUALLY LOAD ──────────────────────────────────────
+// `test/harness.js` load() requires from out/, and NOTHING on this path has ever run tsc — the only
+// tsc is the `compile` npm script, which ./test.sh does not call. So editing src/ and running the
+// targeted tests graded the PREVIOUS build, and playbook §23 made that targeted run a worker's ONLY
+// verification before it answers. TI-001 closed the "no tests ran" door; this is the same lie
+// through the next one — a green run that never saw the change.
+//
+// It REFUSES rather than compiles. `tsc -p ./` here is a 2.2s FULL build (no `incremental`), and
+// mutation.py already compiles each mutant copy itself, so compiling on every run would pay that
+// twice per mutant. Stat-ing 74 files costs 0.34ms, measured, against a 2.2s compile.
+//
+// MTIME IS THE WHOLE OF THE EVIDENCE, and the honest statement of that is two-sided. A NEWER mtime
+// is what protects you; an OLDER one defeats you just as completely, and not only via a deliberate
+// `touch` — `cp -p`, `rsync -a`, `tar -x` and any editor that restores from a backup all write new
+// CONTENT under an old timestamp, and this check will pass them. Only a content hash would close
+// that, and that is not what this is. Equally, it refuses on timestamps alone: a `git checkout` or
+// merge that rewrites tsconfig.json or a source with identical content costs a 2.2s rebuild. That
+// direction is the safe one, so it is deliberate — but it is a false refusal and it is named here
+// rather than discovered.
+const SRC_DIR = path.join(__dirname, "..", "src");
+const OUT_DIR = path.join(__dirname, "..", "out");
+const TSCONFIG = path.join(__dirname, "..", "tsconfig.json");
+const COMPILE_HINT = "  ELECTRON_RUN_AS_NODE=1 ${CODIUM:-/usr/share/codium/codium} node_modules/typescript/bin/tsc -p ./";
+
+function mtime(p) { try { return fs.statSync(p).mtimeMs; } catch { return null; } }
+
+// ── TI-002 · A WRITE THAT ACTUALLY LANDS ────────────────────────────────────────────
+// The child's fd 1 is a NON-BLOCKING pipe. `console.log` queues in libuv and `process.exit` drops
+// whatever has not drained; a single `fs.writeSync` throws EAGAIN the moment the 64KB pipe is full,
+// which it is whenever the parent is stalled — and the parent stalls synchronously, per child,
+// inside reclaim()'s recursive rmSync. Both routes lose output, and the one that matters is the
+// ##RESULT trailer, whose absence the parent reads as a dead file.
+//
+// So: retry on EAGAIN, and handle a PARTIAL write, because writeSync returns a byte count and is
+// under no obligation to take the whole buffer. Atomics.wait is the only synchronous sleep here —
+// a busy spin would keep this process on the CPU that the parent needs in order to drain us.
+// BOUNDED: if the parent is never going to read again, a test runner must not hang for ever.
+const WRITE_DEADLINE_MS = 30000;
+function writeAllSync(fd, text) {
+  const buf = Buffer.from(text, "utf8");
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  let off = 0;
+  const until = Date.now() + WRITE_DEADLINE_MS;
+  while (off < buf.length) {
+    try {
+      off += fs.writeSync(fd, buf, off, buf.length - off);
+    } catch (e) {
+      if (e.code !== "EAGAIN") return false;          // EPIPE and friends: the reader is gone
+      if (Date.now() > until) return false;
+      try { Atomics.wait(pause, 0, 0, 5); } catch { /* not every build allows it; the retry still spins */ }
+    }
+  }
+  return true;
+}
+
+/** Files under `dir` matching `re`, RECURSIVELY, as paths relative to `dir`.
+ *  R1 · IT WALKS. A flat readdir skipped any subdirectory entirely, so the first person to add
+ *  `src/foo/bar.ts` would have lost this guarantee for it silently and with no warning anywhere —
+ *  which is a defeat of the guard that needs no `touch` at all. src/ is flat today; this is for
+ *  the day it is not. Found by the adversarial pass, driven, not argued. */
+function filesUnder(dir, re, base = dir) {
+  let found = [];
+  let ents;
+  try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return found; }
+  for (const e of ents) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) found = found.concat(filesUnder(full, re, base));
+    // `.d.ts` is EXCLUDED: tsc emits no .js for a declaration file, so counting one as a source
+    // would refuse every run over a file that is not missing.
+    else if (re.test(e.name) && !e.name.endsWith(".d.ts")) found.push(path.relative(base, full));
+  }
+  return found;
+}
+
+/** Every reason out/ is not a faithful build of src/. Empty means the tests will load what the
+ *  worker just wrote. Pure, so a test can drive it against a fixture tree. */
+function staleReasons(srcDir, outDir, tsconfig) {
+  const srcs = filesUnder(srcDir, /\.(ts|tsx|mts|cts)$/i).sort();
+  if (!srcs.length) return [];
+  const reasons = [];
+  const outTimes = [];
+  const expected = new Set();
+  for (const rel of srcs) {
+    const js = rel.replace(/\.(ts|tsx|mts|cts)$/i, ".js");
+    expected.add(js);
+    const tm = mtime(path.join(srcDir, rel)), om = mtime(path.join(outDir, js));
+    if (om === null) { reasons.push(`src/${rel} has never been compiled — out/${js} does not exist`); continue; }
+    outTimes.push(om);
+    if (tm !== null && tm > om) reasons.push(`src/${rel} is newer than out/${js} by ${((tm - om) / 1000).toFixed(1)}s`);
+  }
+  // A source that was DELETED leaves its build output behind — tsc never removes it — and the tests
+  // can still load() it. That is green against code that no longer exists.
+  for (const js of filesUnder(outDir, /\.(js|cjs|mjs)$/i).sort()) {
+    if (!expected.has(js)) reasons.push(`out/${js} has no src/ — a deleted source the tests can still load`);
+  }
+  const cm = mtime(tsconfig);
+  if (cm !== null && outTimes.length && cm > Math.min(...outTimes)) reasons.push(`tsconfig.json changed after the build`);
+  return reasons;
+}
+
+/** Exit 4 — its own code, so "your build is stale" can never be read as a test failure (1), an
+ *  empty run (3) or a missing codium (2). */
+function refuseStaleBuild(reasons) {
+  console.log(`\n\x1b[31mout/ is not a build of src/ — REFUSING to run\x1b[0m`);
+  for (const r of reasons.slice(0, 8)) console.log(`  - ${r}`);
+  if (reasons.length > 8) console.log(`  ... and ${reasons.length - 8} more`);
+  console.log(`\nThe tests load out/, not src/. Running now would grade the PREVIOUS build and could`);
+  console.log(`report green for a change it never saw. Compile first:\n${COMPILE_HINT}`);
+  process.exit(4);
+}
+
 function sandboxEnv() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "loom-test-home-"));
   // FX-002 · TMPDIR INSIDE THE SANDBOX. Each child's `os.tmpdir()` now resolves here, so every
@@ -150,6 +261,12 @@ if (!process.env.LOOM_TEST_SANDBOX) {
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(sig, () => { reclaimAll(); process.exit(sig === "SIGINT" ? 130 : sig === "SIGTERM" ? 143 : 129); });
   }
+  // TI-002 · before a single child is spawned, and before the sandbox machinery costs anything.
+  // There is deliberately NO env override: an escape hatch in a guard against a false green is a
+  // hole in it, and out/ is untracked here, so nothing but an actual edit moves these mtimes.
+  const stale = staleReasons(SRC_DIR, OUT_DIR, TSCONFIG);
+  if (stale.length) refuseStaleBuild(stale);
+
   const reaped = reapAbandonedSandboxes();
   if (reaped) console.log(`reaped ${reaped} sandbox(es) abandoned by a run that could not clean up (SIGKILL or worse)`);
 
@@ -182,21 +299,66 @@ if (!process.env.LOOM_TEST_SANDBOX) {
       const file = queue.shift();
       const { sandbox, env } = sandboxEnv();
       running++;
-      let out = "";
+      // TI-002 · THE TWO STREAMS ARE KEPT APART. They used to be appended to ONE string and the
+      // trailer matched with `$` — but stderr is a second pipe, delivered on its own schedule, and
+      // for a file that shells out (project.test.js runs git through execFileSync, whose stderr is
+      // ours by default) the writer is a DIFFERENT PROCESS. So a PASSING file whose last word came
+      // from stderr parsed as no-trailer and was reported `crashed (exit 0)` — the string measured
+      // on main. Driven standalone before this change: 38/40 and 34/40 mislabelled.
+      let sout = "", serr = "", settled = false;
       const child = spawn(process.execPath, [__filename, "--file", file], { env, stdio: ["ignore", "pipe", "pipe"] });
       LIVE_CHILDREN.add(child);
-      child.stdout.on("data", (d) => (out += d));
-      child.stderr.on("data", (d) => (out += d));
-      child.on("close", (code) => {
+      child.stdout.on("data", (d) => (sout += d));
+      child.stderr.on("data", (d) => (serr += d));
+      // A child that could not be spawned at all emits `error`. MEASURED: `close` fires anyway
+      // (ENOENT gives code -2), so the accounting never depended on this — it adds the reason to
+      // the output, nothing more, and an earlier comment here overstated it.
+      child.on("error", (e) => { serr += `\n  spawn failed: ${e.message}\n`; });
+      child.on("close", (code, signal) => {
+        if (settled) return;
+        settled = true;
         running--; filesDone++;
         LIVE_CHILDREN.delete(child);
         reclaim(sandbox);
-        const m = /##RESULT (\d+) (\d+)\n?$/.exec(out);
-        const body = out.replace(/##RESULT \d+ \d+\n?$/, "");
+        // TI-002 · THE TRAILER IS THE WHOLE OF THE LAST LINE, not a match anywhere near the end.
+        // A substring match lets QUOTED output impersonate it: fixtures.test.js prints nested
+        // runner output inside its own failure messages, `##RESULT` and all. Anchoring to the last
+        // line removes that class rather than arguing it cannot happen today.
+        const trimmed = sout.replace(/\s+$/, "");
+        const cut = trimmed.lastIndexOf("\n");
+        const m = /^##RESULT (\d+) (\d+)$/.exec(trimmed.slice(cut + 1));
+        const body = (m ? trimmed.slice(0, cut + 1) : sout) + serr;
         process.stdout.write(body);
-        if (m) { pass += Number(m[1]); fail += Number(m[2]); }
-        else { fail++; failures.push(`${file}: crashed (exit ${code})`); }
-        for (const line of body.split("\n")) if (/\u2717/.test(line)) failures.push(line.replace(/^\s*\x1b\[31m\u2717\x1b\[0m /, ""));
+        // TI-002 · THE TRAILER IS NOT BELIEVED ON ITS OWN — it is cross-checked against how the
+        // process actually ended, because the two can disagree and the old code only ever read the
+        // trailer. Where they disagree the runner cannot tell which is true, so it REFUSES: every
+        // branch here adds to `fail`, and none of them can end a run green.
+        const expected = m ? (Number(m[2]) ? 1 : 0) : null;
+        if (signal) {
+          // THE FALSE GREEN. A child SIGKILLed after printing a clean trailer used to be counted as
+          // its full passes with no failure — driven: `7/7 passed, exit 0` over a corpse. The OOM
+          // killer reaches these children first, and they run 25-at-a-time.
+          fail++;
+          failures.push(`${file}: killed by ${signal}${m ? ` AFTER reporting ${m[1]}/${Number(m[1]) + Number(m[2])} — that report is not trusted` : ""}`);
+        } else if (!m) {
+          fail++;
+          failures.push(/##RESULT/.test(sout)
+            ? `${file}: its ##RESULT was not the last thing it printed (exit ${code}) — output after it means the file did not finish cleanly`
+            : `${file}: no ##RESULT trailer (exit ${code}) — the file never reported a result`);
+        } else if (Number(m[1]) + Number(m[2]) === 0) {
+          // TI-001's rule — ZERO EXECUTED IS NEVER A PASS — was enforced only INSIDE the child, and
+          // the parent is the thing that prints the green. So a file reporting `##RESULT 0 0`
+          // contributed nothing, satisfied every guard (filesDone is complete, the run's total is
+          // non-zero because OTHER files ran) and the run exited 0. Driven by the adversarial pass.
+          fail++;
+          failures.push(`${file}: reported 0 tests — a file that executed nothing is not a pass`);
+        } else if (code !== expected) {
+          fail++;
+          failures.push(`${file}: ##RESULT says ${m[1]} passed / ${m[2]} failed but the process exited ${code} (expected ${expected}) — the runner cannot tell which is true`);
+        } else {
+          pass += Number(m[1]); fail += Number(m[2]);
+        }
+        for (const line of body.split("\n")) if (/✗/.test(line)) failures.push(line.replace(/^\s*\x1b\[31m✗\x1b\[0m /, ""));
         if (queue.length) next();
         else if (running === 0) done();
       });
@@ -207,6 +369,18 @@ if (!process.env.LOOM_TEST_SANDBOX) {
     // TI-001 · the guard on the parallel path too. 51 files that between them ran nothing is a
     // broken runner, not a green run.
     if (total === 0) refuseEmptyRun(`the whole suite (${FILES.length} test files)`, "  no test file reported a result");
+    // TI-002 · a cheap structural backstop, and DELIBERATELY NOT the thing that stops a file
+    // vanishing. `done()` has one call site, inside the close handler that increments filesDone,
+    // and running only reaches 0 once every spawned child has closed — so this cannot fire today,
+    // and an earlier comment here claimed more for it than that. What actually stops a file
+    // vanishing is the per-child grading above: a signal, a missing trailer, a trailer that
+    // disagrees with the exit code, and a file reporting zero tests are each a failure. This stands
+    // for the day the loop above grows a path that forgets a file.
+    if (filesDone !== FILES.length) {
+      console.log(`\n\x1b[31m${filesDone} of ${FILES.length} test files reported — REFUSING to grade this run\x1b[0m`);
+      console.log(`A file that vanishes from a run without the run noticing is the defect this guard exists for. Exiting 3.`);
+      process.exit(3);
+    }
     console.log(`\n${fail ? "\x1b[31m" : "\x1b[32m"}${pass}/${total} passed\x1b[0m  — ${FILES.length} test files, ` +
       `${jobs} in parallel, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     if (failures.length) { console.log("\nfailed:"); for (const f of failures) console.log(`  - ${f}`); }
@@ -235,6 +409,14 @@ const files = chosen.files;
 if (!files.length) refuseEmptyRun(how, `  no test file matches it — try one of ${FILES.length}, e.g. ./test.sh ${FILES[0]}`);
 for (const f of files) require(path.join(__dirname, f));
 
+// TI-002 · THE RUNNER'S OWN VERDICT LINES GO OUT BLOCKING, for the same reason as the trailer.
+// Measured: a child producing 20,000 console.log lines delivered 4,345 of them — `process.exit`
+// drops whatever libuv has not drained. These are the ✓/✗ lines the parent scrapes for failure
+// names at :361 and that mutation.py parses to decide which tests passed (PASS_RE/FAIL_RE), so
+// losing them turns a red file into a half-reported one. A test's OWN console.log is still
+// droppable — that is pre-existing and not something this runner can reach.
+const say = (line) => { writeAllSync(1, line + "\n"); };
+
 (async () => {
   let pass = 0, fail = 0, skipped = 0;
   const failures = [];
@@ -244,14 +426,14 @@ for (const f of files) require(path.join(__dirname, f));
     try {
       await s.fn();
       pass++;
-      console.log(`  \x1b[32m✓\x1b[0m ${s.name}`);
+      say(`  \x1b[32m✓\x1b[0m ${s.name}`);
     } catch (e) {
       fail++;
       failures.push({ name: s.name, err: e });
-      console.log(`  \x1b[31m✗\x1b[0m ${s.name}`);
-      console.log(`      ${String(e.message || e).split("\n").join("\n      ")}`);
+      say(`  \x1b[31m✗\x1b[0m ${s.name}`);
+      say(`      ${String(e.message || e).split("\n").join("\n      ")}`);
       if (!(e instanceof H.AssertionError) && e.stack) {
-        console.log(`      ${e.stack.split("\n").slice(1, 3).join("\n      ")}`);
+        say(`      ${e.stack.split("\n").slice(1, 3).join("\n      ")}`);
       }
     } finally {
       // FX-002 · the owner. A suite that THREW still gives its fixture directories back; that is the
@@ -266,7 +448,15 @@ for (const f of files) require(path.join(__dirname, f));
       ? `  ${skipped} suite(s) exist and none matched. Try a FILE name — e.g. ./test.sh ${FILES[0]}`
       : `  ${files.length} file(s) matched but declared no suite`);
   }
-  if (fileArg) { console.log(`##RESULT ${pass} ${fail}`); process.exit(fail ? 1 : 0); }
+  // TI-002 · the trailer goes out through writeAllSync, which RETRIES. The first version of this
+  // called fs.writeSync once and claimed in a comment that "writeSync cannot be dropped" — that was
+  // wrong, and an adversarial pass drove it: fd 1 is a NON-BLOCKING pipe, the parent stalls
+  // synchronously between children (inside reclaim()'s recursive rmSync and sandboxEnv()'s mkdtemp),
+  // the 64KB pipe fills, and writeSync throws EAGAIN. Re-measured independently: the trailer was
+  // lost outright and the file was reported `crashed (exit 0)` — the very symptom this was meant to
+  // end. The fallback was worse than useless: console.log followed by process.exit is exactly the
+  // asynchronous drop the comment claimed to be avoiding.
+  if (fileArg) { writeAllSync(1, `##RESULT ${pass} ${fail}\n`); process.exit(fail ? 1 : 0); }
   const total = pass + fail;
   console.log(`\n${fail ? "\x1b[31m" : "\x1b[32m"}${pass}/${total} passed\x1b[0m` +
     (skipped ? `  (${skipped} filtered out)` : "") + `  — ${files.length} test files`);

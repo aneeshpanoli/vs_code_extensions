@@ -2957,6 +2957,77 @@ MUTATIONS = [
   "src/notifier.ts",
   "    queue.sort((a, b) => Date.parse(a.firstSeen) - Date.parse(b.firstSeen));",
   "    queue.sort((a, b) => Date.parse(b.firstSeen) - Date.parse(a.firstSeen));"),
+ # ── TI-002 · the runner must not grade the previous build, and must not lose a file ──
+ # Two defects in the direction of a FALSE GREEN — the one nobody reports. ./test.sh never ran tsc,
+ # and the tests load out/, so a worker could edit src/, run the targeted tests that §23 makes its
+ # ONLY verification, see green, and have graded the build before its change. And the parallel path
+ # read each child's ##RESULT trailer without ever looking at how the process ended.
+
+ # Killed by "TI-002: a src/ edit CANNOT report green against the old build". THE WHOLE GUARD
+ # REMOVED: a requirement with no mutant is an unfalsifiable claim.
+ ("the staleness check is gone — ./test.sh grades whatever is in out/, as it always did",
+  "test/run-tests.js",
+  'if (stale.length) refuseStaleBuild(stale);',
+  'if (false) refuseStaleBuild(stale);'),
+
+ # Killed by "TI-002: a source with NO build output…". tsc never removes the output of a deleted
+ # source, so the orphan stays loadable for ever — green against code that no longer exists.
+ ("a build output whose source was DELETED is no longer noticed — out/ outlives src/",
+  "test/run-tests.js",
+  'for (const js of filesUnder(outDir, /\\.(js|cjs|mjs)$/i).sort()) {',
+  'for (const js of []) {'),
+
+ # Killed by the same test's first half. A source that was never compiled at all is the loudest
+ # form of stale, and an mtime comparison alone cannot see it — there is nothing to compare against.
+ ("a source with no build output at all passes the freshness check",
+  "test/run-tests.js",
+  'if (om === null) { reasons.push(`src/${rel} has never been compiled — out/${js} does not exist`); continue; }',
+  'if (om === null) { continue; }'),
+
+ # Killed by "TI-002: a file KILLED BY A SIGNAL cannot leave the run green". THE FALSE GREEN ITSELF:
+ # a child SIGKILLed after printing a clean trailer was counted as its full passes and no failures —
+ # driven as `7/7 passed, exit 0` over a corpse. These children run 25-at-a-time and the OOM killer
+ # reaches them first, which is how a file vanishes from a run without the run noticing.
+ ("a child that DIED is still believed about its own result — a corpse reports its passes",
+  "test/run-tests.js",
+  'if (signal) {',
+  'if (false) {'),
+
+ # Killed by "TI-002: a PASSING file whose last output came from stderr is not called a crash".
+ # The original defect: both pipes appended to ONE string and the trailer matched with `$`. stderr
+ # is a second pipe on its own schedule — for project.test.js, written by git itself — so a PASSING
+ # file whose last word came from stderr parsed as no-trailer. Measured on main as
+ # `project.test.js: crashed (exit 0)`, once, not reproducing.
+ ("the two pipes are merged back into one buffer — a passing file whose stderr lands last is a crash",
+  "test/run-tests.js",
+  'child.stderr.on("data", (d) => (serr += d));',
+  'child.stderr.on("data", (d) => (sout += d));'),
+
+ # Killed by "TI-002: a trailer that DISAGREES with the exit code is refused". The runner can only
+ # vouch for a file when the two things it observes agree; without this it simply believes the
+ # trailer, which is a thing the child prints and not a thing the runner saw.
+ ("the trailer is no longer cross-checked against the exit code — the runner guesses instead of refusing",
+  "test/run-tests.js",
+  '} else if (code !== expected) {',
+  '} else if (false) {'),
+
+ # ── TI-002-R1 · the two the ADVERSARIAL PASS found, driven before they were believed ──
+
+ # Killed by "TI-002: a file reporting ZERO tests fails the run". TI-001's rule — zero executed is
+ # never a pass — was enforced only INSIDE the child, and the PARENT is what prints the green. A
+ # file contributing nothing satisfied every other guard, because other files had run.
+ ("a file that reports ZERO tests is counted as a clean pass — TI-001's rule never reached the parent",
+  "test/run-tests.js",
+  '} else if (Number(m[1]) + Number(m[2]) === 0) {',
+  '} else if (false) {'),
+
+ # Killed by "TI-002: a source in a SUBDIRECTORY is not invisible to the freshness check". A flat
+ # readdir skipped a directory outright, so the first src/foo/bar.ts would have lost the guarantee
+ # silently — a defeat of the guard needing no `touch` at all.
+ ("the source walk stops at the top level — anything in a subdirectory is unchecked for ever",
+  "test/run-tests.js",
+  'if (e.isDirectory()) found = found.concat(filesUnder(full, re, base));',
+  'if (false) found = found.concat(filesUnder(full, re, base));'),
 
 ]
 
