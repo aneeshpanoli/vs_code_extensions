@@ -328,10 +328,18 @@ export interface WatcherState {
   sessionId: string | null;
   /** Bytes of that transcript already classified. */
   offset: number;
-  /** The dispatch watermark current when a reminder was last DELIVERED. The latch. */
-  remindedAt: string | null;
-  /** The session id current when that reminder was delivered — the second re-arm. */
+  /** THE LATCH: a reminder was DELIVERED for this stretch. What WE did — never nullable, because
+   *  "we delivered nothing" is a fact we always have. */
+  reminded: boolean;
+  /** The session that delivery happened in. The second half of the latch key. */
   remindedSession: string | null;
+  /** THE WATERMARK: what the world had reported as its last dispatch at that delivery. What the
+   *  WORLD did, so null is a real observation — no dispatch had been reported yet — and never a
+   *  latch key. Compared to the live watermark by identity; the two are the same kind of fact. */
+  remindedDispatch: string | null;
+  /** When we delivered, for whoever reads this file. Nothing branches on it, which is the point:
+   *  a delivery instant and a dispatch watermark are not comparable and no longer share a field. */
+  deliveredAt?: string | null;
   updatedAt?: string;
 }
 
@@ -361,7 +369,8 @@ export interface WatcherResult {
   skip: WatcherSkip | null;
 }
 
-const EMPTY: WatcherState = { sessionId: null, offset: 0, remindedAt: null, remindedSession: null };
+const EMPTY: WatcherState = { sessionId: null, offset: 0, reminded: false, remindedSession: null,
+                              remindedDispatch: null, deliveredAt: null };
 
 function file(repo: string): string {
   return path.join(LOOM_ROOT, repo, "watcher-state.json");
@@ -374,8 +383,15 @@ export function loadWatchers(repo: string): WatcherState {
       return {
         sessionId: typeof st.sessionId === "string" ? st.sessionId : null,
         offset: Number.isFinite(st.offset) && Number(st.offset) >= 0 ? Number(st.offset) : 0,
-        remindedAt: typeof st.remindedAt === "string" ? st.remindedAt : null,
+        // MIGRATION. Nothing on disk says which kind of fact an old `remindedAt` held — that
+        // ambiguity IS the defect — so it seeds the latch and NOT the watermark. A bus that has
+        // dispatched therefore re-arms on its first tick after the upgrade: one reminder, not a
+        // burst, and not silence.
+        reminded: typeof st.reminded === "boolean" ? st.reminded
+                  : typeof st.remindedAt === "string",
         remindedSession: typeof st.remindedSession === "string" ? st.remindedSession : null,
+        remindedDispatch: typeof st.remindedDispatch === "string" ? st.remindedDispatch : null,
+        deliveredAt: typeof st.deliveredAt === "string" ? st.deliveredAt : null,
       };
     }
   } catch { /* none yet */ }
@@ -389,8 +405,9 @@ export function saveWatchers(repo: string, st: WatcherState): void {
     try {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
       if (cur && (cur.sessionId ?? null) === st.sessionId && Number(cur.offset) === st.offset
-          && (cur.remindedAt ?? null) === st.remindedAt
-          && (cur.remindedSession ?? null) === st.remindedSession) return;
+          && (cur.reminded ?? false) === st.reminded
+          && (cur.remindedSession ?? null) === st.remindedSession
+          && (cur.remindedDispatch ?? null) === st.remindedDispatch) return;
     } catch { /* write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -429,10 +446,15 @@ export function watcherTick(
 
   // A DISPATCH RE-ARMS, exactly as in delegation.ts: handing work over clears the suppression.
   // Nothing else clears it except a new session below.
-  if (input.lastDispatch && input.lastDispatch !== st.remindedAt && st.remindedAt !== null
-      && input.lastDispatch > st.remindedAt) {
-    st.remindedAt = null;
+  // Both sides are watermarks, so this asks whether the world's last dispatch CHANGED, not
+  // whether it grew: ordering means nothing across two kinds of fact. It therefore re-arms on a
+  // DECREASE too, which is a real event rather than a curiosity — the watermark is a max over OPEN
+  // ledger records, so a record CLOSING lowers it. That is noise the old comparison did not make,
+  // and it is the direction WT-001 chose.
+  if (input.lastDispatch && st.reminded && input.lastDispatch !== st.remindedDispatch) {
+    st.reminded = false;
     st.remindedSession = null;
+    st.remindedDispatch = null;
   }
 
   // (5) FIRST SIGHT OF THIS SESSION — baseline and count nothing, which is what keeps a watcher
@@ -444,8 +466,9 @@ export function watcherTick(
     st.sessionId = input.sessionId;
     st.offset = size;
     // A new session is a genuinely new stretch, so it re-arms too — the second and last re-arm.
-    st.remindedAt = null;
+    st.reminded = false;
     st.remindedSession = null;
+    st.remindedDispatch = null;
     return { state: st, finding: null, skip: "first sight of this session — baselined, nothing counted" };
   }
 
@@ -455,8 +478,8 @@ export function watcherTick(
   if (res.armings.length === 0) {
     return { state: st, finding: null, skip: "no watcher armed since the last scan" };
   }
-  // THE LATCH — once per stretch, cleared only by a newer dispatch or a new session.
-  if (st.remindedAt !== null && st.remindedSession === input.sessionId) {
+  // THE LATCH — once per stretch, cleared only by a CHANGED dispatch or a new session.
+  if (st.reminded && st.remindedSession === input.sessionId) {
     return { state: st, finding: null, skip: "already reminded for this stretch" };
   }
   const kinds: string[] = [];
@@ -473,7 +496,9 @@ export function watcherTick(
  *  mid-turn is a reminder nobody received. Same rule as delegation.ts, same three findings behind it. */
 export function markWatcherReminded(st: WatcherState, sessionId: string | null,
                                     lastDispatch: string | null): WatcherState {
-  return { ...st, remindedAt: lastDispatch ?? new Date().toISOString(), remindedSession: sessionId };
+  return { ...st, reminded: true, remindedSession: sessionId,
+           remindedDispatch: lastDispatch ?? null,
+           deliveredAt: new Date().toISOString() };
 }
 
 /** How each kind reads in the sentence. The Bash shape needs saying in words; the tools name

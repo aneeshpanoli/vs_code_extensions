@@ -2469,8 +2469,28 @@ MUTATIONS = [
  # is how a reminder becomes one people turn off. Killed by "watchers: reminded ONCE per stretch".
  ("the watcher reminder repeats for every arming instead of once per stretch",
   "src/watchers.ts",
-  "  if (st.remindedAt !== null && st.remindedSession === input.sessionId) {",
+  "  if (st.reminded && st.remindedSession === input.sessionId) {",
   "  if (false) {"),
+
+ # WT-001. THE DEFECT ITSELF: re-arm by ORDERING between a live dispatch watermark and a field that
+ # may hold the instant we delivered. The null branch is reachable (`lastDispatchAt` returns null on
+ # an empty ledger — two buses read null today), and what is then lost is any dispatch REPORTED after
+ # a delivery whose `openedAt` precedes it. Killed by "watchers: A REMINDER DELIVERED WITH NO
+ # WATERMARK STILL RE-ARMS ON THE NEXT DISPATCH" and by "watchers: A RE-ARM THE ORDERING COMPARISON
+ # WOULD SWALLOW FIRES ONCE, NOT EVERY TICK".
+ ("the watcher re-arm compares a dispatch watermark against a delivery instant, and swallows it",
+  "src/watchers.ts",
+  "  if (input.lastDispatch && st.reminded && input.lastDispatch !== st.remindedDispatch) {",
+  '  if (input.lastDispatch && st.reminded\n'
+  '      && input.lastDispatch > (st.remindedDispatch ?? st.deliveredAt ?? "")) {'),
+
+ # WT-001, the other half: the CONFLATION rather than the comparison — a delivery instant written
+ # back into the field that holds what the WORLD reported. Killed by "watchers: A REMINDER DELIVERED
+ # WITH NO WATERMARK STILL RE-ARMS ON THE NEXT DISPATCH".
+ ("a delivery instant is stored in the watcher's dispatch watermark field",
+  "src/watchers.ts",
+  "           remindedDispatch: lastDispatch ?? null,",
+  "           remindedDispatch: lastDispatch ?? new Date().toISOString(),"),
 
  # A RECORD STILL BEING WRITTEN. Consuming the partial tail means the record is never classified —
  # a watcher armed in the last line before a tick is lost forever. Killed by "watchers: only

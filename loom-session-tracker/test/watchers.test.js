@@ -22,7 +22,8 @@ function rec(name, input = {}, over = {}) {
   };
 }
 
-const EMPTY = { sessionId: null, offset: 0, remindedAt: null, remindedSession: null };
+const EMPTY = { sessionId: null, offset: 0, reminded: false, remindedSession: null,
+                remindedDispatch: null, deliveredAt: null };
 
 /** A bus where the orchestrator's identity records agree and a transcript exists. */
 function input(over = {}) {
@@ -142,18 +143,20 @@ suite("watchers: A CLEAR RE-BASELINES — a new session never inherits the old o
   const dir = fixtureDir("loom-wc-");
   const f = path.join(dir, "t2.jsonl");
   fs.writeFileSync(f, JSON.stringify(rec("Monitor")) + "\n");
-  const prev = { sessionId: "sid-OLD", offset: 999999, remindedAt: "x", remindedSession: "sid-OLD" };
+  const prev = { sessionId: "sid-OLD", offset: 999999, reminded: true, remindedSession: "sid-OLD",
+                 remindedDispatch: "2026-09-17T10:00:00.000Z" };
   const r = watcherTick(input({ transcript: f }), prev);
   eq(r.finding, null, "the first tick of the new session counts nothing");
   eq(r.state.sessionId, "sid-1", "the new session is adopted");
   eq(r.state.offset, fs.statSync(f).size, "and its offset is the file, not the stale 999999");
-  eq(r.state.remindedAt, null, "a new session is a new stretch — the latch re-arms");
+  eq(r.state.reminded, false, "a new session is a new stretch — the latch re-arms");
+  eq(r.state.remindedDispatch, null, "and the watermark it was delivered against goes with it");
 });
 
 // ── (7) PB-001's IDENTITY RULE — the defect this detector refuses to inherit. ────────────────────
 
 suite("watchers: IDENTITY RECORDS THAT DISAGREE COUNT NOTHING AND RE-BASELINE NOTHING", () => {
-  const prev = { sessionId: "sid-1", offset: 42, remindedAt: null, remindedSession: null };
+  const prev = { ...EMPTY, sessionId: "sid-1", offset: 42 };
   let scanned = false;
   const r = watcherTick(input({ sessionId: null }), prev, () => { scanned = true; return { armings: ONE, offset: 9 }; });
   eq(r.finding, null, "a transition in flight produces no finding");
@@ -171,7 +174,7 @@ suite("watchers: an untagged bus and an unresolvable transcript are never judged
 // ── the latch ───────────────────────────────────────────────────────────────────────────────────
 
 suite("watchers: reminded ONCE per stretch, however many watchers are armed after it", () => {
-  const seen = { sessionId: "sid-1", offset: 0, remindedAt: null, remindedSession: null };
+  const seen = { ...EMPTY, sessionId: "sid-1" };
   const r1 = watcherTick(input(), seen, scanner(ONE));
   ok(r1.finding, "the first arming fires");
   const latched = markWatcherReminded(r1.state, "sid-1", "2026-09-17T10:00:00.000Z");
@@ -180,22 +183,81 @@ suite("watchers: reminded ONCE per stretch, however many watchers are armed afte
   eq(r2.skip, "already reminded for this stretch");
 });
 
-suite("watchers: ONLY A NEWER DISPATCH OR A NEW SESSION RE-ARMS IT", () => {
-  const base = { sessionId: "sid-1", offset: 0, remindedAt: null, remindedSession: null };
+suite("watchers: ONLY A CHANGED DISPATCH OR A NEW SESSION RE-ARMS IT", () => {
+  const base = { ...EMPTY, sessionId: "sid-1" };
   const latched = markWatcherReminded(watcherTick(input(), base, scanner(ONE)).state,
                                       "sid-1", "2026-09-17T10:00:00.000Z");
-  // The same dispatch, and an OLDER one, must not re-arm.
+  eq(latched.remindedDispatch, "2026-09-17T10:00:00.000Z",
+     "delivery records the watermark it saw, not the moment it happened");
+  // The SAME watermark stays latched: the world has reported nothing new.
   eq(watcherTick(input(), latched, scanner(ONE)).finding, null, "same watermark stays latched");
-  eq(watcherTick(input({ lastDispatch: "2026-09-17T09:00:00.000Z" }), latched, scanner(ONE)).finding,
-     null, "an older watermark does not re-arm");
-  // A NEWER dispatch does — the orchestrator handed work over, which is the behaviour change.
-  const after = watcherTick(input({ lastDispatch: "2026-09-17T11:00:00.000Z" }), latched, scanner(ONE));
-  ok(after.finding, "a newer dispatch re-arms the reminder");
+  // A newer dispatch re-arms — the orchestrator handed work over.
+  ok(watcherTick(input({ lastDispatch: "2026-09-17T11:00:00.000Z" }), latched, scanner(ONE)).finding,
+     "a newer dispatch re-arms the reminder");
+  // And so does an EARLIER one — not a hypothetical: `lastDispatchAt` is a max over OPEN ledger
+  // records, so a record CLOSING lowers the watermark. This is the accepted cost of the change,
+  // one extra reminder per decrease, against a re-arm that could be lost.
+  ok(watcherTick(input({ lastDispatch: "2026-09-17T09:00:00.000Z" }), latched, scanner(ONE)).finding,
+     "an EARLIER watermark re-arms too — a changed watermark is a changed watermark");
+  // A watermark that DISAPPEARS is not a dispatch, and must not re-arm.
+  eq(watcherTick(input({ lastDispatch: null }), latched, scanner(ONE)).finding, null,
+     "the watermark going away is not a new dispatch");
+});
+
+// ── WT-001: THE SWALLOW. ────────────────────────────────────────────────────────────────────────
+// `remindedAt` held a dispatch watermark when one had been reported and the DELIVERY INSTANT when
+// one had not (`lastDispatch ?? new Date()`), and the re-arm then asked `lastDispatch > remindedAt`
+// — an ordering comparison between two different kinds of fact. `lastDispatchAt` returns null on an
+// empty or unreadable ledger, so the second branch is reachable; and every `openedAt` that already
+// exists is by construction earlier than a wall clock read now. So the first real dispatch the
+// world reports after such a delivery CANNOT exceed the stamp, the re-arm is swallowed, and the
+// watcher reminder never speaks again for that session.
+
+suite("watchers: A REMINDER DELIVERED WITH NO WATERMARK STILL RE-ARMS ON THE NEXT DISPATCH", () => {
+  const base = { ...EMPTY, sessionId: "sid-1" };
+  // The tick that delivers sees no dispatch at all — an empty ledger, or one that did not read.
+  const r1 = watcherTick(input({ lastDispatch: null }), base, scanner(ONE));
+  ok(r1.finding, "it fires");
+  const latched = markWatcherReminded(r1.state, "sid-1", null);
+  eq(latched.remindedDispatch, null,
+     "NULL IS A REAL OBSERVATION — the world had reported no dispatch, and that is not a latch key");
+  eq(latched.reminded, true, "what WE did is what latches");
+  ok(typeof latched.deliveredAt === "string",
+     "the delivery instant is still recorded — it is just no longer comparable to a watermark");
+  ok(latched.deliveredAt > "2026-09-17T10:00:00.000Z",
+     "and it is a wall clock read, later than any openedAt already in the ledger");
+  // It holds while nothing is reported.
+  eq(watcherTick(input({ lastDispatch: null }), latched, scanner(ONE)).finding, null,
+     "still nothing reported, still latched");
+  // Now the ledger reports a real dispatch — one that HAPPENED BEFORE we delivered, which is every
+  // dispatch already in it. Under the ordering comparison this is silence for the rest of the
+  // session; under the identity comparison it is a re-arm.
+  const after = watcherTick(input({ lastDispatch: "2026-09-17T10:00:00.000Z" }), latched, scanner(ONE));
+  ok(after.finding, "THE RE-ARM IS NOT SWALLOWED");
+  // Not once, and not by luck: the same state re-armed is then latched again by its own delivery.
+  const relatched = markWatcherReminded(after.state, "sid-1", "2026-09-17T10:00:00.000Z");
+  eq(relatched.remindedDispatch, "2026-09-17T10:00:00.000Z",
+     "and the field now holds the watermark it has ACTUALLY seen, not the moment it spoke");
+  eq(watcherTick(input({ lastDispatch: "2026-09-17T10:00:00.000Z" }), relatched, scanner(ONE)).finding,
+     null, "so it latches again");
+});
+
+suite("watchers: A RE-ARM THE ORDERING COMPARISON WOULD SWALLOW FIRES ONCE, NOT EVERY TICK", () => {
+  // Twenty ticks against a watermark that is EARLIER than the delivery instant — the shape `>`
+  // answers "no" to. The ordering direction itself is graded by the mutant, not by this body.
+  let st = markWatcherReminded({ ...EMPTY, sessionId: "sid-1" }, "sid-1", null);
+  let fired = 0;
+  for (let i = 0; i < 20; i++) {
+    const r = watcherTick(input({ lastDispatch: "2026-09-17T10:00:00.000Z" }), st, scanner(ONE));
+    if (r.finding) { fired++; st = markWatcherReminded(r.state, "sid-1", "2026-09-17T10:00:00.000Z"); }
+    else st = r.state;
+  }
+  eq(fired, 1, "the swallowed re-arm is delivered exactly once, then latches honestly");
 });
 
 suite("watchers: A WATCHER ARMED AND NOTHING ELSE CHANGING DOES NOT OSCILLATE", () => {
   // The stall alarm's defect: a latch keyed on the CONDITION re-fires every time it flickers.
-  let st = { sessionId: "sid-1", offset: 0, remindedAt: null, remindedSession: null };
+  let st = { ...EMPTY, sessionId: "sid-1" };
   let fired = 0;
   for (let i = 0; i < 20; i++) {
     const r = watcherTick(input(), st, scanner(i % 2 ? ONE : []));
@@ -263,17 +325,56 @@ suite("watchers: a truncated or replaced transcript is re-read from the start, n
 suite("watchers: the latch survives an extension reload, and a corrupt one reads as a fresh start", () => {
   const repo = makeRepo({}, "wc-latch");
   eq(loadWatchers(repo).sessionId, null, "no file reads as a fresh start, never as reminded");
-  const st = { sessionId: "s", offset: 12, remindedAt: "d", remindedSession: "s" };
+  const st = { sessionId: "s", offset: 12, reminded: true, remindedSession: "s",
+               remindedDispatch: "2026-09-17T10:00:00.000Z" };
   saveWatchers(repo, st);
   eq(loadWatchers(repo).offset, 12, "it round-trips");
   eq(loadWatchers(repo).remindedSession, "s", "including the latch");
+  eq(loadWatchers(repo).reminded, true, "and the flag that IS the latch");
+  eq(loadWatchers(repo).remindedDispatch, "2026-09-17T10:00:00.000Z", "and the watermark beside it");
   fs.writeFileSync(busPath(repo, "watcher-state.json"), "{not json");
-  eq(loadWatchers(repo).remindedAt, null, "a corrupt latch reads as fresh rather than throwing");
+  eq(loadWatchers(repo).reminded, false, "a corrupt latch reads as fresh rather than throwing");
+});
+
+// WT-001: the files already on disk when this ships. Nothing on disk says which kind of fact an old
+// `remindedAt` holds — that ambiguity IS the defect — so it seeds the latch and NOT the watermark.
+suite("watchers: A PRE-SPLIT STATE FILE LOADS, COSTS AT MOST ONE REMINDER, AND NEVER BURSTS", () => {
+  const repo = makeRepo({}, "wc-migrate");
+  fs.mkdirSync(path.dirname(busPath(repo, "watcher-state.json")), { recursive: true });
+  fs.writeFileSync(busPath(repo, "watcher-state.json"), JSON.stringify(
+    { sessionId: "sid-1", offset: 400, remindedAt: "2026-09-17T10:00:00.000Z",
+      remindedSession: "sid-1", updatedAt: "2026-09-17T10:00:00.000Z" }));
+  const st = loadWatchers(repo);
+  eq(st.offset, 400, "it loads");
+  eq(st.reminded, true, "an old stamp of either kind means a reminder WAS delivered — suppression kept");
+  eq(st.remindedDispatch, null,
+     "but it is not read as a watermark, because nothing on disk says it is one");
+  // MEASURED, not assumed: a null watermark differs from any reported dispatch, so a bus whose
+  // ledger has one re-arms on the FIRST tick after the upgrade. The upgrade is therefore not
+  // silent — it costs ONE reminder, which is the price of refusing to guess which kind of fact
+  // the old stamp held, and it is paid in the direction this bus prefers.
+  const r = watcherTick(input(), st, scanner(ONE));
+  ok(r.finding, "the upgrade costs one reminder on a bus that has dispatched");
+  const again = markWatcherReminded(r.state, "sid-1", "2026-09-17T10:00:00.000Z");
+  eq(watcherTick(input(), again, scanner(ONE)).finding, null, "ONE, not a burst");
+  // A bus that has NOT dispatched keeps its suppression exactly, because null equals null.
+  eq(watcherTick(input({ lastDispatch: null }), st, scanner(ONE)).finding, null,
+     "and a bus with nothing to report stays silent through the upgrade");
+});
+
+// The file this bus actually has on disk today: `remindedAt` null, which is the unlatched shape.
+suite("watchers: a pre-split file that never delivered reads as never delivered", () => {
+  const repo = makeRepo({}, "wc-migrate-null");
+  fs.mkdirSync(path.dirname(busPath(repo, "watcher-state.json")), { recursive: true });
+  fs.writeFileSync(busPath(repo, "watcher-state.json"), JSON.stringify(
+    { sessionId: "sid-1", offset: 5073596, remindedAt: null, remindedSession: null }));
+  eq(loadWatchers(repo).reminded, false, "no stamp is no delivery, so nothing is suppressed");
 });
 
 suite("watchers: saving is change-only, so a quiet tick never churns the file", () => {
   const repo = makeRepo({}, "wc-churn");
-  const st = { sessionId: "s", offset: 1, remindedAt: null, remindedSession: null };
+  const st = { sessionId: "s", offset: 1, reminded: false, remindedSession: null,
+               remindedDispatch: null };
   saveWatchers(repo, st);
   const before = fs.statSync(busPath(repo, "watcher-state.json")).mtimeMs;
   saveWatchers(repo, { ...st });
