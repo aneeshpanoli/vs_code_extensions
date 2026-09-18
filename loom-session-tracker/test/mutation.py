@@ -2868,6 +2868,72 @@ MUTATIONS = [
   "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()/.,*]*\\)(?=[,\\s]|$)/g;",
   "const SPACED_ANNOTATION = /(^|[,\\s])\\([^()/.,]*\\)(?=[,\\s]|$)/g;"),
 
+ # NF-001 · THE DEFECT ITSELF: retire a finish whatever the injection did. This is what shipped —
+ # `announced.add(key)` at DETECTION, persisted before the injector was even spawned — so a worker
+ # finishing while the orchestrator was mid-turn was refused by the busy-composer guard and never
+ # raised again (a finished job sat unread in an outbox for three hours, reported 2026-09-17).
+ # Killed by "NF-001 wiring: a REFUSED notification is raised again on a later tick".
+ ("a finish is retired whatever the injection did — the busy composer loses it for good",
+  "src/notifier.ts",
+  '    if (verdict === "latch") {',
+  '    if (verdict === "latch" || true) {'),
+
+ # THE SAME DEFECT AT THE RETIREMENT END, and the one the adversarial pass found: `key` is
+ # role|task|status, and rerunning a handoff produces it twice. An injection runs up to 60 s against
+ # a 15 s tick, so a SECOND finish can be queued under that key while the first is still typing, and
+ # matching by key retires a finish no message ever carried. Killed by "NF-001 wiring: a SECOND
+ # finish under the same key is not retired by the first injection".
+ ("retirement matches the KEY, not the instance — a rerun finish is retired by the previous one",
+  "src/notifier.ts",
+  "    const still = st.pending.some((p) => p.id === ev.id);",
+  "    const still = st.pending.some((p) => p.key === ev.key);"),
+
+ # THE WRITE-BACK. `scan` reads state, then board.json and one status.json per role, then saves; a
+ # `settle` from another window fits in that gap. Saving the snapshot resurrects the event that was
+ # just delivered AND erases the record of delivering it — a second copy typed into the composer.
+ # Killed by "notifier: a scan cannot roll back a delivery that landed while it was reading".
+ ("the scan saves the snapshot it started from — a delivery that landed mid-scan is rolled back",
+  "src/notifier.ts",
+  "    const fresh = loadState(this.repo) ?? { prev: {}, announced: [], pending: [], dropped: [] };",
+  "    const fresh = persisted ?? { prev: {}, announced: [], pending: [], dropped: [] };"),
+
+ # THE TRAP DG-001-R1 CLOSED, RE-OPENED ONE FILE OVER. loom_cdp.py's fast `ok: False` is two failures,
+ # and dropping the NOTE makes them one: "typed but NOT submitted … verified" means the message is
+ # already in the composer, so retrying it appends a second copy. Killed by
+ # "NF-001 wiring: 'typed but NOT submitted' is NOT retried".
+ ("the notifier reads the boolean and not the injector's note — a verified message is typed twice",
+  "src/extension.ts",
+  "        const verdict = settleInjection(ok, Date.now() - startedAt, note);\n        notifier.settle(ev, verdict, note);",
+  "        const verdict = settleInjection(ok, Date.now() - startedAt, null);\n        notifier.settle(ev, verdict, note);"),
+
+ # A finish that was superseded is delivered late: the role is back at work — which on this bus
+ # usually means the orchestrator handed it a block — and it is still sent to an outbox already
+ # answered. ANCHORED AT THE MERGE, because that is where the rule lives: the first version of this
+ # mutant deleted a `pending.delete(role)` up in the scan loop and SURVIVED the whole suite, which
+ # is how that line was found to be a dead second copy. Killed by "NF-001 wiring: a worker back at
+ # WORK is not announced late".
+ ("a role back at work keeps what it was owed — the orchestrator is sent to an answered outbox",
+  "src/notifier.ts",
+  '      if (working.has(p.role)) { drop(p, "superseded: the role went back to work"); continue; }',
+  '      if (working.has(p.role) && false) { drop(p, "superseded: the role went back to work"); continue; }'),
+
+ # AND THE OTHER HALF OF THAT RULE: the drop is only defensible because it is RECORDED. health.ts's
+ # gate wake puts a worker back to `working` without telling the orchestrator, so a dropped finish
+ # can be one nobody ever heard — and `dropped` on the bus is the only trace it leaves. Killed by
+ # "NF-001 wiring: a finish that reached NOBODY is recorded as dropped".
+ ("a superseded finish is dropped silently — nothing on the bus records that nobody was told",
+  "src/notifier.ts",
+  '      if (working.has(p.role)) { drop(p, "superseded: the role went back to work"); continue; }',
+  '      if (working.has(p.role)) { continue; }'),
+
+ # THE ORDER. Newest-first means the oldest finish is deferred again on every tick a newer one
+ # arrives — the three-hour outbox, preserved exactly, on a queue that looks like it is draining.
+ # Killed by "NF-001 wiring: two workers that finished while it was busy arrive one per tick".
+ ("the newest finish is delivered first — the one that has waited longest keeps being deferred",
+  "src/notifier.ts",
+  "    queue.sort((a, b) => Date.parse(a.firstSeen) - Date.parse(b.firstSeen));",
+  "    queue.sort((a, b) => Date.parse(b.firstSeen) - Date.parse(a.firstSeen));"),
+
 ]
 
 def sh(cmd):

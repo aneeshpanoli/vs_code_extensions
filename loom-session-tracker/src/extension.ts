@@ -13,7 +13,7 @@ import { roleToRepo, boardRoles, busRepos } from "./registry";
 import { setLock } from "./locks";
 import { getOrchestrator, setOrchestrator, setOrchestratorFrame, ORCHESTRATOR_CANDIDATES, rebindSession } from "./orchestrator";
 import { ownerRoleFor, publishNaming } from "./naming";
-import { Notifier } from "./notifier";
+import { Notifier, BACKLOG_WARN_MS } from "./notifier";
 import { readCount } from "./sessions";
 import { LimitWatcher } from "./limits";
 import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, desiredModel,
@@ -118,13 +118,18 @@ export function activate(context: vscode.ExtensionContext) {
     // NT-001 · what the stop notifier is doing, for the panel. THE HANDOFF REQUIRES that when the
     // transport is unavailable the feature is OFF AND SAYS SO rather than inventing another door.
     let quietNote: string | undefined;
+    // NF-001 · a finish the orchestrator has not been told about yet, and for how long. The toast
+    // below is for a human looking at the editor; THIS is the same fact in a file, for the agent
+    // that has to act on it. Hoisted for the same reason the four above are.
+    let notifyNote: Record<string, any> | undefined;
     const debugLog = (obj: any) => {
       try {
         fs.writeFileSync(path.join(os.homedir(), ".claude", "loom", "tracker-debug.json"),
           JSON.stringify({ repo, ...(stampNote ? { stamp: stampNote } : {}),
                            ...(modelNote ? { model: modelNote } : {}),
                            ...(overlapNote ? { handoffOverlap: overlapNote } : {}),
-                           ...(quietNote ? { quietNotifier: quietNote } : {}), ...obj }, null, 2));
+                           ...(quietNote ? { quietNotifier: quietNote } : {}),
+                           ...(notifyNote ? { finishBacklog: notifyNote } : {}), ...obj }, null, 2));
       } catch { /* ignore */ }
     };
     const notifier = new Notifier(repo);
@@ -786,16 +791,73 @@ export function activate(context: vscode.ExtensionContext) {
       return step;
     };
 
+    // NF-001 · DETECT, THEN DELIVER — two steps, and the second is the one that retires an event.
+    // `scan()` only queues; a finish leaves the queue when `settle` says it was delivered, so an
+    // injection refused by a mid-turn composer comes back on a later tick instead of being lost.
+    // The orchestrator is mid-turn precisely when it is working, which is why the old detect-and-
+    // forget shape lost the messages that mattered most (a finished job sat in an outbox for three
+    // hours, reported 2026-09-17).
     const runNotifier = () => {
       if (cfg().get("notifyOrchestrator", true) !== true) return;
+      if (!repo) return;
+      // THIS TICK'S ANSWER, NOT THE LAST ONE'S — the same reset `stampNote` gets, and for the same
+      // reason: the note is only ever ASSIGNED under a condition, so without this a backlog that
+      // has since been delivered keeps telling the panel to act on it for the life of the window.
+      notifyNote = undefined;
       for (const ev of notifier.scan()) {
         const what = ev.status === "blocked" ? "raised a loop-back" : "finished";
         vscode.window.showInformationMessage(`Loom: ${ev.role} ${what}${ev.task ? ` (${ev.task})` : ""} — notifying orchestrator.`);
-        notifier.notifyOrchestrator(ev, (ok, note) => {
-          if (!ok) vscode.window.showWarningMessage(
-            `Loom: could not notify the orchestrator about ${ev.role} (${note}) — read its outbox manually.`);
-        });
       }
+      const backlog = notifier.backlog();
+      // THE FACT LIVES IN A FILE, not only in a popup. `notify-state.json` carries the queue itself
+      // — attempts and the injector's own last refusal per event — and this note puts the summary
+      // where every other subsystem's trouble goes.
+      if (backlog.count || backlog.dropped.length) notifyNote = {
+        ...(backlog.count ? {
+          owed: backlog.count, oldestMinutes: Math.round(backlog.oldestAgeMs / 60_000),
+          role: backlog.oldest?.role, task: backlog.oldest?.task,
+          attempts: backlog.oldest?.attempts, lastNote: backlog.oldest?.lastNote,
+        } : {}),
+        // A finish that reached NOBODY leaves no other trace on this bus. Carried even when the
+        // queue is empty, because an empty queue is exactly what a silent drop looks like.
+        ...(backlog.dropped.length ? { droppedUndelivered: backlog.dropped.slice(-3) } : {}),
+        ...(backlog.oldestAgeMs >= BACKLOG_WARN_MS
+          ? { stuck: `${backlog.oldest?.role} finished and the orchestrator has not been reached` }
+          : {}),
+      };
+      const ev = notifier.duePending();
+      if (!ev) return;
+      // ONE NOTIFICATION IN FLIGHT AT A TIME, ON THIS SUBSYSTEM'S OWN CLAIM. `loom_cdp.py` can run
+      // longer than the 15 s interval, so without a claim a slow injection is re-launched
+      // underneath itself and another window on the same bus injects alongside it. NOT the
+      // reminder's key: `runNotifier` runs earlier in this same synchronous tick body and releases
+      // only in the injector's async callback, so one shared key would refuse the reminder its
+      // claim on every tick a finish is owed — and a dispatch inside that stretch re-arms the
+      // latch, so the reminder would not be delayed but lost. delegation.ts's `claimFile` carries
+      // the full argument.
+      const startedAt = Date.now();
+      if (!claimInjection(repo, startedAt, undefined, "notify")) {
+        debugLog({ notify: { skipped: "a notification is in flight" } }); return;
+      }
+      notifier.notifyOrchestrator(ev, (ok, note) => {
+        // The SAME discrimination as the reminder, by call and not by copy: loom_cdp.py's fast
+        // `ok:False` is two different failures, and "typed but NOT submitted … verified" means the
+        // text is already in the composer — retrying THAT appends a duplicate (DG-001-R1).
+        const verdict = settleInjection(ok, Date.now() - startedAt, note);
+        notifier.settle(ev, verdict, note);
+        releaseInjection(repo, "notify");
+        // THE ONE CASE A FILE CANNOT FIX. "typed but NOT submitted … verified" latches, because
+        // retrying it types a second copy on top of the first — but the message is then sitting
+        // UNSENT in the orchestrator's composer, and the only party who can press send is a human.
+        // That is the one failure here a toast is the right channel for.
+        if (!ok && verdict === "latch") vscode.window.showWarningMessage(
+          `Loom: the ${ev.role} notification is sitting UNSENT in ${repo}'s orchestrator composer ` +
+          `(${note}) — press send, or read ~/.claude/loom/${repo}/${ev.role}/outbox.md.`);
+        if (!ok && verdict === "retry") debugLog({ notify: { role: ev.role, task: ev.task, ok, note,
+          verdict, retryOn: "the next tick — a refused notification is not a delivered one" } });
+        else debugLog({ notify: { role: ev.role, task: ev.task, ok, note, verdict,
+          ...(ok ? {} : { unsent: "typed into the composer but not submitted — retired, not retried" }) } });
+      });
     };
 
     // ── sessions that came back empty after a reload: offered EVERY tick until none are missing ──
@@ -1217,7 +1279,10 @@ export function activate(context: vscode.ExtensionContext) {
         }
         debugLog({ version: VERSION, repo, ok: r.ok, error: r.error, liveRoles: r.liveRoles,
                    agents: tracker.view().map((a) => `${a.repo}/${a.role}`) });
-        runNotifier();
+        // Wrapped like every other detector below it. It runs FIRST, and it now does file I/O and
+        // takes a claim, so an unwrapped throw here would take the rest of the tick — limits, model
+        // policy, health, the ledger — down with it.
+        try { runNotifier(); } catch { /* a notifier must never break a tick */ }
         runLimitWatcher();
         runModelPolicy();
         runOverlapWarning();

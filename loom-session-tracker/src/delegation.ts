@@ -211,8 +211,21 @@ function file(repo: string): string {
  * wants a board.json — which is why this is a move and not an ignore-list: an ignore-list would have
  * to be added to BOTH walks, and to whichever third one is written next.
  */
-function claimFile(repo: string): string {
-  return path.join(LOOM_ROOT, ".inflight", repo + ".lock");
+/**
+ * NF-001 · AND IT IS PER SUBSYSTEM, which is what it always was in fact. The claim reads "the right
+ * to inject" and is keyed on the repo, but until now exactly one caller took it, so bus-wide and
+ * delegation-only were the same file. The finish-notifier now retries a refused injection on later
+ * ticks, and sharing one key would have made that certain harm: `runNotifier` runs earlier in the
+ * same synchronous tick body and releases only in the injector's async callback, so EVERY tick with
+ * a finish owed would refuse the reminder its claim — and a dispatch inside that stretch re-arms the
+ * latch, so the reminder is not delayed but lost. Against that, two subsystems typing into one
+ * composer in the same instant is rare (a reminder goes out once per half-hour stretch) and is
+ * already the standing condition for the nine other injectors on this tick, none of which claim
+ * anything. Unifying them is a block of its own; this keeps each subsystem safe from ITSELF —
+ * from its own later ticks, and from another window on the same bus.
+ */
+function claimFile(repo: string, kind = "delegate"): string {
+  return path.join(LOOM_ROOT, ".inflight", repo + (kind === "delegate" ? "" : "." + kind) + ".lock");
 }
 
 export function loadDelegation(repo: string): DelegationState {
@@ -290,8 +303,9 @@ export function saveDelegation(repo: string, st: DelegationState): void {
  * names is gone), where unlink-then-create would let both windows through.
  */
 export function claimInjection(repo: string, now = Date.now(),
-                               timeoutMs = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS): boolean {
-  const f = claimFile(repo);
+                               timeoutMs = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS,
+                               kind = "delegate"): boolean {
+  const f = claimFile(repo, kind);
   const readAt = (file: string): number => {
     try { return Number(JSON.parse(fs.readFileSync(file, "utf8")).at); } catch { return NaN; }
   };
@@ -337,8 +351,8 @@ export function claimInjection(repo: string, now = Date.now(),
 /** Give the claim back. Called on EVERY outcome of the injection, including the failures: whether
  *  the bus stays quiet after a failed attempt is `settleInjection`'s decision and the latch's job,
  *  never a lock left lying around. */
-export function releaseInjection(repo: string): void {
-  try { fs.unlinkSync(claimFile(repo)); } catch { /* never held, or already gone */ }
+export function releaseInjection(repo: string, kind = "delegate"): void {
+  try { fs.unlinkSync(claimFile(repo, kind)); } catch { /* never held, or already gone */ }
 }
 
 /**

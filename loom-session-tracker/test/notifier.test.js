@@ -20,7 +20,7 @@ suite("notifier: a never-scanned bus baselines silently", () => {
   ok(fs.existsSync(busPath(repo, "notify-state.json")), "but records the baseline on the bus");
 });
 
-suite("notifier: working -> idle is announced once", () => {
+suite("notifier: working -> idle is QUEUED once (detection, not delivery)", () => {
   const repo = bus();
   setStatus(repo, "w1", { status: "working", current: "H-7" });
   restart(repo).scan();
@@ -31,7 +31,7 @@ suite("notifier: working -> idle is announced once", () => {
   eq(ev[0].task, "H-7", "task id");
   eq(ev[0].status, "idle", "post-work status");
   match(ev[0].lastLine, /12 tests pass/, "carries last_line");
-  eq(restart(repo).scan().length, 0, "not announced again on the next tick");
+  eq(restart(repo).scan().length, 0, "not queued again on the next tick");
 });
 
 suite("notifier: a finish DURING an IDE restart is still announced", () => {
@@ -45,14 +45,14 @@ suite("notifier: a finish DURING an IDE restart is still announced", () => {
   match(ev[0].lastLine, /finished offline/, "with its last line");
 });
 
-suite("notifier: two windows on one repo cannot both announce", () => {
+suite("notifier: two windows on one repo cannot both queue the same finish", () => {
   const repo = bus();
   setStatus(repo, "w1", { status: "working", current: "H-7" });
   restart(repo).scan();
   setStatus(repo, "w1", { status: "idle", current: "H-7" });
   const a = new Notifier(repo), b = new Notifier(repo);
-  eq(a.scan().length, 1, "first window announces");
-  eq(b.scan().length, 0, "second window sees it already announced");
+  eq(a.scan().length, 1, "first window queues it");
+  eq(b.scan().length, 0, "second window sees it already owed");
 });
 
 suite("notifier: blocked (loop-back) is announced like a finish", () => {
@@ -170,4 +170,214 @@ suite("notifier: notifyOrchestrator shells out to loom_cdp inject", () => {
         } catch (e) { reject(e); }
       });
   });
+});
+
+// ── NF-001 · a finish is retired when it is DELIVERED, never when it is detected ────────────────
+
+suite("notifier: a detected finish is OWED until it is delivered", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7", last_line: "done" });
+  eq(restart(repo).scan().length, 1, "detected");
+  const due = restart(repo).duePending();
+  ok(due, "and it is owed to the orchestrator");
+  eq(due.role, "w1", "the role");
+  eq(due.key, "w1|H-7|idle", "keyed by role, task and post-work status");
+  eq(readJson(busPath(repo, "notify-state.json")).announced.length, 0,
+     "DETECTION RETIRES NOTHING — this is the whole block");
+});
+
+suite("notifier: a REFUSED delivery is still owed on the next tick", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  restart(repo).scan();
+  const ev = restart(repo).duePending();
+  restart(repo).settle(ev, "retry", "composer busy or frame not found");
+  const again = restart(repo).duePending();
+  ok(again, "a composer that refused is not an orchestrator that heard");
+  eq(again.key, ev.key, "the same event");
+  eq(again.attempts, 1, "and the attempt is counted where a reader of the bus can see it");
+  match(again.lastNote, /composer busy/, "with the injector's own words");
+});
+
+suite("notifier: a DELIVERED finish is retired and never repeats", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  restart(repo).scan();
+  const ev = restart(repo).duePending();
+  restart(repo).settle(ev, "latch", "injected");
+  eq(restart(repo).duePending(), null, "nothing owed");
+  eq(restart(repo).scan().length, 0, "and re-scanning the same idle state re-queues nothing");
+  eq(restart(repo).duePending(), null, "still nothing owed after another tick");
+});
+
+suite("notifier: a role back at WORK supersedes what it was owed", () => {
+  // Superseded, in one word: a role only goes back to working because it was given a handoff, and
+  // handoffs come from the orchestrator — so a role at work is proof the finish was noticed.
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  eq(restart(repo).scan().length, 1, "owed");
+  setStatus(repo, "w1", { status: "working", current: "H-8" });
+  restart(repo).scan();
+  eq(restart(repo).duePending(), null, "a stale finish is dropped, not delivered late");
+  setStatus(repo, "w1", { status: "idle", current: "H-8" });
+  restart(repo).scan();
+  eq(restart(repo).duePending().task, "H-8", "and the NEW finish is owed on its own");
+});
+
+suite("notifier: settling an event the bus has dropped re-queues nothing", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  restart(repo).scan();
+  const ev = restart(repo).duePending();
+  setStatus(repo, "w1", { status: "working", current: "H-8" });   // superseded mid-injection
+  restart(repo).scan();
+  restart(repo).settle(ev, "retry", "composer busy");
+  eq(restart(repo).duePending(), null, "a retry cannot resurrect what going back to work dropped");
+});
+
+suite("notifier: five finishes queue oldest-first, one delivery at a time", () => {
+  const repo = makeRepo({ po: {}, a: {}, b: {}, c: {}, d: {}, e: {} });
+  setOrchestrator(repo, "po");
+  for (const r of ["a", "b", "c", "d", "e"]) setStatus(repo, r, { status: "working", current: "H" });
+  restart(repo).scan();
+  // finished in this order, each at a distinct instant so the queue order is the FINISH order
+  let t = Date.parse("2026-09-18T10:00:00Z");
+  for (const r of ["c", "a", "e", "b", "d"]) {
+    setStatus(repo, r, { status: "idle", current: "H" });
+    restart(repo).scan(t += 60_000);
+  }
+  eq(restart(repo).backlog().count, 5, "all five are owed — none was lost to a busy composer");
+  const order = [];
+  for (let i = 0; i < 5; i++) {
+    const ev = restart(repo).duePending();
+    order.push(ev.role);
+    restart(repo).settle(ev, "latch", "injected");
+  }
+  eq(order, ["c", "a", "e", "b", "d"], "delivered one per tick in the order they FINISHED");
+  eq(restart(repo).duePending(), null, "and the queue is empty, each delivered exactly once");
+});
+
+suite("notifier: the backlog says how long the orchestrator has not been reached", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  const at = Date.parse("2026-09-18T10:00:00Z");
+  restart(repo).scan(at);
+  const b = restart(repo).backlog(at + 90 * 60_000);
+  eq(b.count, 1, "one owed");
+  eq(b.oldestAgeMs, 90 * 60_000, "for ninety minutes — the three-hour outbox, made visible");
+  eq(b.oldest.role, "w1", "and it names who is waiting");
+});
+
+suite("notifier: a 0.62.0 state file (no pending) is read, not discarded", () => {
+  // Its `announced` meant DETECTED. Carried over as-is: clearing it would re-announce every finish
+  // already acted on, on every bus, at upgrade.
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  const f = busPath(repo, "notify-state.json");
+  const old = readJson(f);
+  delete old.pending;
+  old.announced = ["w1|H-7|idle"];
+  fs.writeFileSync(f, JSON.stringify(old));
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  eq(restart(repo).scan().length, 0, "what the old build recorded still suppresses");
+  eq(restart(repo).duePending(), null, "and nothing is owed twice by the upgrade");
+});
+
+suite("notifier: retirement is matched on the queued INSTANCE, not on the key", () => {
+  // `key` is role|task|status and rerunning a handoff produces it twice (see the suite above). An
+  // injection can still be in flight when the second finish is queued, and settling by key would
+  // retire an event the injector never carried — this block's own defect, at the retirement end.
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  restart(repo).scan();
+  const first = restart(repo).duePending();          // handed to a slow injector
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();                              // re-dispatched: first is dropped
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  restart(repo).scan();                              // …and finishes the SAME handoff again
+  const second = restart(repo).duePending();
+  eq(second.key, first.key, "the same key");
+  ok(second.id !== first.id, "and a different instance");
+  restart(repo).settle(first, "latch", "injected");  // the old injection lands
+  const still = restart(repo).duePending();
+  ok(still, "the second finish is STILL OWED — it was never delivered");
+  eq(still.id, second.id, "the very instance that was queued");
+});
+
+suite("notifier: a scan cannot roll back a delivery that landed while it was reading", () => {
+  // `scan` is a read-modify-write: it loads state, then reads board.json and one status.json per
+  // role, then saves. A `settle` from another window (or this window's own injection callback) fits
+  // inside that gap, and writing the snapshot back would resurrect the delivered event AND erase
+  // the record of it — a second copy typed into the composer. The save is a merge for that reason.
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  restart(repo).scan();
+  const ev = restart(repo).duePending();
+  // window B is mid-scan holding the pre-delivery snapshot; window A settles; B then saves.
+  const windowB = restart(repo);
+  const realRead = fs.readFileSync;
+  let settled = false;
+  fs.readFileSync = function (f, ...rest) {
+    if (!settled && String(f).endsWith("status.json")) {
+      settled = true;
+      restart(repo).settle(ev, "latch", "injected");       // …window A delivers, right here
+    }
+    return realRead.call(this, f, ...rest);
+  };
+  try { windowB.scan(); } finally { fs.readFileSync = realRead; }
+  ok(settled, "the delivery landed inside window B's scan");
+  eq(restart(repo).duePending(), null, "and B's save did not resurrect it");
+  eq(readJson(busPath(repo, "notify-state.json")).announced, ["w1|H-7|idle"],
+     "nor erase the record that it was delivered");
+});
+
+suite("notifier: a refused event backs off instead of spawning an injector every tick", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  const t0 = Date.parse("2026-09-18T10:00:00Z");
+  restart(repo).scan(t0);
+  let ev = restart(repo).duePending(t0);
+  for (let i = 0; i < 5; i++) {
+    ok(ev, `attempt ${i + 1} is due immediately — the first minute of ticks retries flat out`);
+    restart(repo).settle(ev, "retry", "composer busy", t0);
+    ev = restart(repo).duePending(t0);
+  }
+  eq(ev, null, "after five refusals it is not retried on the very next tick");
+  ok(restart(repo).duePending(t0 + 61_000), "but it IS retried a minute later — deferred, not dropped");
+});
+
+suite("notifier: an event owed for a day is dropped, and the drop is recorded", () => {
+  const repo = bus();
+  setStatus(repo, "w1", { status: "working", current: "H-7" });
+  restart(repo).scan();
+  setStatus(repo, "w1", { status: "idle", current: "H-7" });
+  const t0 = Date.parse("2026-09-18T10:00:00Z");
+  restart(repo).scan(t0);
+  const later = restart(repo);
+  later.scan(t0 + 25 * 60 * 60 * 1000);
+  eq(later.duePending(), null, "expired");
+  const st = readJson(busPath(repo, "notify-state.json"));
+  eq(st.dropped.length, 1, "AND SAID SO — the queue emptying is not the same as anyone being told");
+  eq(st.dropped[0].key, "w1|H-7|idle", "which finish");
+  match(st.dropped[0].why, /expired/, "and why");
+  eq(st.announced.length, 0, "an expiry is not a delivery");
 });
