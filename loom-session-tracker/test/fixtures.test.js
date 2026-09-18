@@ -302,3 +302,235 @@ suite("TI-001: the next run reaps what a SIGKILL abandoned — and never a sandb
   ok(fs.existsSync(freshUnstamped), "a RECENT unstamped directory could still be in use — left alone");
   ok(!fs.existsSync(oldUnstamped), "an OLD unstamped one outlived every possible run — reaped, not leaked for ever");
 });
+
+// ── TI-002 · THE TWO WAYS THIS RUNNER COULD STILL REPORT A GREEN IT HAD NOT EARNED ──
+//
+// Same shape as everything above: THE ASSERTION IS AN OBSERVED EXIT CODE AND OBSERVED OUTPUT, never
+// that a function was called. Both defects point at a FALSE GREEN, which is the one nobody reports.
+//
+// Each suite builds a COMPLETE THROWAWAY TREE — its own src/, out/, tsconfig.json and test/ holding
+// a copy of the real run-tests.js and harness.js — and spawns the real runner inside it. That is why
+// they can make a build stale and kill a child mid-report without touching this repo's own tree.
+const TREE_SRC = "export const answer = 42;\n";
+
+/** A tree the real runner will accept: src/ and out/ paired, out/ NEWER, and whatever test files
+ *  the caller wants. Returns the tree root. `files` maps a test-file name to its source. */
+function tree(files) {
+  const root = fixtureDir("loom-ti002-");
+  for (const d of ["src", "out", "test"]) fs.mkdirSync(path.join(root, d));
+  fs.writeFileSync(path.join(root, "tsconfig.json"), "{}\n");
+  fs.writeFileSync(path.join(root, "src", "a.ts"), TREE_SRC);
+  fs.writeFileSync(path.join(root, "out", "a.js"), "exports.answer = 42;\n");
+  for (const f of ["run-tests.js", "harness.js"]) {
+    fs.copyFileSync(path.join(__dirname, f), path.join(root, "test", f));
+  }
+  for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(root, "test", name), body);
+  // EXPLICIT TIMESTAMPS, never a sleep: the build is stamped 10s after the source, so "fresh" is a
+  // fact about the tree and not a race with the clock.
+  const t = Date.now() / 1000;
+  fs.utimesSync(path.join(root, "src", "a.ts"), t, t);
+  fs.utimesSync(path.join(root, "tsconfig.json"), t, t);
+  fs.utimesSync(path.join(root, "out", "a.js"), t + 10, t + 10);
+  return root;
+}
+
+/** Run the real runner inside a throwaway tree. */
+function runTree(root, args = [], extraEnv = {}) {
+  const tmp = path.join(root, "tmproot");
+  fs.mkdirSync(tmp, { recursive: true });
+  return spawnSync(process.execPath, [path.join(root, "test", "run-tests.js"), ...args],
+    { env: { ...runnerEnv(tmp), ...extraEnv }, encoding: "utf8", timeout: 600000 });
+}
+
+const PASSING = `const { suite, ok } = require("./harness");
+suite("ti002 fixture: a suite that simply passes", () => { ok(true, "fine"); });
+`;
+
+suite("TI-002: a src/ edit CANNOT report green against the old build — the run refuses", () => {
+  if (NESTED) return;
+  // THE DEFECT: ./test.sh never compiles, and test/harness.js load() requires from out/. So a worker
+  // could edit src/, run the targeted tests, see green, and have graded the PREVIOUS build — while
+  // playbook §23 makes that targeted run its ONLY verification before it answers.
+  const root = tree({ "a.test.js": PASSING });
+
+  // FIRST: the tree as built must actually RUN. Without this the suite below proves only that the
+  // runner refuses something, which a runner that refuses everything would also satisfy.
+  const fresh = runTree(root);
+  eq(fresh.status, 0, "a tree whose out/ is a build of src/ runs normally: " + quiet(fresh.stdout).slice(-300));
+  match(quiet(fresh.stdout), /1\/1 passed/, "and it really executed the fixture suite");
+
+  // NOW EDIT src/ — exactly what a worker does — and stamp it after the build, as a real edit does.
+  const src = path.join(root, "src", "a.ts");
+  fs.writeFileSync(src, TREE_SRC + "export const added = 1;\n");
+  const after = (fs.statSync(path.join(root, "out", "a.js")).mtimeMs + 5000) / 1000;
+  fs.utimesSync(src, after, after);
+
+  const stale = runTree(root);
+  ok(stale.status !== 0, `an edited src/ must not run green, got exit ${stale.status}`);
+  eq(stale.status, 4, "and it is the build-staleness code, not a test failure (1) or an empty run (3)");
+  ok(!/\d+\/\d+ passed/.test(stale.stdout || ""),
+     "it must not word ANY of this as a pass: " + quiet(stale.stdout).trim());
+  match(quiet(stale.stdout), /src\/a\.ts is newer than out\/a\.js/, "it names the file that moved");
+  match(quiet(stale.stdout), /tsc -p/, "and the command that fixes it");
+});
+
+suite("TI-002: a source with NO build output, and a build output with no source, both refuse", () => {
+  if (NESTED) return;
+  // Two stale shapes an mtime comparison alone would miss. The second is the nastier: tsc never
+  // removes the output of a DELETED source, so out/ghost.js stays loadable for ever — green against
+  // code that no longer exists.
+  const noOutput = tree({ "a.test.js": PASSING });
+  fs.rmSync(path.join(noOutput, "out", "a.js"));
+  const r1 = runTree(noOutput);
+  eq(r1.status, 4, "a source that was never compiled refuses: " + quiet(r1.stdout).slice(-200));
+  match(quiet(r1.stdout), /never been compiled/, "and says so");
+
+  const orphan = tree({ "a.test.js": PASSING });
+  fs.writeFileSync(path.join(orphan, "out", "ghost.js"), "exports.gone = 1;\n");
+  const r2 = runTree(orphan);
+  eq(r2.status, 4, "a build output with no source refuses: " + quiet(r2.stdout).slice(-200));
+  match(quiet(r2.stdout), /out\/ghost\.js has no src\//, "and names the orphan");
+});
+
+suite("TI-002: a file KILLED BY A SIGNAL cannot leave the run green, even having reported a clean pass", async () => {
+  if (NESTED) return;
+  // THE FALSE GREEN, end to end. The parallel path read the ##RESULT trailer and NEVER LOOKED AT HOW
+  // THE PROCESS ENDED, so a child that printed `##RESULT 7 0` and was then killed was counted as
+  // seven passes and no failures. Driven standalone against the old five lines before this fix:
+  // `7/7 passed, exit 0` over a corpse. These children run 25-at-a-time under their own sandboxes,
+  // and the OOM killer reaches them first — which is how a file vanishes from a run unnoticed.
+  //
+  // The fixture writes the trailer ITSELF, with a blocking write, and then dies: that is precisely
+  // the state the parent could not distinguish.
+  const root = tree({
+    "a.test.js": PASSING,
+    "dies.test.js": `const { suite } = require("./harness");
+const fs = require("fs");
+suite("ti002 fixture: reports a clean pass and is then killed", () => {
+  fs.writeSync(1, "##RESULT 7 0\\n");
+  process.kill(process.pid, "SIGKILL");
+});
+`,
+  });
+  const r = runTree(root, [], { LOOM_TEST_JOBS: "2" });
+  ok(r.status !== 0, `a run containing a killed file must NOT succeed, got exit ${r.status}: ` + quiet(r.stdout).slice(-400));
+  ok(!/^\s*7\/7 passed/m.test(r.stdout || ""), "and must not adopt the dead child's own count");
+  match(quiet(r.stdout), /dies\.test\.js: killed by SIGKILL/, "it names the file and how it died");
+  match(quiet(r.stdout), /not trusted/, "and says the report it made is not believed");
+});
+
+suite("TI-002: a trailer that DISAGREES with the exit code is refused, not guessed", () => {
+  if (NESTED) return;
+  // The runner can only vouch for a file when the two things it observes agree. A trailer claiming a
+  // failure from a process that exited 0 is one of them lying, and the runner cannot tell which — so
+  // it refuses rather than picking. Prefer refusing to run over running something you cannot vouch for.
+  const root = tree({
+    "a.test.js": PASSING,
+    "liar.test.js": `const { suite } = require("./harness");
+const fs = require("fs");
+suite("ti002 fixture: claims a failure and then exits 0", () => {
+  fs.writeSync(1, "##RESULT 5 1\\n");
+  process.exit(0);
+});
+`,
+  });
+  const r = runTree(root, [], { LOOM_TEST_JOBS: "2" });
+  ok(r.status !== 0, `a disagreeing file must not pass, got exit ${r.status}: ` + quiet(r.stdout).slice(-400));
+  match(quiet(r.stdout), /liar\.test\.js: ##RESULT says 5 passed \/ 1 failed but the process exited 0/,
+        "it quotes both observations: " + quiet(r.stdout).slice(-400));
+  match(quiet(r.stdout), /cannot tell which is true/, "and refuses rather than choosing one");
+});
+
+suite("TI-002: a PASSING file whose last output came from stderr is not called a crash", async () => {
+  if (NESTED) return;
+  // THE FALSE RED that was actually measured on main — `project.test.js: crashed (exit 0)`, once,
+  // not reproducing. The trailer was matched with `$` against stdout and stderr APPENDED TO ONE
+  // STRING; stderr is a second pipe on its own schedule, and project.test.js shells out to git
+  // through execFileSync, whose stderr is the child's own by default — so the last word in the
+  // buffer came from ANOTHER PROCESS and the trailer was no longer at the end.
+  //
+  // THE FIRST VERSION OF THIS TEST PASSED AGAINST THE OLD RUNNER and so proved nothing — it let the
+  // subprocess write its stderr in the middle of the suite, where it is delivered long before the
+  // trailer and the streams never race. Reproducing a race by hoping for it is not a test. So the
+  // noise is now made to arrive AFTER the trailer by construction: a DETACHED grandchild holds our
+  // stderr fd and writes to it once the runner has already printed `##RESULT` and gone. The parent's
+  // `close` waits for that pipe to reach EOF, so it always sees the late write — deterministically
+  // the state the old `$`-anchored match could not survive.
+  const root = tree({
+    "a.test.js": PASSING,
+    "noisy.test.js": `const { suite, ok } = require("./harness");
+const { spawn } = require("child_process");
+suite("ti002 fixture: passes, and a subprocess writes to stderr after the trailer", () => {
+  // stdio[2] = 2 hands our OWN stderr fd to the grandchild — the same thing execFileSync does by
+  // default, which is how project.test.js's git calls write into this pipe.
+  const c = spawn("/bin/sh", ["-c", "sleep 0.3; echo noise-from-a-subprocess >&2"],
+                  { stdio: ["ignore", "ignore", 2], detached: true });
+  c.unref();
+  ok(true, "the file itself passes");
+});
+`,
+  });
+  for (let i = 0; i < 6; i++) {
+    const r = runTree(root, [], { LOOM_TEST_JOBS: "2" });
+    eq(r.status, 0, `run ${i + 1} must be green: ` + quiet(r.stdout).slice(-400));
+    ok(!/crashed \(exit/.test(r.stdout || ""), `run ${i + 1} must not report a crash: ` + quiet(r.stdout).slice(-400));
+    match(quiet(r.stdout), /2\/2 passed/, `run ${i + 1} counted both files`);
+    ok(/noise-from-a-subprocess/.test(r.stdout || ""), `run ${i + 1} still SHOWS the stderr — separating the streams must not swallow it`);
+  }
+});
+
+// ── TI-002-R1 · what the adversarial pass broke ────────────────────────────────────────
+// Two of its findings were real holes in the fix above, both DRIVEN by it and re-measured here
+// before anything was changed on its say-so.
+
+suite("TI-002: a file reporting ZERO tests fails the run — TI-001's rule reaches the PARENT too", () => {
+  if (NESTED) return;
+  // TI-001 made "zero executed is never a pass" a rule, but enforced it only INSIDE the child —
+  // and the parent is the thing that prints the green. A file whose trailer says `0 0` contributed
+  // nothing, yet satisfied every guard: filesDone was complete, and the run's total was non-zero
+  // because the OTHER file ran. So the run exited 0 having silently lost a whole file's worth of
+  // tests. That is the vacuous baseline again, one level up.
+  const root = tree({
+    "a.test.js": PASSING,
+    "empty.test.js": `const { suite } = require("./harness");
+const fs = require("fs");
+suite("ti002 fixture: reports a result of no tests at all", () => {
+  fs.writeSync(1, "##RESULT 0 0\\n");
+  process.exit(0);
+});
+`,
+  });
+  const r = runTree(root, [], { LOOM_TEST_JOBS: "2" });
+  ok(r.status !== 0, `a file that executed nothing must fail the run, got exit ${r.status}: ` + quiet(r.stdout).slice(-400));
+  match(quiet(r.stdout), /empty\.test\.js: reported 0 tests/, "and it names the file that contributed nothing");
+});
+
+suite("TI-002: a source in a SUBDIRECTORY is not invisible to the freshness check", () => {
+  if (NESTED) return;
+  // The freshness walk was a flat readdir, so a directory was skipped ENTIRELY: src/sub/b.ts could
+  // be newer than its build, or out/sub/gone.js could have no source at all, and the run went green.
+  // No `touch` needed — just a subdirectory. src/ is flat today, so this is the trap disarmed
+  // before anyone falls in it, and both halves are driven.
+  const nested = () => {
+    const root = tree({ "a.test.js": PASSING });
+    fs.mkdirSync(path.join(root, "src", "sub"));
+    fs.mkdirSync(path.join(root, "out", "sub"));
+    return root;
+  };
+
+  const newer = nested();
+  const t = Date.now() / 1000;
+  fs.writeFileSync(path.join(newer, "out", "sub", "b.js"), "exports.b = 1;\n");
+  fs.writeFileSync(path.join(newer, "src", "sub", "b.ts"), "export const b = 1;\n");
+  fs.utimesSync(path.join(newer, "out", "sub", "b.js"), t, t);
+  fs.utimesSync(path.join(newer, "src", "sub", "b.ts"), t + 10, t + 10);
+  const r1 = runTree(newer);
+  eq(r1.status, 4, "a nested source newer than its build refuses: " + quiet(r1.stdout).slice(-300));
+  match(quiet(r1.stdout), /src\/sub\/b\.ts is newer than out\/sub\/b\.js/, "and names the nested pair");
+
+  const orphan = nested();
+  fs.writeFileSync(path.join(orphan, "out", "sub", "gone.js"), "exports.gone = 1;\n");
+  const r2 = runTree(orphan);
+  eq(r2.status, 4, "a nested build output with no source refuses: " + quiet(r2.stdout).slice(-300));
+  match(quiet(r2.stdout), /out\/sub\/gone\.js has no src\//, "and names the nested orphan");
+});
