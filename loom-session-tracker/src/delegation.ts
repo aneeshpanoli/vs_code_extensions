@@ -47,15 +47,29 @@
 // switched off for every bus to stop it. A latch keys on what WE did; the watermark is what the
 // world did, and it is allowed to be absent.
 //
-// "ONCE PER STRETCH" IS A PROPERTY OF THIS FUNCTION, NOT YET OF THE PRODUCT. Two routes in
-// extension.ts still repeat, both older than DG-001 and neither fixed here: (a) nothing marks an
-// injection IN FLIGHT, so while `loom_cdp.py` runs — up to INJECT_TIMEOUT_MS, four ticks' worth —
-// each tick re-reads an unlatched file and injects again; the work ledger took the opposite trade at
-// extension.ts:650, stamping BEFORE the inject and accepting a missed day; (b) `currentRepo()`
-// resolves through the common git dir, so every worktree of a repo shares this one state file and N
-// editor windows deliver N reminders while incrementing one `busyTicks` N times a tick. Both are
-// bounded where DG-001 was unbounded, and both are invisible to this file's tests because nothing
-// exercises `runDelegation` itself.
+// "ONCE PER STRETCH" IS NOW A PROPERTY OF THE PRODUCT, NOT ONLY OF THIS FUNCTION (DG-001-R1). Two
+// routes in extension.ts repeated a reminder this function had already decided against, and neither
+// was visible from here because nothing exercised `runDelegation` itself — 22 green tests on a pure
+// function said nothing about what a bus receives. Both are closed, each by ONE mechanism and not
+// two, because a property held by two mechanisms is a property no single mutant can falsify:
+//  (a) NOTHING MARKED AN INJECTION IN FLIGHT. `loom_cdp.py` runs for up to INJECT_TIMEOUT_MS — four
+//      ticks — and each of those ticks re-read a file the previous one had not yet latched, so one
+//      due reminder was delivered up to four times. `claimInjection` now takes an atomic, expiring
+//      claim BEFORE the injector is spawned, and the latch is set when the attempt comes back.
+//  (b) EVERY WINDOW TICKED THE SAME FILE. `currentRepo()` resolves through the shared repository
+//      directory, so N editor windows on one project each delivered a reminder and each incremented
+//      `busyTicks`, which made the threshold arrive in 30/N minutes. The claim is a FILE, so it is
+//      shared by exactly the windows that share the state; and the counter now advances at most
+//      once per `tickMs` of wall clock however many windows are observing (`DelegationInput.at`).
+//
+// STAMPING BEFORE THE INJECT IS THE OPPOSITE TRADE FROM A WAKE, AND BOTH ARE RIGHT. A WAKE MUST
+// REACH ITS WORKER: lose one and work stalls until a human notices, which is why the gate wake and
+// the model policy latch ONLY on confirmed delivery, and why that rule cost six findings to arrive
+// at (WL-006, WL-008, CL-001). THAT RULE IS NOT REVERSED HERE AND MUST NOT BE READ AS REVERSED — it
+// governs every message this tool sends to a WORKER. A reminder to an ORCHESTRATOR is advisory: a
+// missed one costs nothing, because the condition persists and the next stretch says it again,
+// while a repeated one costs the owner's patience, which is what took this feature off every bus.
+// Opposite cost asymmetry, opposite trade, and the two live one import apart on purpose.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -71,6 +85,23 @@ export const DEFAULT_WORK_MINUTES = 30;
  *  imported so a test can drive a different cadence. */
 export const TICK_MS = 15_000;
 
+/** How long a claim on the injector stays good. MIRRORS `INJECT_TIMEOUT_MS` in inject.ts, which is
+ *  the wall a spawned `loom_cdp.py` actually dies at; models.ts and limits.ts each keep the same
+ *  local copy for the same reason — importing inject.ts here would pull the editor-facing module
+ *  graph into a file whose whole value is being testable without one. If that constant moves, this
+ *  one moves with it: a claim shorter than the injector's life expires while its injector is still
+ *  typing, which is the repeat this block exists to close. */
+export const INJECT_TIMEOUT_MS = 60_000;
+
+/** How much LONGER than the injector a claim stays good. The two clocks do not start together: the
+ *  claim is stamped inside `claimInjection`, and `execFile`'s timeout starts a few milliseconds
+ *  later at the spawn, after a state write and the message being composed. Equal windows therefore
+ *  leave a gap that is small but ALWAYS THERE, in which a hung injector is still alive — still
+ *  holding the composer, possibly already typed — while its claim has expired and a second window
+ *  is free to take it over and inject again. The band is the gap made impossible rather than made
+ *  unlikely; its cost is a few seconds of extra silence after a genuine crash. */
+export const CLAIM_GRACE_MS = 10_000;
+
 /** What one tick observes. All of it comes from records the extension already keeps. */
 export interface DelegationInput {
   repo: string;
@@ -84,6 +115,18 @@ export interface DelegationInput {
   /** The most recent instant any role's handoff was OPENED, as an ISO string, or null when this bus
    *  has never been seen to open one. This is the dispatch watermark. */
   lastDispatch: string | null;
+  /** WHEN this observation was taken, ms. Supplied, never read off the clock in here, because it is
+   *  what makes the counter idempotent across WINDOWS: N editor windows on one project share one
+   *  state file, ticked it N times a tick, and drove the threshold to 30/N minutes. A busy tick is
+   *  counted only once per `tickMs` of wall clock, so "30 minutes of observed work" means the same
+   *  with one window open as with four.
+   *
+   *  ABSENT MEANS "NO INSTANT SUPPLIED", AND THEN EVERY BUSY TICK COUNTS — the pre-DG-001-R1
+   *  behaviour, which is what the pure tests drive when they loop a tick n times with no clock.
+   *  Deduplicating needs a clock and a caller that has none cannot be given one here; the PRODUCT
+   *  always supplies it (extension.ts), and the wiring test is what holds it to that, because this
+   *  default degrades silently by design. */
+  at?: number | null;
 }
 
 export interface DelegationState {
@@ -102,6 +145,10 @@ export interface DelegationState {
    *  read by the latch: it is not cleared by a re-arm, so it answers "when did this bus last hear
    *  from us" across stretches, which `reminded` deliberately cannot. */
   deliveredAt?: string | null;
+  /** The instant of the last busy tick that was COUNTED, ISO. The cadence gate for `busyTicks`: a
+   *  second window observing the same minute of the same orchestrator must not bank it twice. Like
+   *  `busyTicks` it belongs to the stretch, so a dispatch clears it. */
+  lastTickAt?: string | null;
   updatedAt?: string;
 }
 
@@ -135,10 +182,18 @@ export interface DelegationResult {
   skip: DelegationSkip | null;
 }
 
-const EMPTY: DelegationState = { busyTicks: 0, since: null, reminded: false, deliveredAt: null };
+const EMPTY: DelegationState = { busyTicks: 0, since: null, reminded: false, deliveredAt: null,
+                                 lastTickAt: null };
 
 function file(repo: string): string {
   return path.join(LOOM_ROOT, repo, "delegation-state.json");
+}
+
+/** The claim. A SEPARATE file from the state on purpose: the state is a record every window rewrites
+ *  each tick, and a claim has to be taken by exactly one of them at once, which a read-modify-write
+ *  of a shared JSON file cannot promise. */
+function claimFile(repo: string): string {
+  return path.join(LOOM_ROOT, repo, "delegation-inflight.lock");
 }
 
 export function loadDelegation(repo: string): DelegationState {
@@ -159,28 +214,148 @@ export function loadDelegation(repo: string): DelegationState {
         since,
         reminded: typeof st.reminded === "boolean" ? st.reminded : legacyLatched,
         deliveredAt: typeof st.deliveredAt === "string" ? st.deliveredAt : null,
+        lastTickAt: typeof st.lastTickAt === "string" ? st.lastTickAt : null,
       };
     }
   } catch { /* none yet */ }
   return { ...EMPTY };
 }
 
-/** Change-only and atomic, like every other latch on this bus: a tick that changed nothing must not
- *  churn the file, and a half-written latch must never be what the next tick reads. */
+/**
+ * Change-only and atomic, like every other latch on this bus: a tick that changed nothing must not
+ * churn the file, and a half-written latch must never be what the next tick reads.
+ *
+ * AND THE LATCH ONLY EVER GOES UP WITHIN A STRETCH. Every window on a project writes this one file,
+ * and a window computes its next state from a read taken up to a whole tick earlier — so the window
+ * that did NOT deliver would otherwise write `reminded: false` back over the one that did, purely by
+ * landing second, and the next tick would remind again. That is the same repeat this block closes,
+ * arriving by a race instead of by a missing marker. A DISPATCH still re-arms it, because a dispatch
+ * changes `since` and this rule is scoped to the stretch being measured.
+ */
 export function saveDelegation(repo: string, st: DelegationState): void {
   try {
     const f = file(repo);
+    let next = st;
     try {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
-      if (cur && cur.busyTicks === st.busyTicks && (cur.since ?? null) === st.since
-          && cur.reminded === st.reminded
-          && (cur.deliveredAt ?? null) === (st.deliveredAt ?? null)) return;
+      if (cur && cur.reminded === true && !st.reminded && (cur.since ?? null) === st.since) {
+        next = { ...st, reminded: true, deliveredAt: cur.deliveredAt ?? st.deliveredAt ?? null };
+      }
+      if (cur && cur.busyTicks === next.busyTicks && (cur.since ?? null) === next.since
+          && cur.reminded === next.reminded
+          && (cur.deliveredAt ?? null) === (next.deliveredAt ?? null)
+          && (cur.lastTickAt ?? null) === (next.lastTickAt ?? null)) return;
     } catch { /* write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
-    fs.writeFileSync(tmp, JSON.stringify({ ...st, updatedAt: new Date().toISOString() }, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify({ ...next, updatedAt: new Date().toISOString() }, null, 2));
     fs.renameSync(tmp, f);
   } catch { /* ignore */ }
+}
+
+/**
+ * TAKE THE RIGHT TO INJECT, or report that someone else holds it. Called immediately BEFORE the
+ * injector is spawned and released when it comes back — so the window between "this tick decided to
+ * remind" and "the latch records that we did" is covered, which is the window four reminders used to
+ * fit inside.
+ *
+ * ATOMIC, because the thing it guards against is two windows deciding in the same instant: the claim
+ * is taken with an exclusive create (`wx`), which the filesystem grants to exactly one caller. A
+ * read-then-write of the state file cannot make that promise and would leave the answer to §4 as
+ * "one, usually".
+ *
+ * EXPIRING, because a window that dies mid-injection would otherwise hold the claim for ever and
+ * silence this bus permanently — the swallow that is the quiet cousin of the spam. A claim older
+ * than `timeoutMs` is one whose injector cannot still be alive, and it is taken over by RENAMING it
+ * away: rename resolves a race to a single winner (the loser's rename fails, because the file it
+ * names is gone), where unlink-then-create would let both windows through.
+ */
+export function claimInjection(repo: string, now = Date.now(),
+                               timeoutMs = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS): boolean {
+  const f = claimFile(repo);
+  const readAt = (file: string): number => {
+    try { return Number(JSON.parse(fs.readFileSync(file, "utf8")).at); } catch { return NaN; }
+  };
+  // WRITTEN IN FULL BEFORE IT EXISTS. `open(…,"wx")` then `write` leaves the claim ZERO BYTES for as
+  // long as the write takes, and the expiry path below reads that content: a second window arriving
+  // inside that window reads an empty file, cannot parse an `at`, correctly concludes it cannot be
+  // shown to be live, and takes the claim away from a window that is about to inject. So the bytes
+  // go to a private temp file first and `link` publishes them — link fails if the name exists, which
+  // is the same exclusivity `wx` gives, with no moment where the claim exists but says nothing.
+  const take = (): boolean => {
+    const tmp = f + ".tmp." + process.pid + "." + Math.random().toString(36).slice(2, 8);
+    try {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify({ at: now, pid: process.pid }));
+      fs.linkSync(tmp, f);
+      return true;
+    } catch { return false; }
+    finally { try { fs.unlinkSync(tmp); } catch { /* the link, if made, keeps the content */ } }
+  };
+  if (take()) return true;
+  // Held. Only an EXPIRED claim may be taken over, and an unreadable or unparseable one counts as
+  // expired: a claim nobody can age out is the permanent silence this whole path exists to avoid.
+  const started = readAt(f);
+  if (Number.isFinite(started) && now - started < timeoutMs) return false;
+  // THE TAKEOVER, and it must prove it took over the claim it JUDGED. Two windows can both decide
+  // "expired" and then rename in turn — the second renaming a claim the first has already replaced
+  // with a live one, which hands out two claims for one stretch. `rename` resolves a race among
+  // callers contending for one file, not the case where the file was swapped underneath them, so
+  // the instant is re-read from the renamed file: whoever moved something newer than what it judged
+  // has taken a live claim by accident and puts it back.
+  const parked = f + ".expired." + process.pid + "." + Math.random().toString(36).slice(2, 8);
+  try { fs.renameSync(f, parked); } catch { return false; }
+  const moved = readAt(parked);
+  if (Number.isFinite(moved) && now - moved < timeoutMs) {
+    try { fs.linkSync(parked, f); } catch { /* someone else already re-claimed it */ }
+    try { fs.unlinkSync(parked); } catch { /* best effort */ }
+    return false;
+  }
+  try { fs.unlinkSync(parked); } catch { /* best effort */ }
+  return take();
+}
+
+/** Give the claim back. Called on EVERY outcome of the injection, including the failures: whether
+ *  the bus stays quiet after a failed attempt is `settleInjection`'s decision and the latch's job,
+ *  never a lock left lying around. */
+export function releaseInjection(repo: string): void {
+  try { fs.unlinkSync(claimFile(repo)); } catch { /* never held, or already gone */ }
+}
+
+/**
+ * What an injection that has come back means for the latch.
+ *
+ * `ok` — it was typed and submitted. Latch.
+ *
+ * NOT ok BUT THE TEXT IS IN THE COMPOSER — latch. `injectTo` reports ONE boolean for failures that
+ * mean opposite things, and `loom_cdp.py` puts the distinguishing fact in the NOTE it prints. Its
+ * two fast refusals are not alike: "composer not found" typed nothing, while "typed but NOT
+ * submitted: … text still in composer (verified)" means the injector put the whole reminder in the
+ * orchestrator's composer and only the send button failed. Retrying THAT appends a second copy of
+ * the reminder to a composer that already holds one — which is the livegita symptom exactly, a
+ * fifteen-second repeat, arriving by a route the boolean cannot see. The note is already passed to
+ * the caller, so reading it costs nothing.
+ *
+ * NOT ok AND IT RAN THE WHOLE TIMEOUT — latch. An injector killed at `INJECT_TIMEOUT_MS` is killed
+ * AFTER it has had the composer, so it may have typed and simply never got to say so.
+ *
+ * NOT ok, FAST, AND NOTHING WAS TYPED — nothing was delivered, so nothing is latched and the next
+ * tick may try again. That is the wake rule, applied where it is cheap, not abandoned.
+ *
+ * The asymmetry is deliberate in one direction: the cost of latching a reminder that was genuinely
+ * lost is silence until the next dispatch, and a reminder is advisory; the cost of retrying one that
+ * landed is the repeat this whole block exists to close.
+ */
+/** The injector's own words for "the text is in the composer" — the one fast failure that must not
+ *  be retried. Keyed on the phrase loom_cdp.py prints, which is the same discipline inject.ts uses
+ *  for the reporting contract: a proxy (elapsed time, an exit code) is what got this wrong before. */
+const TYPED_BUT_UNSENT = /typed but NOT submitted/i;
+
+export function settleInjection(ok: boolean, elapsedMs: number, note?: string | null,
+                                timeoutMs = INJECT_TIMEOUT_MS): "latch" | "retry" {
+  if (ok) return "latch";
+  if (note && TYPED_BUT_UNSENT.test(note)) return "latch";
+  return elapsedMs >= timeoutMs ? "latch" : "retry";
 }
 
 /**
@@ -202,6 +377,7 @@ export function delegationTick(input: DelegationInput, prev: DelegationState,
     st.since = input.lastDispatch;
     st.busyTicks = 0;
     st.reminded = false;
+    st.lastTickAt = null;
   }
 
   if (!input.orchestrator) {
@@ -213,7 +389,31 @@ export function delegationTick(input: DelegationInput, prev: DelegationState,
   if (input.busy === null) {
     return { state: st, finding: null, skip: "orchestrator frame not seen this tick" };
   }
-  if (input.busy) st.busyTicks += 1;
+  // ── THE COUNTER, ONCE PER TICK OF WALL CLOCK AND NOT ONCE PER WINDOW ─────────────────────────
+  // Four windows open on one project ticked this same file four times a tick, so "30 minutes of
+  // observed work" arrived in seven and a half. The orchestrator being observed is ONE session, so
+  // the second window's look at the same minute is the same minute, not more work.
+  //
+  // `>= tickMs` and not a fraction of it: a whole interval must have passed. `setInterval` fires
+  // late rather than early, so a single window is unaffected in practice, and a tick dropped for
+  // landing a millisecond early costs one tick out of 120 and errs toward a LATER reminder — the
+  // safe direction, and the same direction every other threshold in this file leans.
+  if (input.busy) {
+    const at = typeof input.at === "number" && Number.isFinite(input.at) ? input.at : null;
+    const last = st.lastTickAt ? Date.parse(st.lastTickAt) : NaN;
+    // A mark in the FUTURE is not a tick that has not happened yet — it is a clock that stepped, a
+    // machine resumed from suspend, or an older build's write. Read literally it would hold the gate
+    // shut until wall clock caught up, and on a bus that is failing to dispatch nothing would ever
+    // re-open it, because only a dispatch clears the mark. That is the permanent silence, arriving
+    // through the half of this block that was supposed to be the cheap half. `claimInjection` above
+    // refuses to obey a claim it cannot age out for exactly this reason; the same rule belongs here.
+    const stale = !Number.isFinite(last) || (at !== null && last > at);
+    const counted = at === null || stale || at - last >= tickMs;
+    if (counted) {
+      st.busyTicks += 1;
+      if (at !== null) st.lastTickAt = new Date(at).toISOString();
+    }
+  }
 
   // ── (a) nobody to delegate to ────────────────────────────────────────────────────────────────
   if (input.workers.length === 0) {

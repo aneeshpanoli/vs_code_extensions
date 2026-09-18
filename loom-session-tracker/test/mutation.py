@@ -2180,10 +2180,160 @@ MUTATIONS = [
  # WALL-CLOCK, the signal delegation.ts rejects by name: an orchestrator whose human went to bed
  # would be reminded at breakfast for having done nothing. Killed by "delegation: IDLE TICKS ARE
  # NOT WORK — a quiet orchestrator never accumulates".
+ # DG-001-R1 moved this anchor: the increment is no longer one line, because it is now gated on the
+ # observation's instant as well as on busy-ness. The MUTANT is unchanged in meaning — every tick
+ # counts, whether the orchestrator was working or not.
  ("idle ticks count as work — the rejected wall-clock signal, restored",
   "src/delegation.ts",
-  "  if (input.busy) st.busyTicks += 1;",
-  "  st.busyTicks += 1;"),
+  "  if (input.busy) {\n    const at =",
+  "  if (true) {\n    const at ="),
+
+ # ── DG-001-R1 · THE PRODUCT'S "ONCE PER STRETCH", NOT THE FUNCTION'S ───────────────────────────
+ # Every mutant below survives delegation.test.js's pure suites by construction: the pure function
+ # is handed the same unlatched state each time and is RIGHT to return a finding each time. They are
+ # here because that is the shape this repo keeps shipping — 22 green tests on a mechanism whose
+ # product-level property nothing asserted — and each one names the suite in delegation-wiring.test.js
+ # that drives the real activate() tick path and kills it.
+
+ # THE FIRST LIVE REPEAT. loom_cdp.py runs for up to INJECT_TIMEOUT_MS — four ticks at the default
+ # interval — and until it returns nothing is latched, so every one of those ticks re-read an
+ # unlatched file, found the same due stretch and injected again. Up to four deliveries of one
+ # reminder, and the same mechanism is what stops a SECOND WINDOW delivering its own. Killed by
+ # "DG-001-R1 wiring: a reminder IN FLIGHT is delivered once, not once per tick" and by
+ # "DG-001-R1 wiring: TWO windows on one project deliver one reminder between them".
+ #
+ # NOT `if (false) {`, WHICH IS THIS CORPUS'S USUAL SPELLING AND HERE WOULD NOT COMPILE. TypeScript
+ # discards narrowing inside a statically unreachable block, so `repo` reverts to `string | null`
+ # and `saveDelegation(repo, …)` fails to typecheck — a MUTANT THAT DOES NOT COMPILE IS SCORED AS A
+ # KILL BY EVERY RUNNER, including this one, so the most important mutant in the block would have
+ # been reported dead without a single test having looked at it. The guard is removed instead, with
+ # the claim still TAKEN so that the release path is unchanged and only the suppression is gone.
+ ("nothing marks the injection in flight, so every tick inside it reminds again",
+  "src/extension.ts",
+  """      if (!claimInjection(repo)) {
+        saveDelegation(repo, r.state);
+        debugLog({ delegation: { orchestrator: f.orchestrator, skipped: "a reminder is in flight" } });
+        return;
+      }""",
+  "      claimInjection(repo);"),
+
+ # THE WRONG FIX FOR IT, and the more expensive failure of the two: take the claim and never give it
+ # back. Every suite about repeats stays green — the bus simply goes quiet for ever. Killed by
+ # "DG-001-R1 wiring: a DISPATCH re-arms it, and the next stretch is reminded once".
+ ("the injection claim is never released, so the bus is silenced after one reminder",
+  "src/extension.ts",
+  "        releaseInjection(repo);",
+  "        void 0;"),
+
+ # The same silence arriving by the other road: a claim that can never expire. A window killed
+ # between taking it and releasing it then holds it for ever. Killed by "DG-001-R1 wiring: an
+ # EXPIRED claim is taken over, so a crash mid-injection is not silence".
+ ("a claim left by a dead window never expires, so nothing can ever remind this bus again",
+  "src/delegation.ts",
+  "  if (Number.isFinite(started) && now - started < timeoutMs) return false;",
+  "  if (true) return false;"),
+
+ # THE SECOND LIVE REPEAT, in the counter rather than the delivery, and the quieter half: every
+ # worktree window of a project ticks one state file, so N windows advanced busyTicks N times a tick
+ # and a threshold that says 30 minutes arrived in 30/N. Killed by "DG-001-R1 wiring: two windows
+ # observing one orchestrator bank ONE busy tick, not two".
+ ("every window banks its own look at the same orchestrator, so 30 minutes arrives in 30/N",
+  "src/delegation.ts",
+  "    const counted = at === null || stale || at - last >= tickMs;",
+  "    const counted = true;"),
+
+ # …AND THE SAME DEFECT ARRIVING FROM THE WIRING, which is the one that can be reintroduced by an
+ # edit that never opens delegation.ts. `at` is optional and absent means "count every tick", so a
+ # caller that stops supplying it degrades in SILENCE, with the pure suites green. That default is
+ # deliberate and this mutant is what holds it. Killed by "DG-001-R1 wiring: two windows observing
+ # one orchestrator bank ONE busy tick, not two".
+ ("the tick stops supplying the observation's instant, so the counter multiplies by window again",
+  "src/extension.ts",
+  "          workers, lastDispatch: lastDispatchAt(repo), at: tickAt }, prev, mins, tickMs);",
+  "          workers, lastDispatch: lastDispatchAt(repo) }, prev, mins, tickMs);"),
+
+ # The tick LENGTH, from the same call. delegation.ts defaults to 15s; schedule() reads the interval
+ # from settings and clamps it at a 5s floor. A window at the floor banks three ticks per 15 seconds,
+ # so it is told it has worked half an hour after ten minutes — and the message states the minutes as
+ # an observation, so it says so. Killed by "DG-001-R1 wiring: the threshold is measured in the
+ # interval the window ACTUALLY ticks at".
+ ("the threshold is measured in delegation.ts's default tick, not the one the window ticks at",
+  "src/extension.ts",
+  "          workers, lastDispatch: lastDispatchAt(repo), at: tickAt }, prev, mins, tickMs);",
+  "          workers, lastDispatch: lastDispatchAt(repo), at: tickAt }, prev, mins);"),
+
+ # THE RACE THE MARKER CANNOT CLOSE. Two windows tick one file: B reads the state, A delivers and
+ # latches, B writes back the state it computed from its older read and `reminded` goes to false for
+ # a stretch that WAS reminded. Decided entirely by which window lands second, and invisible to both.
+ # This one is killed by a STATE-FILE test rather than by the wiring, because reproducing it through
+ # activate() needs B's write to fall inside A's injection by milliseconds — which is a coin toss, and
+ # a mutant killed by a coin toss is a mutant that is not killed. Killed by "DG-001-R1: a window that
+ # ticked before the reminder landed cannot un-latch it".
+ ("a window that lost the race writes the latch back off, and the next tick reminds again",
+  "src/delegation.ts",
+  "      if (cur && cur.reminded === true && !st.reminded && (cur.since ?? null) === st.since) {",
+  "      if (false) {"),
+
+ # An injection killed at its own timeout may already have typed, so retrying it is how ONE due
+ # reminder becomes TWO delivered ones — the last route to a repeat, and the one the elapsed time is
+ # read to close. Killed by "DG-001-R1 wiring: a DISPATCH re-arms it, and the next stretch is
+ # reminded once" (nothing ever latches, so the second tick reminds again).
+ ("a timed-out injection is always retried, so a reminder it already typed is delivered twice",
+  "src/delegation.ts",
+  '  return elapsedMs >= timeoutMs ? "latch" : "retry";',
+  '  return "retry";'),
+
+ # The over-correction: latch on anything that comes back, including a refusal that delivered
+ # nothing. That is the swallow — a bus whose composer was busy at the one moment it was looked at
+ # goes unreminded for the whole stretch — and it is the wake rule abandoned where it was still
+ # cheap. Killed by "DG-001-R1 wiring: an injection REFUSED fast is not latched, and the next tick
+ # tries again".
+ ("a refused injection latches anyway, so a reminder nobody received counts as delivered",
+  "src/delegation.ts",
+  '  return elapsedMs >= timeoutMs ? "latch" : "retry";',
+  '  return "latch";'),
+
+ # THE REPEAT THAT SURVIVED THE FIRST VERSION OF DG-001-R1, and the reason the injector's own words
+ # are read instead of a stopwatch. loom_cdp.py's fast `ok: False` is not one failure: "composer not
+ # found" typed nothing, while "typed but NOT submitted … text still in composer (verified)" means
+ # the whole reminder is already IN the composer and only the send button failed. Retry that and a
+ # second copy is appended every fifteen seconds — the livegita symptom, reached by a route neither
+ # the boolean nor the elapsed time can see. Killed by "DG-001-R1 wiring: text already sitting in
+ # the composer is never typed a second time".
+ ("the injector's note is ignored, so a reminder already in the composer is typed again",
+  "src/delegation.ts",
+  '  if (note && TYPED_BUT_UNSENT.test(note)) return "latch";',
+  '  if (false) return "latch";'),
+
+ # The claim and the injector do not start their clocks together: the claim is stamped, then a state
+ # write and a composed message happen, and only then does execFile begin counting. Equal windows
+ # therefore leave a gap that is small but ALWAYS there, in which a hung injector still holds the
+ # composer while its claim has expired and a second window is free to inject. Killed by
+ # "DG-001-R1: the injection claim is exclusive, expiring, and given back".
+ ("the claim expires before the injector it covers, opening a window for a second one",
+  "src/delegation.ts",
+  "                               timeoutMs = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS): boolean {",
+  "                               timeoutMs = INJECT_TIMEOUT_MS): boolean {"),
+
+ # A cadence mark in the FUTURE — a stepped clock, a resumed VM, an older build's write — read
+ # literally holds the counter shut until wall clock catches up, and only a dispatch clears it. On a
+ # bus that is failing to dispatch, which is the bus being measured, that is for ever: the permanent
+ # silence arriving through the half of this block that was meant to be the cheap half. Killed by
+ # "DG-001-R1: the busy counter advances once per tick of wall clock, not once per window".
+ ("a cadence mark in the future freezes the counter until the clock catches up",
+  "src/delegation.ts",
+  "    const stale = !Number.isFinite(last) || (at !== null && last > at);",
+  "    const stale = !Number.isFinite(last);"),
+
+ # THE SWALLOW HIDING IN THE SUCCESS PATH. The reminder asks the orchestrator to dispatch; when it
+ # does so WHILE loom_cdp.py is still typing, the stretch the reminder was about is over by the time
+ # the callback runs. Recording the delivery against the new stretch latches a stretch nobody has
+ # been reminded about, and it stays latched until the dispatch after that. Killed by "DG-001-R1
+ # wiring: a dispatch DURING the injection does not latch the new stretch".
+ ("a reminder delivered for the old stretch latches the new one, which is then never reminded",
+  "src/extension.ts",
+  "        if (verdict === \"latch\" && sameStretch) saveDelegation(repo, markReminded(cur));",
+  "        if (verdict === \"latch\") saveDelegation(repo, markReminded(cur));"),
 
  # The reach-back supply stops checking whether one is already there, so every tick appends another
  # block and a worker's inbox grows without bound. Killed by "reachback: it never appends twice".

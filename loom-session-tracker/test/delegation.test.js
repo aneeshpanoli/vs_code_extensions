@@ -9,7 +9,12 @@
 const { suite, ok, eq, load, makeRepo, busPath, readJson } = require("./harness");
 const fs = require("fs");
 const { delegationTick, delegationReminder, markReminded, loadDelegation, saveDelegation,
-        DEFAULT_WORK_MINUTES, TICK_MS } = load("delegation.js");
+        claimInjection, releaseInjection, settleInjection,
+        DEFAULT_WORK_MINUTES, TICK_MS, INJECT_TIMEOUT_MS, CLAIM_GRACE_MS } = load("delegation.js");
+
+/** A claim's whole life: the injector's timeout plus the band that covers the gap between the two
+ *  clocks starting. */
+const CLAIM_LIFE = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS;
 
 const TICK = 15_000;
 /** Ticks needed to reach `mins` minutes of observed mid-turn time. */
@@ -327,4 +332,191 @@ suite("delegation: AN OLD STATE FILE MIGRATES WITHOUT A BURST AND WITHOUT A CRAS
   const after = run(working({ repo: spammingRepo, lastDispatch: null }),
                     ticksFor(DEFAULT_WORK_MINUTES) * 4, markReminded(r.state));
   eq(after.finding, null, "and that is the last one this stretch — 133 becomes 1");
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// DG-001-R1 · THE STATE FILE IS SHARED BY EVERY WINDOW OF A PROJECT, and these are the claims about
+// it that delegation-wiring.test.js cannot make deterministically. They are not claims about a pure
+// decision — they are claims about the bus's own files, which is where both of DG-001-R1's repeats
+// actually lived, so they belong to the product even though no composer is involved.
+
+suite("DG-001-R1: a window that ticked before the reminder landed cannot un-latch it", async () => {
+  // THE RACE, and the one repeat that survives every marker. Two windows tick this one file. B reads
+  // the state at 0.0s, A delivers and latches at 0.4s, B writes the state it computed from its own
+  // read at 0.5s — and `reminded` goes back to false, for a stretch that WAS reminded, so the next
+  // tick reminds again. Nothing about it is visible to either window; it is decided by which of them
+  // lands second.
+  //
+  // It is not reachable on demand from the wiring suite, because it needs B's write to fall inside
+  // A's injection by milliseconds. So it is pinned here, on the real file, and the mutant that
+  // removes the rule is killed here rather than pretending otherwise.
+  const repo = makeRepo({ po: {}, dev1: {} });
+  const stretch = "2026-09-17T10:00:00.000Z";
+  saveDelegation(repo, { busyTicks: 120, since: stretch, reminded: false, deliveredAt: null });
+  // A delivers.
+  saveDelegation(repo, markReminded(loadDelegation(repo)));
+  eq(loadDelegation(repo).reminded, true, "the stretch is latched");
+  // B, still holding the read it took before that, writes its own tick back.
+  saveDelegation(repo, { busyTicks: 121, since: stretch, reminded: false, deliveredAt: null });
+  const after = loadDelegation(repo);
+  eq(after.reminded, true, "a stale writer does not un-latch the stretch it lost the race for");
+  eq(after.busyTicks, 121, "and its OBSERVATION is still taken — it is the latch that is monotone");
+  ok(!!after.deliveredAt, "and the record of when survives with it");
+
+  // …AND THE RULE IS SCOPED TO THE STRETCH, or it would be the swallow instead. A dispatch changes
+  // the watermark, and everything about the new stretch starts clear.
+  saveDelegation(repo, { busyTicks: 0, since: "2026-09-17T12:00:00.000Z", reminded: false,
+                         deliveredAt: null });
+  eq(loadDelegation(repo).reminded, false, "a NEW stretch is re-armed, exactly as a dispatch means it");
+});
+
+suite("DG-001-R1: the injection claim is exclusive, expiring, and given back", async () => {
+  // The claim is what makes "once per stretch" survive the up-to-four ticks that elapse while
+  // `loom_cdp.py` types, and the N windows that tick the same file. Its three properties, on the
+  // real filesystem, because an in-memory mutex is not shared by the windows that need it.
+  const repo = makeRepo({ po: {}, dev1: {} });
+  const t0 = 1_800_000_000_000;
+
+  ok(claimInjection(repo, t0), "the first caller takes it");
+  ok(!claimInjection(repo, t0), "and the second is refused — this is the whole mechanism");
+  ok(!claimInjection(repo, t0 + CLAIM_LIFE - 1), "still refused a millisecond before it expires");
+
+  // THE CLAIM OUTLIVES ITS INJECTOR ON PURPOSE. The two clocks do not start together — the claim is
+  // stamped, then a state write and a composed message happen, and only then does `execFile` start
+  // counting. Equal windows leave a gap that is small but always there, in which a hung injector is
+  // still holding the composer while its claim has expired and another window is free to inject.
+  ok(!claimInjection(repo, t0 + INJECT_TIMEOUT_MS),
+     "a claim is still good at the injector's own timeout — the injector is not dead yet either");
+
+  // EXPIRY. A window killed between taking the claim and giving it back would otherwise silence this
+  // bus for ever: the permanent swallow, which is the wrong fix for a repeat and the more expensive
+  // failure of the two.
+  ok(claimInjection(repo, t0 + CLAIM_LIFE), "and past that, it is dead and is taken over");
+  ok(!claimInjection(repo, t0 + CLAIM_LIFE), "and the window that took it over now holds it");
+
+  releaseInjection(repo);
+  ok(claimInjection(repo, t0 + 1), "released, so the next tick may have it");
+  releaseInjection(repo);
+
+  // A claim nobody can read is a claim nobody can age out, so it is treated as expired rather than
+  // as held for ever. Corruption must not be able to silence a bus.
+  fs.writeFileSync(busPath(repo, "delegation-inflight.lock"), "{ not json");
+  ok(claimInjection(repo, t0), "an unreadable claim is taken over, not obeyed");
+  releaseInjection(repo);
+  releaseInjection(repo);   // idempotent: a release of nothing is not an error
+});
+
+suite("DG-001-R1: a failed injection latches only when it could actually have delivered", async () => {
+  // `injectTo` reports ONE boolean for two failures that mean opposite things. A refusal comes back
+  // in milliseconds and delivered nothing: retrying it is free. A kill at INJECT_TIMEOUT_MS happens
+  // after the injector has had the composer, so it may well have typed — and retrying THAT is how
+  // one due reminder becomes two delivered ones, which is the last way left to spam a bus.
+  eq(settleInjection(true, 12), "latch", "a delivered reminder latches");
+  eq(settleInjection(false, 12, "composer not found ('none')"), "retry",
+     "a refusal that typed nothing delivered nothing — the wake rule, kept where it is cheap");
+  eq(settleInjection(false, INJECT_TIMEOUT_MS), "latch",
+     "an injector killed at its own timeout may have typed: accept a missed reminder rather than " +
+     "risk a second delivered one");
+  eq(settleInjection(false, INJECT_TIMEOUT_MS - 1), "retry", "and the boundary is the timeout itself");
+
+  // THE NOTE IS THE EVIDENCE, AND THE ELAPSED TIME ALONE WAS NOT ENOUGH. loom_cdp.py's fast
+  // `ok: False` is not one failure but several, and one of them — verified by reading the composer
+  // back — means the ENTIRE REMINDER IS SITTING IN THE ORCHESTRATOR'S COMPOSER and only the send
+  // button failed. Retrying that appends a second copy every fifteen seconds: the livegita symptom
+  // exactly, reached by a route no boolean and no stopwatch can see.
+  eq(settleInjection(false, 3000,
+       "typed but NOT submitted: send click -> 'no button'; text still in composer (verified)"),
+     "latch",
+     "text already in the composer is not retried — a second copy is the repeat, not a recovery");
+  eq(settleInjection(false, 3000, "typed text not confirmed in composer; NOT submitted"), "retry",
+     "but a readback that does NOT find the text means nothing landed, so that one IS retried");
+  eq(settleInjection(false, 3000, "composer not found/focusable in child session"), "retry",
+     "as is a composer it never reached");
+});
+
+suite("DG-001-R1: the busy counter advances once per tick of wall clock, not once per window", async () => {
+  // N windows on one project observe ONE orchestrator. Counting each of their looks made "30 minutes
+  // of observed work" arrive in 30/N, which is a threshold that means something different depending
+  // on how many editors happen to be open.
+  const t0 = 1_800_000_000_000;
+  const busy = working();
+  let st = { busyTicks: 0, since: null, reminded: false, deliveredAt: null, lastTickAt: null };
+  st = delegationTick({ ...busy, at: t0 }, st, DEFAULT_WORK_MINUTES, TICK).state;
+  eq(st.busyTicks, 1, "the first window banks the tick");
+  st = delegationTick({ ...busy, at: t0 + 3 }, st, DEFAULT_WORK_MINUTES, TICK).state;
+  eq(st.busyTicks, 1, "the second window, 3ms later, banks the same minute again — so it does not");
+  st = delegationTick({ ...busy, at: t0 + TICK - 1 }, st, DEFAULT_WORK_MINUTES, TICK).state;
+  eq(st.busyTicks, 1, "nor does anything inside the interval");
+  st = delegationTick({ ...busy, at: t0 + TICK }, st, DEFAULT_WORK_MINUTES, TICK).state;
+  eq(st.busyTicks, 2, "a whole interval later, it counts");
+
+  // AN OBSERVATION WITH NO INSTANT CANNOT BE DEDUPLICATED, so it counts. Every caller in the product
+  // supplies one; this is what the pure suites above drive, and it is why the wiring test — not this
+  // one — is what holds extension.ts to passing it.
+  st = delegationTick(busy, st, DEFAULT_WORK_MINUTES, TICK).state;
+  eq(st.busyTicks, 3, "no instant supplied, so the tick is counted");
+
+  // A MARK IN THE FUTURE IS NOT A TICK THAT HAS NOT HAPPENED YET. A clock that stepped, a machine
+  // resumed from suspend, or an older build's write leaves one behind, and read literally it holds
+  // the gate shut until wall clock catches up — on a bus that never dispatches, for ever, because
+  // only a dispatch clears the mark. That is the permanent silence arriving through the cheap half.
+  // `lastDispatch: null` so the stretch is not re-armed out from under the assertion — a dispatch
+  // clears the mark legitimately, and that is the NEXT claim, not this one.
+  const skewed = delegationTick(
+    { ...busy, lastDispatch: null, at: t0 },
+    { busyTicks: 7, since: null, reminded: false,
+      lastTickAt: new Date(t0 + 3_600_000).toISOString() },
+    DEFAULT_WORK_MINUTES, TICK).state;
+  eq(skewed.busyTicks, 8, "a mark an hour in the future is stale, not binding");
+  eq(skewed.lastTickAt, new Date(t0).toISOString(), "and it is replaced with one that makes sense");
+
+  // A DISPATCH CLEARS THE CADENCE MARK WITH THE REST OF THE STRETCH. Leaving it behind would make
+  // the first tick of a new stretch land inside the old one's interval and be dropped.
+  const armed = delegationTick({ ...busy, lastDispatch: "2026-09-17T13:00:00.000Z", at: t0 + TICK + 5 },
+                               st, DEFAULT_WORK_MINUTES, TICK).state;
+  eq(armed.busyTicks, 1, "the new stretch counts its first tick immediately");
+  eq(armed.since, "2026-09-17T13:00:00.000Z", "from the dispatch it is measured from");
+});
+
+
+suite("DG-001-R1: the claim is exclusive across PROCESSES, which is the only place it matters", async () => {
+  // EVERY OTHER TEST OF THE CLAIM RUNS IN ONE PROCESS, AND ONE PROCESS CANNOT LOSE THIS RACE.
+  // `runDelegation` is synchronous from the state read to the spawn, so two "windows" driven inside
+  // one Node process are serialised by the event loop for free — and a claim implemented as a
+  // check-then-write, or as an in-memory boolean, passes every one of those tests while failing in
+  // production, where the windows are separate processes. That is this repo's recurring defect in a
+  // new place: a suite whose NAME is about two windows, whose BODY cannot tell two windows from one.
+  //
+  // So this one actually forks. N children block until a common instant and then each takes the
+  // claim once; exactly one may win.
+  const repo = makeRepo({ po: {}, dev1: {} });
+  const kids = 8;                                  // well inside the 80% CPU ceiling for one test
+  const script = `
+    const { claimInjection } = require(${JSON.stringify(require("path").join(__dirname, "..", "out", "delegation.js"))});
+    const [repo, startAt] = [process.argv[2], Number(process.argv[3])];
+    while (Date.now() < startAt) { /* spin to the barrier — sleeping would blur it */ }
+    process.stdout.write(claimInjection(repo) ? "WON" : "LOST");
+  `;
+  const scriptFile = busPath(repo, "claim-child.js");
+  fs.writeFileSync(scriptFile, script);
+
+  const { spawn } = require("child_process");
+  const startAt = Date.now() + 400;
+  const runs = [];
+  for (let i = 0; i < kids; i++) {
+    runs.push(new Promise((resolve) => {
+      const c = spawn(process.execPath, [scriptFile, repo, String(startAt)],
+                      { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+      let out = "";
+      c.stdout.on("data", (d) => { out += d; });
+      c.on("close", () => resolve(out.trim()));
+    }));
+  }
+  const results = await Promise.all(runs);
+  const won = results.filter((r) => r === "WON").length;
+  eq(results.filter((r) => r === "WON" || r === "LOST").length, kids,
+     "every child reported — a child that crashed would make the count below meaningless");
+  eq(won, 1, `${kids} processes raced for one claim and exactly one took it`);
+  releaseInjection(repo);
 });

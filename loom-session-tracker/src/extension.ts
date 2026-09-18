@@ -20,6 +20,7 @@ import { ModelPolicy, DEFAULT_PREMIUM, DEFAULT_WORKER_MODELS, desiredModel,
          chipFor, detectModel, isPremium, handoffId, lastDispatchAt } from "./models";
 import { supplyReachBack } from "./reachback";
 import { delegationTick, loadDelegation, saveDelegation, markReminded, delegationReminder,
+         claimInjection, releaseInjection, settleInjection,
          DEFAULT_WORK_MINUTES } from "./delegation";
 
 /** What the spawn path's `/model` step actually did, recorded in spawn-debug.json (MS-001 R2b).
@@ -168,7 +169,7 @@ export function activate(context: vscode.ExtensionContext) {
     // The owner: "If an orchestrator has been working for a while and it hasn't woken up any of its
     // loom agents, then it's time to remind it." Everything that decides whether this fires lives in
     // delegation.ts, pure and tested; this only gathers the observation and delivers.
-    const runDelegation = () => {
+    const runDelegation = (tickAt: number) => {
       if (!repo) return;
       if (cfg().get<boolean>("delegationReminders", true) !== true) return;
       const tag = getOrchestrator(repo);
@@ -181,22 +182,71 @@ export function activate(context: vscode.ExtensionContext) {
         .map((role) => ({ role, working: isWorkingLike(readRoleStatus(repo, role).status) }));
       const prev = loadDelegation(repo);
       const mins = Number(cfg().get("delegationMinutes", DEFAULT_WORK_MINUTES)) || DEFAULT_WORK_MINUTES;
+      // THE TICK LENGTH IS THE ONE `schedule()` ACTUALLY USES, not delegation.ts's default. The poll
+      // interval is a setting; a window running at the 5 s floor banks three ticks a tick's worth and
+      // would be told it had worked 30 minutes after 10, and the message — which speaks in minutes —
+      // would say so. Same expression as `schedule()`, deliberately: two spellings of one interval is
+      // how they drift.
+      const tickMs = Math.max(5000, Number(cfg().get("intervalMs", 15000)) || 15000);
+      // `at` IS THE OBSERVATION'S INSTANT, AND IT IS WHAT KEEPS THE THRESHOLD HONEST ACROSS
+      // WINDOWS. `currentRepo()` resolves through the shared repository directory, so every worktree
+      // window of this project ticks THIS state file; without the instant each of them banks the
+      // same minute of the same orchestrator and 30 minutes arrives in 30/N. Dropping it degrades
+      // silently, which is why delegation-wiring.test.js drives two windows.
+      //
+      // IT IS THE TICK'S INSTANT AND NOT `Date.now()` HERE, which is a different number by however
+      // long the CDP read took — hundreds of milliseconds to seconds, and jittery. `setInterval`
+      // fires on a fixed schedule, so a slow read followed by a fast one puts two SAMPLES barely
+      // twelve seconds apart and the gate drops the second as though it were a duplicate window.
+      // Alternating latency drops half the ticks and quietly doubles what "30 minutes" means. The
+      // interval is regular; only the sampling was not.
       const r = delegationTick(
         { repo, orchestrator: tag ? tag.role : null, busy: own ? own.busy : null,
-          workers, lastDispatch: lastDispatchAt(repo) }, prev, mins);
+          workers, lastDispatch: lastDispatchAt(repo), at: tickAt }, prev, mins, tickMs);
       if (!r.finding) { saveDelegation(repo, r.state); return; }
       // Mid-turn is the normal state for a session that has been working for half an hour, so a
       // refusal here is expected and costs nothing: the latch is untouched and the next idle tick
-      // delivers. LATCHED ONLY ON DELIVERY — see markReminded.
+      // delivers.
       if (own && own.busy) { saveDelegation(repo, r.state); return; }
       const f = r.finding;
+      // ── STAMP BEFORE INJECTING ────────────────────────────────────────────────────────────────
+      // The claim is taken BEFORE the injector is spawned, so the up-to-four ticks that elapse while
+      // `loom_cdp.py` types cannot each re-read an unlatched file and inject again — and, because it
+      // is a file on the bus, neither can a second window. Not a reversal of the wake rule (which
+      // latches only on confirmed delivery): a wake that goes missing stalls a worker, a reminder
+      // that goes missing is said again next stretch. delegation.ts's header has the full argument.
+      // Losing the claim is not losing the reminder: the state is untouched, so the next tick that
+      // finds it free delivers.
+      const startedAt = Date.now();
+      if (!claimInjection(repo)) {
+        saveDelegation(repo, r.state);
+        debugLog({ delegation: { orchestrator: f.orchestrator, skipped: "a reminder is in flight" } });
+        return;
+      }
+      saveDelegation(repo, r.state);
       injectTo({ role: f.orchestrator, webviewId: tag && tag.webviewId ? tag.webviewId : null, repo },
                delegationReminder(f), "delegate-debug.json", (ok, note) => {
-        if (ok) saveDelegation(repo, markReminded(r.state));
+        // RE-READ, never write back the state this tick captured: the injector has been running for
+        // up to a minute, and other windows (and this window's own later ticks) have advanced the
+        // counter since. Marking `r.state` would roll every one of those back.
+        const cur = loadDelegation(repo);
+        const verdict = settleInjection(ok, Date.now() - startedAt, note);
+        // A dispatch during the injection ENDS the stretch this reminder was about, and latching
+        // then would suppress the reminder the NEW stretch is owed. The re-arm is the only thing
+        // that clears the latch, so a delivery that belongs to a finished stretch simply records
+        // nothing.
+        const sameStretch = cur.since === r.state.since;
+        if (verdict === "latch" && sameStretch) saveDelegation(repo, markReminded(cur));
+        // RELEASED LAST, AND THAT ORDER IS THE POINT. Between giving the claim back and recording
+        // the delivery there is an instant where the lock is free and the state still says nothing
+        // was delivered — and another window's tick, in another process, fits inside it. That is the
+        // original defect's exact shape (a gap between deciding and recording) reappearing at the
+        // other end of the same injection. Latching first closes it and costs nothing.
+        releaseInjection(repo);
         debugLog({ delegation: { orchestrator: f.orchestrator, workedMinutes: f.workedMinutes,
-                                 idle: f.idle, busy: f.busyWorkers, ok, note } });
+                                 idle: f.idle, busy: f.busyWorkers, ok, note, verdict,
+                                 stretchEnded: !sameStretch } });
       });
-      saveDelegation(repo, r.state);
     };
 
     // ── DU-001 · §19 · TWO LIVE BLOCKS ON ONE FILE ──────────────────────────────────────────────
@@ -1082,6 +1132,10 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     const runTick = async () => {
+      // THE TICK'S OWN INSTANT, sampled before anything slow. Detectors that deduplicate across
+      // windows compare it against what the previous tick recorded, and a timestamp taken after the
+      // CDP read measures that read's latency as well as the interval.
+      const tickAt = Date.now();
       try {
         // One project, or all of them — the window can switch without reloading.
         const showAll = cfg().get<boolean>("showAllProjects", false) === true;
@@ -1169,7 +1223,7 @@ export function activate(context: vscode.ExtensionContext) {
         runOverlapWarning();
         runHealth();
         try { runReachBack(); } catch { /* a supply must never break a tick */ }
-        try { runDelegation(); } catch { /* a reminder must never break a tick */ }
+        try { runDelegation(tickAt); } catch { /* a reminder must never break a tick */ }
         try { runWatchers(); } catch { /* a reminder must never break a tick */ }
         try { runDuties(); } catch { /* a reminder must never break a tick */ }
         try { runQuiet(); } catch { /* a notifier must never break a tick */ }
