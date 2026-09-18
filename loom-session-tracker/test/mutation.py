@@ -2108,15 +2108,65 @@ MUTATIONS = [
  # four alerts in one day. Killed by "delegation: reminded ONCE per undelegated stretch".
  ("the delegation reminder repeats every tick instead of once per undelegated stretch",
   "src/delegation.ts",
-  "  if (st.remindedAt !== null && st.remindedAt === (st.since ?? null)) {",
+  "  if (st.reminded) {",
   "  if (false) {"),
+
+ # DG-001, THE LIVE DEFECT ITSELF: make the latch express the WATERMARK rather than the delivery, so
+ # that a delivered reminder records nothing on a bus which has never dispatched. That is what the
+ # shipped code did by storing `since ?? null` — the same `null` that means "nothing has been
+ # delivered" — so the suppression check could never hold and the reminder fired on every qualifying
+ # tick for ever. Measured at livegita's orchestrator: busyTicks 133, since null, 33 minutes of
+ # reminders, ending with the feature switched off for every bus. Note the mutant leaves a bus WITH a
+ # watermark behaving correctly, exactly as the defect did — which is why it went unnoticed here.
+ # Killed by "delegation: A BUS THAT HAS NEVER DISPATCHED IS REMINDED AT MOST ONCE — the DG-001 spam".
+ ("the delegation latch is keyed on the watermark, so a null one can never suppress — DG-001",
+  "src/delegation.ts",
+  "  return { ...st, reminded: true, deliveredAt: new Date().toISOString() };",
+  "  return { ...st, reminded: st.since !== null, deliveredAt: new Date().toISOString() };"),
+
+ # The other half of the same shape, and the WRONG FIX for it: silence the spam by making a bus with
+ # no watermark permanently unremindable. The stretch then never reports, and a first-ever dispatch
+ # cannot re-arm what was never armed. Killed by "delegation: A BUS THAT HAS NEVER DISPATCHED IS
+ # REMINDED AT MOST ONCE" (it never fires at all, so the first reminder goes missing).
+ ("a never-dispatched bus is silenced instead of latched — the wrong fix for DG-001",
+  "src/delegation.ts",
+  "  if (st.reminded) {\n    return",
+  "  if (st.reminded || st.since === null) {\n    return"),
+
+ # DELIVERY IS WHAT LATCHES. Mark the latch from the state the TICK produced rather than from the
+ # delivery callback's success, and a reminder refused because the composer was mid-turn silences the
+ # stretch anyway — the asserted-is-not-reached shape that has cost this project six findings.
+ # Killed by "delegation: ONLY DELIVERY LATCHES — a reminder refused by a busy composer is not one".
+ ("a reminder that was never received latches the stretch anyway",
+  "src/delegation.ts",
+  "  const workedMinutes = Math.round",
+  "  st.reminded = true;\n  const workedMinutes = Math.round"),
+
+ # MIGRATION. Default the new flag to `true` for a file written before DG-001 instead of replaying
+ # the old suppression condition, and every affected bus is silenced for its current stretch — the
+ # 133-reminder bus included, which is the one that still has something to say. Killed by
+ # "delegation: AN OLD STATE FILE MIGRATES WITHOUT A BURST AND WITHOUT A CRASH".
+ ("an old state file loads as already-reminded, silencing the stretch it never reported",
+  "src/delegation.ts",
+  "        reminded: typeof st.reminded === \"boolean\" ? st.reminded : legacyLatched,",
+  "        reminded: typeof st.reminded === \"boolean\" ? st.reminded : true,"),
+
+ # The OTHER half of the migration, and the one a refutation pass found unasserted: replay only
+ # "remindedAt is a string" and drop the equality, and a bus whose watermark MOVED after its reminder
+ # migrates as latched — its legitimately due reminder swallowed for ever, silently, suite green.
+ # A swallow is the quieter cousin of the spam and the wrong fix for it. Killed by "delegation: AN
+ # OLD STATE FILE MIGRATES WITHOUT A BURST AND WITHOUT A CRASH".
+ ("migration replays only HALF the old condition, latching a bus whose watermark had moved",
+  "src/delegation.ts",
+  "      const legacyLatched = typeof st.remindedAt === \"string\" && st.remindedAt === since;",
+  "      const legacyLatched = typeof st.remindedAt === \"string\";"),
 
  # The re-arm. Keyed on the dispatch watermark so that ONLY delegating clears it; leave the latch
  # set and no dispatch can ever re-arm the reminder, so it fires exactly once in the life of a bus.
  # Killed by "delegation: ONLY A NEW DISPATCH RE-ARMS IT — and it resets the stretch too".
  ("a dispatch no longer re-arms the delegation reminder",
   "src/delegation.ts",
-  "    st.busyTicks = 0;\n    st.remindedAt = null;",
+  "    st.busyTicks = 0;\n    st.reminded = false;",
   "    st.busyTicks = 0;"),
 
  # UNKNOWN IS NOT IDLE. A tick that could not see the orchestrator's frame must neither count work

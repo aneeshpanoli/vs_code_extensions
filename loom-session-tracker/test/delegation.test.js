@@ -26,7 +26,7 @@ function working(over = {}) {
 }
 
 /** Run n ticks of the same observation and return the final result. */
-function run(input, n, prev = { busyTicks: 0, since: null, remindedAt: null }, mins = DEFAULT_WORK_MINUTES) {
+function run(input, n, prev = { busyTicks: 0, since: null, reminded: false }, mins = DEFAULT_WORK_MINUTES) {
   let r = { state: prev, finding: null, skip: null };
   for (let i = 0; i < n; i++) r = delegationTick(input, r.state, mins, TICK);
   return r;
@@ -138,7 +138,7 @@ suite("delegation: ONLY A NEW DISPATCH RE-ARMS IT — and it resets the stretch 
   // The orchestrator delegates. THAT is the re-arm, and it is the only one.
   const afterDispatch = delegationTick(
     working({ lastDispatch: "2026-09-17T12:00:00.000Z" }), latched, DEFAULT_WORK_MINUTES, TICK);
-  eq(afterDispatch.state.remindedAt, null, "the latch is released by the dispatch");
+  eq(afterDispatch.state.reminded, false, "the latch is released by the dispatch");
   eq(afterDispatch.state.busyTicks, 1, "and the new stretch counts from the dispatch, not the reminder");
   eq(afterDispatch.finding, null, "so nothing fires immediately after delegating");
 
@@ -198,10 +198,12 @@ suite("delegation: it does not imply the busy roles are available", () => {
 suite("delegation: the latch survives an extension reload", () => {
   // A latch held in memory fires again on every window reload — the reason gatesWoken went to disk.
   const repo = makeRepo({ po: {}, dev1: {} });
-  const st = markReminded({ busyTicks: 400, since: "2026-09-17T10:00:00.000Z", remindedAt: null });
+  const st = markReminded({ busyTicks: 400, since: "2026-09-17T10:00:00.000Z", reminded: false });
   saveDelegation(repo, st);
   const back = loadDelegation(repo);
-  eq(back.remindedAt, "2026-09-17T10:00:00.000Z", "the watermark it was reminded at, read back");
+  eq(back.reminded, true, "the DELIVERED flag, read back");
+  eq(back.since, "2026-09-17T10:00:00.000Z", "alongside the watermark it is measured from");
+  ok(typeof back.deliveredAt === "string", "and when the delivery happened, for a human reading it");
   eq(back.busyTicks, 400, "and the stretch");
   ok(readJson(busPath(repo, "delegation-state.json")).updatedAt, "stamped");
 });
@@ -209,7 +211,7 @@ suite("delegation: the latch survives an extension reload", () => {
 suite("delegation: a bus with no latch file reads as a fresh start, never as reminded", () => {
   const repo = makeRepo({ po: {}, dev1: {} });
   const st = loadDelegation(repo);
-  eq(st.remindedAt, null, "not latched");
+  eq(st.reminded, false, "not latched");
   eq(st.busyTicks, 0, "nothing accumulated");
   eq(st.since, null, "no watermark");
 });
@@ -218,13 +220,13 @@ suite("delegation: a corrupt latch file reads as a fresh start rather than throw
   const repo = makeRepo({ po: {}, dev1: {} });
   fs.writeFileSync(busPath(repo, "delegation-state.json"), "{not json");
   const st = loadDelegation(repo);
-  eq(st.remindedAt, null, "degrades to unlatched");
+  eq(st.reminded, false, "degrades to unlatched");
   eq(st.busyTicks, 0, "and to an empty stretch");
 });
 
 suite("delegation: saving is change-only, so a quiet tick never churns the file", () => {
   const repo = makeRepo({ po: {}, dev1: {} });
-  const st = { busyTicks: 3, since: null, remindedAt: null };
+  const st = { busyTicks: 3, since: null, reminded: false };
   saveDelegation(repo, st);
   const first = fs.statSync(busPath(repo, "delegation-state.json")).mtimeMs;
   const stamp = readJson(busPath(repo, "delegation-state.json")).updatedAt;
@@ -232,4 +234,97 @@ suite("delegation: saving is change-only, so a quiet tick never churns the file"
   eq(readJson(busPath(repo, "delegation-state.json")).updatedAt, stamp,
      "an unchanged state is not rewritten");
   ok(fs.statSync(busPath(repo, "delegation-state.json")).mtimeMs === first, "file untouched");
+});
+
+// ── DG-001 · THE LATCH ON A BUS THAT HAS NEVER DISPATCHED ─────────────────────────────────────
+// Live defect, measured at livegita's orchestrator: busyTicks 133, since null, remindedAt null, and
+// a reminder on every qualifying tick for 33 minutes until the feature was switched off for every
+// bus. The old latch stored the watermark, so on a bus that had never dispatched it stored `null` —
+// the same `null` that means "nothing delivered" — and `remindedAt !== null` was false for ever.
+// These four suites are the properties; the tests above cover the watermark case unchanged.
+suite("delegation: A BUS THAT HAS NEVER DISPATCHED IS REMINDED AT MOST ONCE — the DG-001 spam", () => {
+  const need = ticksFor(DEFAULT_WORK_MINUTES);
+  const never = working({ lastDispatch: null });
+  const first = run(never, need);
+  ok(first.finding, "the first reminder is due — a never-dispatched bus is still measurable");
+  eq(first.state.since, null, "and it has no watermark to key a latch on");
+
+  const latched = markReminded(first.state);
+  eq(latched.reminded, true, "delivery is recorded as a fact about US, not about the watermark");
+  const after = run(never, need * 10, latched);
+  eq(after.finding, null, "and ten further stretches of ticks say nothing at all");
+  eq(after.skip, "already reminded for this stretch", "the latch is what held");
+});
+
+suite("delegation: THE FIRST EVER DISPATCH STILL RE-ARMS IT — the spam is not fixed by silence", () => {
+  // The wrong fix for the suite above is to make a null watermark permanently unremindable. A bus
+  // that is reminded, then delegates for the FIRST TIME, then goes undelegated again, has earned a
+  // second reminder exactly as a bus with a history would.
+  const need = ticksFor(DEFAULT_WORK_MINUTES);
+  const latched = markReminded(run(working({ lastDispatch: null }), need).state);
+
+  const dispatched = delegationTick(working({ lastDispatch: "2026-09-17T13:00:00.000Z" }),
+                                    latched, DEFAULT_WORK_MINUTES, TICK);
+  eq(dispatched.state.reminded, false, "the first ever dispatch releases the latch");
+  eq(dispatched.state.since, "2026-09-17T13:00:00.000Z", "and becomes the watermark it had lacked");
+  eq(dispatched.state.busyTicks, 1, "the stretch restarts at the dispatch");
+  ok(typeof latched.deliveredAt === "string" && dispatched.state.deliveredAt === latched.deliveredAt,
+     "and the delivery RECORD survives the re-arm — it answers a question `reminded` cannot");
+  eq(dispatched.finding, null, "nothing fires at the moment of delegating");
+
+  const later = run(working({ lastDispatch: "2026-09-17T13:00:00.000Z" }), need, dispatched.state);
+  ok(later.finding, "and the NEW undelegated stretch is reported on its own merits");
+});
+
+suite("delegation: ONLY DELIVERY LATCHES — a reminder refused by a busy composer is not one", () => {
+  // extension.ts returns without calling markReminded when the orchestrator is mid-turn, and injectTo
+  // latches only on ok. Asserted here as a property of the state rather than of the caller: a tick
+  // that PRODUCED a finding must leave the latch open, so that only markReminded can close it. That
+  // asserted-is-not-reached shape has cost this project six findings.
+  const need = ticksFor(DEFAULT_WORK_MINUTES);
+  for (const bus of [working(), working({ lastDispatch: null })]) {
+    const due = run(bus, need);
+    ok(due.finding, "a finding was produced");
+    eq(due.state.reminded, false, "but producing one latches nothing");
+    const refusedAgain = run(bus, 1, due.state);
+    ok(refusedAgain.finding, "so the next tick offers it again until someone receives it");
+  }
+});
+
+suite("delegation: AN OLD STATE FILE MIGRATES WITHOUT A BURST AND WITHOUT A CRASH", () => {
+  // Every `delegation-state.json` on disk was written by 0.60.0 and has no `reminded`. The flag is
+  // derived by replaying the OLD suppression condition, so each bus keeps the suppression it
+  // actually had.
+  const latchedRepo = makeRepo({ po: {}, dev1: {} });
+  fs.writeFileSync(busPath(latchedRepo, "delegation-state.json"), JSON.stringify(
+    { busyTicks: 200, since: "2026-09-17T10:00:00.000Z", remindedAt: "2026-09-17T10:00:00.000Z" }));
+  const kept = loadDelegation(latchedRepo);
+  eq(kept.reminded, true, "a bus that WAS latched under the old shape stays silent");
+  eq(kept.busyTicks, 200, "and keeps its stretch");
+
+  // The affected shape. It was never latched — that is the defect — so the truth is `false`, and it
+  // is due ONE reminder, after which the boolean holds. One is not a burst.
+  const spammingRepo = makeRepo({ po: {}, dev1: {} });
+  fs.writeFileSync(busPath(spammingRepo, "delegation-state.json"), JSON.stringify(
+    { busyTicks: 133, since: null, remindedAt: null }));
+  const live = loadDelegation(spammingRepo);
+  eq(live.reminded, false, "livegita's file loads unlatched, which is what it truly was");
+
+  // THE THIRD SHAPE, and the half of the replay that the two above cannot see: a watermark that
+  // MOVED after the reminder was delivered. The old condition required equality, so that file was
+  // NOT suppressed and its new stretch was owed a reminder. Derive the flag from "remindedAt is a
+  // string" alone and the equality half stops being load-bearing — the bus migrates as latched and
+  // a legitimately due reminder is swallowed for ever, silently, with the suite still green.
+  const movedRepo = makeRepo({ po: {}, dev1: {} });
+  fs.writeFileSync(busPath(movedRepo, "delegation-state.json"), JSON.stringify(
+    { busyTicks: 200, since: "2026-09-17T12:00:00.000Z", remindedAt: "2026-09-17T09:00:00.000Z" }));
+  const moved = loadDelegation(movedRepo);
+  eq(moved.reminded, false, "a watermark that moved since the reminder migrates UNLATCHED");
+  eq(moved.since, "2026-09-17T12:00:00.000Z", "keeping the newer watermark it is measured from");
+  const r = delegationTick(working({ repo: spammingRepo, lastDispatch: null }), live,
+                           DEFAULT_WORK_MINUTES, TICK);
+  ok(r.finding, "so one reminder is due");
+  const after = run(working({ repo: spammingRepo, lastDispatch: null }),
+                    ticksFor(DEFAULT_WORK_MINUTES) * 4, markReminded(r.state));
+  eq(after.finding, null, "and that is the last one this stretch — 133 becomes 1");
 });

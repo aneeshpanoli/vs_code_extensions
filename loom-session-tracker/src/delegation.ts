@@ -34,10 +34,28 @@
 // can tell "checked, nothing to say" from "not checked"; (b) every bound worker already busy — that
 // is §8's concurrency cap being followed correctly, so the detector requires an AVAILABLE worker.
 //
-// SUPPRESSION is keyed on the DISPATCH WATERMARK, never on the condition: the stall alarm's
-// `alerted` map re-arms whenever the condition flickers and so fired at this orchestrator four times
-// in one day. Only a dispatch newer than the watermark re-arms this latch, and the busy-tick counter
-// resets at the same instant. It lives on disk; a latch held in memory fires again on every reload.
+// SUPPRESSION is a DELIVERED flag re-armed only by a DISPATCH, never keyed on the condition: the
+// stall alarm's `alerted` map re-arms whenever the condition flickers and so fired at this
+// orchestrator four times in one day. Only a dispatch newer than the watermark re-arms this latch,
+// and the busy-tick counter resets at the same instant. It lives on disk; a latch held in memory
+// fires again on every reload.
+//
+// The flag is a BOOLEAN and not the watermark itself, which is DG-001: storing `since ?? null` made
+// one `null` mean both "no dispatch has ever been seen" and "nothing has been delivered", so on a
+// bus that had never dispatched the latch could never suppress and the reminder fired every
+// qualifying tick — 133 of them at livegita's orchestrator, 33 minutes, until the feature was
+// switched off for every bus to stop it. A latch keys on what WE did; the watermark is what the
+// world did, and it is allowed to be absent.
+//
+// "ONCE PER STRETCH" IS A PROPERTY OF THIS FUNCTION, NOT YET OF THE PRODUCT. Two routes in
+// extension.ts still repeat, both older than DG-001 and neither fixed here: (a) nothing marks an
+// injection IN FLIGHT, so while `loom_cdp.py` runs — up to INJECT_TIMEOUT_MS, four ticks' worth —
+// each tick re-reads an unlatched file and injects again; the work ledger took the opposite trade at
+// extension.ts:650, stamping BEFORE the inject and accepting a missed day; (b) `currentRepo()`
+// resolves through the common git dir, so every worktree of a repo shares this one state file and N
+// editor windows deliver N reminders while incrementing one `busyTicks` N times a tick. Both are
+// bounded where DG-001 was unbounded, and both are invisible to this file's tests because nothing
+// exercises `runDelegation` itself.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -73,8 +91,17 @@ export interface DelegationState {
   busyTicks: number;
   /** The dispatch watermark this stretch is being measured from. */
   since: string | null;
-  /** The watermark that was current when a reminder was last DELIVERED. The latch. */
-  remindedAt: string | null;
+  /** THE LATCH: has a reminder been DELIVERED for the stretch now being measured? A BOOLEAN, not a
+   *  watermark, because DG-001 was exactly the watermark-as-latch-key trap: `since` is a nullable
+   *  OBSERVATION and the old latch stored it, so on a bus that had never dispatched the key was
+   *  `null` — indistinguishable from "nothing delivered yet" — and the check never suppressed.
+   *  Delivery is a fact about US; it must not be expressed in a field that can be absent because
+   *  the WORLD had nothing to report. */
+  reminded: boolean;
+  /** When the last reminder was delivered, ISO. A RECORD for whoever reads the state file, never
+   *  read by the latch: it is not cleared by a re-arm, so it answers "when did this bus last hear
+   *  from us" across stretches, which `reminded` deliberately cannot. */
+  deliveredAt?: string | null;
   updatedAt?: string;
 }
 
@@ -108,7 +135,7 @@ export interface DelegationResult {
   skip: DelegationSkip | null;
 }
 
-const EMPTY: DelegationState = { busyTicks: 0, since: null, remindedAt: null };
+const EMPTY: DelegationState = { busyTicks: 0, since: null, reminded: false, deliveredAt: null };
 
 function file(repo: string): string {
   return path.join(LOOM_ROOT, repo, "delegation-state.json");
@@ -118,10 +145,20 @@ export function loadDelegation(repo: string): DelegationState {
   try {
     const st = JSON.parse(fs.readFileSync(file(repo), "utf8"));
     if (st && typeof st === "object") {
+      const since = typeof st.since === "string" ? st.since : null;
+      // MIGRATION. A file written before DG-001 has no `reminded`; it has the old watermark latch.
+      // Deriving the flag by REPLAYING the old suppression condition (`remindedAt` present AND equal
+      // to `since`) carries over exactly the suppression that file actually had, so an unaffected
+      // bus stays silent and no bus is re-reminded for a stretch it was already told about. The
+      // affected shape — `since` null, so `remindedAt` null — derives `false`, which is the truth:
+      // its 133 reminders latched nothing. It is therefore due ONE reminder on first load, and
+      // latched from then on. One is not a burst.
+      const legacyLatched = typeof st.remindedAt === "string" && st.remindedAt === since;
       return {
         busyTicks: Number.isFinite(st.busyTicks) ? Number(st.busyTicks) : 0,
-        since: typeof st.since === "string" ? st.since : null,
-        remindedAt: typeof st.remindedAt === "string" ? st.remindedAt : null,
+        since,
+        reminded: typeof st.reminded === "boolean" ? st.reminded : legacyLatched,
+        deliveredAt: typeof st.deliveredAt === "string" ? st.deliveredAt : null,
       };
     }
   } catch { /* none yet */ }
@@ -136,7 +173,8 @@ export function saveDelegation(repo: string, st: DelegationState): void {
     try {
       const cur = JSON.parse(fs.readFileSync(f, "utf8"));
       if (cur && cur.busyTicks === st.busyTicks && (cur.since ?? null) === st.since
-          && (cur.remindedAt ?? null) === st.remindedAt) return;
+          && cur.reminded === st.reminded
+          && (cur.deliveredAt ?? null) === (st.deliveredAt ?? null)) return;
     } catch { /* write */ }
     fs.mkdirSync(path.dirname(f), { recursive: true });
     const tmp = f + ".tmp." + process.pid;
@@ -158,12 +196,12 @@ export function delegationTick(input: DelegationInput, prev: DelegationState,
   const st: DelegationState = { ...prev };
 
   // A DISPATCH RESETS EVERYTHING — counter and latch. This is the only re-arm: nothing else in this
-  // function clears `remindedAt`, which is what makes "once per undelegated stretch" mean what it
+  // function clears `reminded`, which is what makes "once per undelegated stretch" mean what it
   // says.
   if (input.lastDispatch && input.lastDispatch !== st.since) {
     st.since = input.lastDispatch;
     st.busyTicks = 0;
-    st.remindedAt = null;
+    st.reminded = false;
   }
 
   if (!input.orchestrator) {
@@ -195,9 +233,11 @@ export function delegationTick(input: DelegationInput, prev: DelegationState,
   if (st.busyTicks < needTicks) {
     return { state: st, finding: null, skip: "not yet worked long enough" };
   }
-  // THE LATCH. `remindedAt` is only ever cleared by a newer dispatch above, so a reported stretch
-  // stays reported however long it runs and however the workers flicker.
-  if (st.remindedAt !== null && st.remindedAt === (st.since ?? null)) {
+  // THE LATCH. `reminded` is only ever cleared by a newer dispatch above, so a reported stretch
+  // stays reported however long it runs and however the workers flicker. It says nothing about the
+  // watermark on purpose — a stretch with no watermark is still a stretch, and DG-001 was the whole
+  // cost of letting the two facts share a field.
+  if (st.reminded) {
     return { state: st, finding: null, skip: "already reminded for this stretch" };
   }
   const workedMinutes = Math.round(((st.busyTicks * tickMs) / 60_000) * 10) / 10;
@@ -213,7 +253,7 @@ export function delegationTick(input: DelegationInput, prev: DelegationState,
  *  mid-turn is a reminder nobody received. That asserted-is-not-reached shape has cost this project
  *  six findings (WL-006, WL-008, CL-001). */
 export function markReminded(st: DelegationState): DelegationState {
-  return { ...st, remindedAt: st.since ?? null };
+  return { ...st, reminded: true, deliveredAt: new Date().toISOString() };
 }
 
 /**
