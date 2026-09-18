@@ -139,7 +139,14 @@ export interface DelegationState {
    *  OBSERVATION and the old latch stored it, so on a bus that had never dispatched the key was
    *  `null` — indistinguishable from "nothing delivered yet" — and the check never suppressed.
    *  Delivery is a fact about US; it must not be expressed in a field that can be absent because
-   *  the WORLD had nothing to report. */
+   *  the WORLD had nothing to report.
+   *
+   *  A PRODUCT DECISION, NOT AN IMPLEMENTATION DETAIL, AND IT IS WHY THIS COMMENT IS HERE. A stretch
+   *  ends only at a DISPATCH, so on a bus that never dispatches there is exactly one stretch and
+   *  this feature fires ONCE IN THAT BUS'S LIFETIME. That is livegita's shape, and it is the trade
+   *  the owner chose (2026-09-17): right against spam, and not obviously right against silence —
+   *  the bus that most needs telling to delegate is the one that never has. Anyone widening this
+   *  should widen it deliberately, not by discovering the bound here and reading it as an oversight. */
   reminded: boolean;
   /** When the last reminder was delivered, ISO. A RECORD for whoever reads the state file, never
    *  read by the latch: it is not cleared by a re-arm, so it answers "when did this bus last hear
@@ -192,8 +199,20 @@ function file(repo: string): string {
 /** The claim. A SEPARATE file from the state on purpose: the state is a record every window rewrites
  *  each tick, and a claim has to be taken by exactly one of them at once, which a read-modify-write
  *  of a shared JSON file cannot promise. */
+/**
+ * AND IT LIVES OUTSIDE THE BUS, because two readers take the newest mtime of anything under
+ * `loom/<repo>/` as "how recently that project was touched" — `busTouched` (digest.ts) and the
+ * separate copy of the same walk in `planBuses` (gc.ts), which is the one that offers to ARCHIVE a
+ * dead bus. A claim written there on our own timer would be the observer changing what it measures,
+ * and the permanent case is the dangerous one: a window that dies mid-injection leaves the claim
+ * behind until some later injection ages it out, so a bus that then goes quiet is frozen as freshly
+ * touched for ever and gc can never propose it. A dot-directory is invisible to every enumerator on
+ * this bus by construction — `loomDirs` and `mailboxRoles` skip names beginning with ".", `busRepos`
+ * wants a board.json — which is why this is a move and not an ignore-list: an ignore-list would have
+ * to be added to BOTH walks, and to whichever third one is written next.
+ */
 function claimFile(repo: string): string {
-  return path.join(LOOM_ROOT, repo, "delegation-inflight.lock");
+  return path.join(LOOM_ROOT, ".inflight", repo + ".lock");
 }
 
 export function loadDelegation(repo: string): DelegationState {

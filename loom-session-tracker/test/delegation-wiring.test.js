@@ -76,7 +76,11 @@ const reminders = (repo) =>
   injectLog().filter((l) => /loom-delegate/.test(l) && new RegExp("--repo " + repo + "(\\s|$)").test(l));
 
 const stateFile = (repo) => busPath(repo, "delegation-state.json");
-const claimFile = (repo) => busPath(repo, "delegation-inflight.lock");
+// DG-001-R2 · the claim lives OUTSIDE the bus, because two mtime walks over loom/<repo> read
+// anything in there as project activity (delegation.ts explains which, and why an orphaned claim is
+// the damaging case). Spelt against LOOM rather than busPath so that this helper moving is the
+// signal when the claim moves again — the placement itself is pinned in delegation.test.js.
+const claimFile = (repo) => path.join(LOOM, ".inflight", repo + ".lock");
 
 /**
  * A bus with a tagged orchestrator and two workers, one of them free. A DISTINCT repo id per suite,

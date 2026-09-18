@@ -2335,6 +2335,32 @@ MUTATIONS = [
   "        if (verdict === \"latch\" && sameStretch) saveDelegation(repo, markReminded(cur));",
   "        if (verdict === \"latch\") saveDelegation(repo, markReminded(cur));"),
 
+ # ── DG-001-R2 · the observer must not change what it measures ──────────────────────────────────
+
+ # THE CLAIM BACK IN THE BUS ROOT. Two readers take the newest mtime of anything under loom/<repo>
+ # as project activity — busTouched (digest.ts) and the separate copy of that walk in planBuses
+ # (gc.ts), which is the one that offers to archive a dead bus. The permanent case is the damaging
+ # one: a claim orphaned by a window that died mid-injection freezes a bus as freshly touched for
+ # ever, so gc can never propose the very bus it was written for. Killed by BOTH
+ # "delegation: taking a claim writes NOTHING into the bus root" and
+ # "delegation: an ORPHANED claim does not keep a dead bus looking alive" — deliberately two, because
+ # the first states the fact and the second states why anyone should care.
+ ("the injection claim is written into the bus root, where two mtime walks read it as activity",
+  "src/delegation.ts",
+  '  return path.join(LOOM_ROOT, ".inflight", repo + ".lock");',
+  '  return path.join(LOOM_ROOT, repo, "delegation-inflight.lock");'),
+
+ # THE DIGEST READS AMBIENT STATE AGAIN. working-sessions.json is MACHINE-GLOBAL — not this bus, not
+ # any bus — so a buildDigest that reaches for it answers partly about a repo and partly about the
+ # host, with nothing in the signature to say so. That is what made three digest suites fail in
+ # SERIAL mode only, each by exactly one actionable item, when a sibling suite drove the real
+ # activate(). Killed by "digest: a published global working count does not reach a digest that was
+ # not given it" — which, unlike those three, is red in every mode.
+ ("the digest reads the machine-global working count instead of the one it was handed",
+  "src/digest.ts",
+  "    workingNow: input.workingNow,",
+  '    workingNow: (() => { try { return JSON.parse(fs.readFileSync(path.join(LOOM_ROOT, "working-sessions.json"), "utf8")).total; } catch { return input.workingNow; } })(),'),
+
  # The reach-back supply stops checking whether one is already there, so every tick appends another
  # block and a worker's inbox grows without bound. Killed by "reachback: it never appends twice".
  ("a reach-back block is appended on every tick, forever",

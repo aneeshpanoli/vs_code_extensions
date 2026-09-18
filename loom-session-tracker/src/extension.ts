@@ -1407,6 +1407,10 @@ export function activate(context: vscode.ExtensionContext) {
       workingWarnAt: Number(cfg().get("workingWarnThreshold", 5)) || 5,
       checkUnbanked: cfg().get<boolean>("digestUnbankedCheck", true),
       gcPlan: computeGcPlan(),
+      // COUNTED HERE, not read off `working-sessions.json` inside the digest. The published file is
+      // how OTHER windows learn this number; the window computing a digest already has the roles in
+      // front of it, so going through the file would only add a way for the two to disagree.
+      workingNow: countWorking().total,
     });
 
     /** Offer to reopen roles whose session evaporated. Always an explicit click — never automatic. */

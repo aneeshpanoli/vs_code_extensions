@@ -520,3 +520,44 @@ suite("DG-001-R1: the claim is exclusive across PROCESSES, which is the only pla
   eq(won, 1, `${kids} processes raced for one claim and exactly one took it`);
   releaseInjection(repo);
 });
+
+// ── DG-001-R2 · the claim is not evidence that anyone touched the project ────────────────────────
+//
+// TWO readers take the newest mtime of anything under loom/<repo> as "how recently this project was
+// touched": busTouched (digest.ts) and a separate copy of the same walk in planBuses (gc.ts), the
+// one that offers to ARCHIVE a dead bus. A claim written into the bus root on our own timer is the
+// observer changing what it measures. These suites assert the fix at the FACT — nothing lands in the
+// bus root at all — rather than at either reader's name, so a third walk written next year inherits
+// the guarantee instead of needing to be told about it.
+suite("delegation: taking a claim writes NOTHING into the bus root", () => {
+  const repo = makeRepo({ roles: { po: {}, w1: {} } });
+  const before = fs.readdirSync(busPath(repo)).sort();
+  ok(claimInjection(repo), "claim taken");
+  const during = fs.readdirSync(busPath(repo)).sort();
+  eq(during, before, "the bus root is byte-identical WHILE THE CLAIM IS HELD — tmp and lock alike");
+  releaseInjection(repo);
+  eq(fs.readdirSync(busPath(repo)).sort(), before, "and after release");
+});
+
+suite("delegation: an ORPHANED claim does not keep a dead bus looking alive", () => {
+  // The permanent case, and the reason this is a move and not a cleanup: a window that dies
+  // mid-injection leaves the claim behind until some LATER injection ages it out — and on a bus that
+  // then goes quiet there is no later injection. Under the old placement that bus was frozen as
+  // freshly touched for ever, so gc could never propose archiving the one thing it was written for.
+  const { buildDigest } = load("digest.js");
+  const { setOrchestrator } = load("orchestrator.js");
+  const repo = makeRepo({ roles: { po: {}, w1: {} } });
+  setOrchestrator(repo, "po");
+  const path = require("path");
+  const old = (Date.now() - 400 * 24 * 3_600_000) / 1000;          // 400 days dead
+  const age = (dir) => { for (const e of fs.readdirSync(dir)) { const f = path.join(dir, e);
+    if (fs.statSync(f).isDirectory()) age(f); else fs.utimesSync(f, old, old); } };
+  age(busPath(repo));
+  ok(claimInjection(repo), "claim taken and never released — the window died here");
+  const stale = buildDigest(repo, { liveRoles: new Set(), limited: {}, premiumPending: {},
+                                    repoRoot: null, now: Date.now(), checkUnbanked: false,
+                                    workingNow: 0, staleDays: 30 })
+    .staleBuses.map((b) => b.repo);
+  ok(stale.includes(repo), "still reported dead with a claim outstanding: " + JSON.stringify(stale));
+  releaseInjection(repo);
+});

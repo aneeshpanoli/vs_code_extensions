@@ -8,8 +8,12 @@ const { setOrchestrator } = load("orchestrator.js");
 
 const T0 = Date.now();          // ages are relative to real file mtimes, so anchor on real now
 const HOUR = 3_600_000;
+// DG-001-R2 · `workingNow` is SUPPLIED here, and that is the point rather than a default. It used to
+// be read inside buildDigest off the machine-global loom/working-sessions.json, so these fixtures
+// inherited whatever the last suite in the process had published — 14 working roles, from the suite
+// that drives the real activate(), which is why three of them failed in serial mode only.
 const base = (over = {}) => ({ liveRoles: new Set(), limited: {}, premiumPending: {},
-                               repoRoot: null, now: T0, checkUnbanked: false, ...over });
+                               repoRoot: null, now: T0, checkUnbanked: false, workingNow: 0, ...over });
 /** Write a bus file with an explicit mtime so age comparisons are deterministic. */
 function put(file, body, ageHours) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -178,15 +182,46 @@ suite("digest: stalled roles and protocol problems are actionable", () => {
 suite("digest: too many roles working at once is called out", () => {
   const repo = makeRepo({ roles: { w: {} } });
   setOrchestrator(repo, "po");
-  const { countWorking, publishWorking } = load("health.js");
-  // make several roles working across projects, then publish the shared count
+  const { countWorking } = load("health.js");
+  // several roles working across projects. The count is still the REAL countWorking() over a real
+  // bus — what changed in DG-001-R2 is that it reaches the digest as an argument instead of through
+  // loom/working-sessions.json, so this suite no longer leaves that global behind for the next one.
   const other = makeRepo({ roles: { a: {}, b: {}, c: {}, d: {}, e: {}, f: {} } }, "busyBus");
   for (const r of ["a", "b", "c", "d", "e", "f"]) writeJson(busPath(other, r, "status.json"), { status: "working" });
-  publishWorking(countWorking());
-  const d = buildDigest(repo, base({ workingWarnAt: 5 }));
+  const counted = countWorking().total;
+  const d = buildDigest(repo, base({ workingWarnAt: 5, workingNow: counted }));
   ok(d.workingNow >= 6, "counted globally: " + d.workingNow);
   match(renderDigest(d), /working simultaneously across all projects/, "warned");
   match(renderDigest(d), /ONE usage pool/, "explaining why it matters");
-  const under = buildDigest(repo, base({ workingWarnAt: 99 }));
+  const under = buildDigest(repo, base({ workingWarnAt: 99, workingNow: counted }));
   ok(!/working simultaneously/.test(renderDigest(under)), "silent under the threshold");
+});
+
+// ── DG-001-R2 · the digest answers from its ARGUMENTS ────────────────────────────────────────────
+//
+// The defect this pins was visible only in serial mode, and only as "one more actionable item than
+// expected" in three unrelated suites. What made it invisible is that the leak arrived through a
+// file NO DIGEST FIXTURE NAMES: loom/working-sessions.json is machine-global, and buildDigest read
+// it directly. So these suites deliberately do what the product does — publish a large global count
+// — and then assert the digest is unmoved by it. They fail against the old code in EVERY mode,
+// which is the property the original three suites did not have.
+suite("digest: a published global working count does not reach a digest that was not given it", () => {
+  const { publishWorking } = load("health.js");
+  const repo = makeRepo({ roles: { w1: {} } });
+  setOrchestrator(repo, "product-owner");
+  publishWorking({ total: 14, roles: Array.from({ length: 14 }, (_, i) => `r${i}`) });
+  const d = buildDigest(repo, base());          // base() supplies workingNow: 0
+  eq(d.workingNow, 0, "the argument is the answer, not the file");
+  eq(d.actionable, 0, "and a quiet bus stays quiet however busy the machine is");
+});
+
+suite("digest: when the global file and the caller disagree, the caller is the answer", () => {
+  const { publishWorking, countWorking } = load("health.js");
+  const repo = makeRepo({ roles: { w1: {} } });
+  setOrchestrator(repo, "po");
+  publishWorking({ total: 99, roles: ["x"] });
+  const d = buildDigest(repo, base({ workingNow: 2, workingWarnAt: 5 }));
+  eq(d.workingNow, 2, "the caller's number");
+  ok(!/working simultaneously/.test(renderDigest(d)), "and 99 on disk cannot trip a threshold of 5");
+  ok(countWorking().total >= 0, "countWorking still reads the real bus for whoever wants it");
 });

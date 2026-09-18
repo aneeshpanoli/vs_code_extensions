@@ -16,7 +16,7 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 import { boardRoles, busRepos } from "./registry";
 import { getOrchestrator } from "./orchestrator";
-import { checkHealth, StallFinding, ConformFinding, scanWorktrees, WorktreeFinding, readWorking } from "./health";
+import { checkHealth, StallFinding, ConformFinding, scanWorktrees, WorktreeFinding } from "./health";
 import { GcPlan, renderGc } from "./gc";
 
 const LOOM_ROOT = path.join(os.homedir(), ".claude", "loom");
@@ -118,6 +118,24 @@ export interface DigestInput {
   /** Computed by the caller (it needs this window's build version and repo roots), so the digest
    *  stays a pure assembly of things already known. */
   gcPlan?: GcPlan | null;
+  /**
+   * How many roles are working RIGHT NOW across every project. Passed in, like every other
+   * cross-project signal above — and it was the one exception until DG-001-R2.
+   *
+   * IT USED TO BE READ IN HERE, off `loom/working-sessions.json`, which is MACHINE-GLOBAL: not this
+   * bus, not any bus. So `buildDigest(repo, …)` answered partly about a repo and partly about the
+   * whole machine, and the caller could not see that in the signature. Measured: three digest suites
+   * failed in SERIAL mode only, each with exactly one more actionable item than expected, because a
+   * sibling suite drove the real `activate()` and `publishWorking()` left 14 working roles in that
+   * global file — a number no digest fixture writes, asks for, or can reach. Parallel never showed
+   * it because separate processes get separate sandboxes, and a defect only one mode can see is why
+   * both modes are required.
+   *
+   * THE FIX IS THE SIGNATURE, not a tidy-up in the test that happened to write the file: any future
+   * caller that touches the extension's real tick would have leaked into the next suite the same way.
+   * A digest that reads ambient state cannot be asked a question with a knowable answer.
+   */
+  workingNow: number;
 }
 
 export function buildDigest(repo: string | null, input: DigestInput): Digest | null {
@@ -125,7 +143,6 @@ export function buildDigest(repo: string | null, input: DigestInput): Digest | n
   const now = input.now ?? Date.now();
   const staleDays = input.staleDays ?? 30;
   const health = checkHealth(repo, { now, stallMinutes: input.stallMinutes });
-  const working = readWorking();
   const d: Digest = {
     repo, awaitingPickup: [], blocked: [], limited: [], premium: [], unbanked: [],
     missingSessions: [],
@@ -133,7 +150,7 @@ export function buildDigest(repo: string | null, input: DigestInput): Digest | n
     nonConforming: health ? health.nonConforming : [],
     orphanWorktrees: scanWorktrees(repo, input.checkUnbanked === false ? null : input.repoRoot)
       .filter((w) => w.orphaned),
-    workingNow: working ? working.total : 0,
+    workingNow: input.workingNow,
     workingWarnAt: input.workingWarnAt ?? 5,
     orchestratorTagged: !!getOrchestrator(repo),
     gc: input.gcPlan ?? null,
