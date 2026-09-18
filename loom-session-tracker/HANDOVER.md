@@ -9,7 +9,46 @@ idea, done by hand. The state below was true when it was written; **verify it, d
 ---
 
 
-## ★ Resume here — banked 2026-09-13 before a context clear (updated 2026-09-16 for 0.41.0)
+## ★ Resume here — updated 2026-09-18 for 0.62.0
+
+**0.42.0 → 0.62.0 shipped 2026-09-17/18. The per-version essays below are HISTORY; this is the state.**
+
+**THE RELEASE PATH CHANGED. There is no mutation gate on it.** Merge → tsc → **both** suite modes →
+deploy → push. Workers ADD mutants and never execute them; only an orchestrator may ever run a gate,
+and we have not. **Both suite modes are mandatory** — a serial-only failure on 0.62.0 was a real
+cross-suite defect that parallel could not see.
+
+**Seven standing rules were added, and they live in the PLAYBOOK, the SKILL and the TERMINATOR.**
+A rule in the playbook alone has never changed a worker's behaviour on this bus.
+
+| § | rule |
+|---|---|
+| 21 | Talk PRODUCT to the owner. No line counts, commit hashes, versions, paths or ids. Bullets, few. Detail is PULL — he will ask. Decide what you can decide; escalate only what is genuinely his. |
+| 22 | **Nothing ever clears an orchestrator.** Worker clearing (§12) is untouched. |
+| 23 | **The orchestrator owns the repo-wide test runs.** A worker compiles and runs the TARGETED tests for what it changed. |
+| 24 | **A worker works only on an explicit handoff.** A bind is not authorisation, a ring is not a brief, stopped work stays stopped, scope is reported and not widened. |
+| 25 | **Fewer comments.** The incident narrative goes in the commit message, named in a clause, never retold. **Never delete a fact to shorten prose.** |
+| 26 | **Never replace a live brief.** Let it finish and discard, or stop it explicitly and confirm. A cancellation is a message, not a file edit. |
+| 27 | **A brief says the defect, the constraint and the proof required** — not the reasoning. If the brief is longer than the change it asks for, it specified a conclusion. |
+
+**What the add-on gained:** a stop-notifier that pushes to the owner's phone when a project with an
+OPEN window goes quiet, carrying the orchestrator's own closing words; detectors for an orchestrator
+that is working without delegating and for one arming a watcher; a file-collision guard that finally
+reads the handoff format this bus actually writes; reach-back supplied by the tool instead of
+remembered; and every message now names the build that sent it.
+
+**Two things are OFF and one is unfinished.** The delegate reminder is disabled in the owner's
+settings and **must not be re-enabled until every window is reloaded onto ≥0.62.0** — an older window
+cannot honour the in-flight lock that stops it repeating. The stop-notifier is off by default and is
+his to enable. And **`notifier.ts` marks a finished worker announced at DETECTION** — if the
+orchestrator was mid-turn the notification is refused and never re-raised, which is a measured
+three-hour delay on another bus; the fix is in flight as NF-001.
+
+**The defect family this repo keeps meeting, now named:** one field made to carry two facts, with
+`null` or an ordering comparison standing in for the difference. It has appeared in the release
+anchor, the ledger, the clear detector, the delegation latch and `watchers.ts`. **A latch keys on
+what WE did; a watermark is what the world did, and the world is allowed to have nothing to report.**
+
 
 **Version 0.41.0** is CL-001 and WL-011 + R1 + R2 — a block dispatched into a session that was never
 cleared, and the release anchor moved off the version bump onto the artifact that was actually

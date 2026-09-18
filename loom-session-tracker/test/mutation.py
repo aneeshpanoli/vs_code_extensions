@@ -2309,11 +2309,13 @@ MUTATIONS = [
  # write and a composed message happen, and only then does execFile begin counting. Equal windows
  # therefore leave a gap that is small but ALWAYS there, in which a hung injector still holds the
  # composer while its claim has expired and a second window is free to inject. Killed by
- # "DG-001-R1: the injection claim is exclusive, expiring, and given back".
+ # "DG-001-R1: the injection claim is exclusive, expiring, and given back". Re-anchored at NF-001-R1,
+ # where the signature grew a `kind` and this line stopped being the last parameter: the PROPERTY is
+ # untouched by that, which is why the mutant is moved and not retired.
  ("the claim expires before the injector it covers, opening a window for a second one",
   "src/delegation.ts",
-  "                               timeoutMs = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS): boolean {",
-  "                               timeoutMs = INJECT_TIMEOUT_MS): boolean {"),
+  "                               timeoutMs = INJECT_TIMEOUT_MS + CLAIM_GRACE_MS,",
+  "                               timeoutMs = INJECT_TIMEOUT_MS,"),
 
  # A cadence mark in the FUTURE — a stepped clock, a resumed VM, an older build's write — read
  # literally holds the counter shut until wall clock catches up, and only a dispatch clears it. On a
@@ -2345,10 +2347,12 @@ MUTATIONS = [
  # "delegation: taking a claim writes NOTHING into the bus root" and
  # "delegation: an ORPHANED claim does not keep a dead bus looking alive" — deliberately two, because
  # the first states the fact and the second states why anyone should care.
+ # Re-anchored at NF-001-R1 for the `kind` segment; the mutant still moves ONLY the location, so what
+ # it grades is the bus-root write and not the per-subsystem naming beside it.
  ("the injection claim is written into the bus root, where two mtime walks read it as activity",
   "src/delegation.ts",
-  '  return path.join(LOOM_ROOT, ".inflight", repo + ".lock");',
-  '  return path.join(LOOM_ROOT, repo, "delegation-inflight.lock");'),
+  '  return path.join(LOOM_ROOT, ".inflight", repo + (kind === "delegate" ? "" : "." + kind) + ".lock");',
+  '  return path.join(LOOM_ROOT, repo, "delegation-inflight" + (kind === "delegate" ? "" : "." + kind) + ".lock");'),
 
  # THE DIGEST READS AMBIENT STATE AGAIN. working-sessions.json is MACHINE-GLOBAL — not this bus, not
  # any bus — so a buildDigest that reaches for it answers partly about a repo and partly about the
@@ -2469,8 +2473,28 @@ MUTATIONS = [
  # is how a reminder becomes one people turn off. Killed by "watchers: reminded ONCE per stretch".
  ("the watcher reminder repeats for every arming instead of once per stretch",
   "src/watchers.ts",
-  "  if (st.remindedAt !== null && st.remindedSession === input.sessionId) {",
+  "  if (st.reminded && st.remindedSession === input.sessionId) {",
   "  if (false) {"),
+
+ # WT-001. THE DEFECT ITSELF: re-arm by ORDERING between a live dispatch watermark and a field that
+ # may hold the instant we delivered. The null branch is reachable (`lastDispatchAt` returns null on
+ # an empty ledger — two buses read null today), and what is then lost is any dispatch REPORTED after
+ # a delivery whose `openedAt` precedes it. Killed by "watchers: A REMINDER DELIVERED WITH NO
+ # WATERMARK STILL RE-ARMS ON THE NEXT DISPATCH" and by "watchers: A RE-ARM THE ORDERING COMPARISON
+ # WOULD SWALLOW FIRES ONCE, NOT EVERY TICK".
+ ("the watcher re-arm compares a dispatch watermark against a delivery instant, and swallows it",
+  "src/watchers.ts",
+  "  if (input.lastDispatch && st.reminded && input.lastDispatch !== st.remindedDispatch) {",
+  '  if (input.lastDispatch && st.reminded\n'
+  '      && input.lastDispatch > (st.remindedDispatch ?? st.deliveredAt ?? "")) {'),
+
+ # WT-001, the other half: the CONFLATION rather than the comparison — a delivery instant written
+ # back into the field that holds what the WORLD reported. Killed by "watchers: A REMINDER DELIVERED
+ # WITH NO WATERMARK STILL RE-ARMS ON THE NEXT DISPATCH".
+ ("a delivery instant is stored in the watcher's dispatch watermark field",
+  "src/watchers.ts",
+  "           remindedDispatch: lastDispatch ?? null,",
+  "           remindedDispatch: lastDispatch ?? new Date().toISOString(),"),
 
  # A RECORD STILL BEING WRITTEN. Consuming the partial tail means the record is never classified —
  # a watcher armed in the last line before a tick is lost forever. Killed by "watchers: only
